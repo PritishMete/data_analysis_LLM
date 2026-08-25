@@ -4,9 +4,8 @@ compatibility_date = "2026-08-25"
 minify = true
 
 [vars]
-ALLOWED_ORIGINS = "https://your-github-pages-user.github.io,https://your-custom-domain.example"
+ALLOWED_ORIGINS = "https://pritishmete.github.io"
 MODEL_ID = "@cf/meta/llama-3.1-8b-instruct-fast"
 MAX_REQUEST_BYTES = "8192"
 RATE_LIMIT_PER_MINUTE = "30"
 RATE_LIMIT_WINDOW_MS = "60000"
-

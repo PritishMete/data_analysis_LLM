@@ -77,10 +77,11 @@ npx wrangler deploy
 
 ```bash
 cd frontend
-flutter build web --release --base-href /<repo-name>/
+flutter build web --release --base-href /data_analysis_LLM/ --dart-define=INSIGHTFLOW_PLAN_ENDPOINT=https://<your-worker>.workers.dev/v1/plan
 ```
 
 2. Publish the `frontend/build/web` directory to GitHub Pages.
+3. Set `backend/wrangler.toml` `ALLOWED_ORIGINS` to your GitHub Pages origin, then deploy the worker.
 
 ## Recommended Free-Tier Hosting
 
@@ -100,4 +101,3 @@ This combination is the best fit for a lightweight static frontend plus a very s
 - Currency conversion is blocked unless a rate source and timestamp are available.
 - All filters in AND/OR queries are preserved and evaluated locally.
 - Sheet creation auto-switches to the new sheet.
-
