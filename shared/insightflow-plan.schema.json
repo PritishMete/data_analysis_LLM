@@ -174,7 +174,12 @@
         { "$ref": "#/$defs/ConvertCurrencyOp" },
         { "$ref": "#/$defs/PivotTableOp" },
         { "$ref": "#/$defs/ChartOp" },
-        { "$ref": "#/$defs/RenameSheetOp" }
+        { "$ref": "#/$defs/RenameSheetOp" },
+        { "$ref": "#/$defs/GroupedAggregationOp" },
+        { "$ref": "#/$defs/SummaryStatisticsOp" },
+        { "$ref": "#/$defs/MissingValueAnalysisOp" },
+        { "$ref": "#/$defs/DuplicateDetectionOp" },
+        { "$ref": "#/$defs/OutlierDetectionOp" }
       ]
     },
     "FilterRowsOp": {
@@ -411,6 +416,108 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 50
+        }
+      }
+    },
+    "GroupedAggregationOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "group_by", "metrics"],
+      "properties": {
+        "type": { "const": "grouped_aggregation" },
+        "group_by": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "default": []
+        },
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target_ref", "aggregation"],
+            "properties": {
+              "target_ref": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "aggregation": {
+                "type": "string",
+                "enum": ["sum", "count", "average", "min", "max", "median", "distinct_count"]
+              },
+              "alias": { "type": "string", "minLength": 1, "maxLength": 64 }
+            }
+          }
+        },
+        "include_totals": { "type": "boolean", "default": false }
+      }
+    },
+    "SummaryStatisticsOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "columns", "statistics"],
+      "properties": {
+        "type": { "const": "summary_statistics" },
+        "columns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "default": []
+        },
+        "statistics": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["count", "missing_count", "mean", "median", "std_dev", "min", "max", "variance", "q1", "q3", "iqr"]
+          }
+        }
+      }
+    },
+    "MissingValueAnalysisOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "columns"],
+      "properties": {
+        "type": { "const": "missing_value_analysis" },
+        "columns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "default": []
+        },
+        "include_percentages": { "type": "boolean", "default": true }
+      }
+    },
+    "DuplicateDetectionOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "keys"],
+      "properties": {
+        "type": { "const": "duplicate_detection" },
+        "keys": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "default": []
+        },
+        "include_counts": { "type": "boolean", "default": true },
+        "case_sensitive": { "type": "boolean", "default": false }
+      }
+    },
+    "OutlierDetectionOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "columns", "method", "threshold"],
+      "properties": {
+        "type": { "const": "outlier_detection" },
+        "columns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "default": []
+        },
+        "method": {
+          "type": "string",
+          "enum": ["iqr", "zscore"]
+        },
+        "threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0
         }
       }
     }

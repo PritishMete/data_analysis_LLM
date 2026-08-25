@@ -9,7 +9,12 @@ class OperationAllowlist {
     OperationType.convertCurrency,
     OperationType.createPivot,
     OperationType.buildChart,
-    OperationType.renameSheet
+    OperationType.renameSheet,
+    OperationType.groupedAggregation,
+    OperationType.summaryStatistics,
+    OperationType.missingValueAnalysis,
+    OperationType.duplicateDetection,
+    OperationType.outlierDetection
   };
 
   static const allowedConditionOperators = {
@@ -37,5 +42,23 @@ class OperationAllowlist {
     Aggregation.median,
     Aggregation.distinctCount
   };
-}
 
+  static const allowedSummaryStatistics = {
+    SummaryStatisticKind.count,
+    SummaryStatisticKind.missingCount,
+    SummaryStatisticKind.mean,
+    SummaryStatisticKind.median,
+    SummaryStatisticKind.stdDev,
+    SummaryStatisticKind.min,
+    SummaryStatisticKind.max,
+    SummaryStatisticKind.variance,
+    SummaryStatisticKind.q1,
+    SummaryStatisticKind.q3,
+    SummaryStatisticKind.iqr
+  };
+
+  static const allowedOutlierMethods = {
+    OutlierMethod.iqr,
+    OutlierMethod.zscore
+  };
+}

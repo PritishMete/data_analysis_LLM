@@ -89,6 +89,62 @@ describe("plan route", () => {
     expect(userPrompt).toContain("client_version: web");
     expect(userPrompt).not.toContain("Sheet1");
   });
+
+  it("accepts advanced analysis operations in the shared schema", async () => {
+    const env = {
+      AI: {
+        run: async () => ({
+          schema_version: "1.0",
+          request_id: "req-0002",
+          intent: { task_class: "analyze", summary: "Grouped analysis" },
+          semantic_targets: [
+            { target_id: "city", kind: "category", hint: "city", expected_type: "string", cardinality: "single", required: true, nullable: false },
+            { target_id: "rating", kind: "metric", hint: "rating", expected_type: "number", cardinality: "single", required: true, nullable: false }
+          ],
+          operations: [
+            {
+              type: "grouped_aggregation",
+              group_by: ["city"],
+              metrics: [
+                { target_ref: "rating", aggregation: "average" }
+              ],
+              include_totals: false
+            }
+          ],
+          output: {
+            sheet_name_seed: "avg_by_city",
+            open_automatically: true,
+            artifact_kind: "worksheet"
+          },
+          confidence: 1
+        })
+      },
+      ALLOWED_ORIGINS: "https://app.example",
+      MODEL_ID: "@cf/meta/llama-3.1-8b-instruct-fast"
+    };
+
+    const response = await worker.fetch(
+      new Request("https://worker.example/v1/plan", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://app.example"
+        },
+        body: JSON.stringify({
+          request_id: "req-0002",
+          request_text: "Show average rating by city.",
+          locale: "en-US",
+          client_version: "web"
+        })
+      }),
+      env as never
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: boolean; plan: { operations: Array<{ type: string }> } };
+    expect(body.ok).toBe(true);
+    expect(body.plan.operations[0]?.type).toBe("grouped_aggregation");
+  });
 });
 
 describe("system prompt", () => {

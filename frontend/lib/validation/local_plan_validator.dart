@@ -6,24 +6,25 @@ class LocalPlanValidationResult {
   final List<String> errors;
   final List<String> unresolvedTargets;
 
-  const LocalPlanValidationResult({
-    required this.ok,
-    required this.errors,
-    required this.unresolvedTargets
-  });
+  const LocalPlanValidationResult(
+      {required this.ok,
+      required this.errors,
+      required this.unresolvedTargets});
 }
 
 class LocalPlanValidator {
   const LocalPlanValidator();
 
-  LocalPlanValidationResult validate(InsightFlowPlan plan, {required bool Function(String targetId) canResolveTarget}) {
+  LocalPlanValidationResult validate(InsightFlowPlan plan,
+      {required bool Function(String targetId) canResolveTarget}) {
     final errors = <String>[];
     final unresolvedTargets = <String>[];
 
     if (plan.schemaVersion != '1.0') {
       errors.add('Unsupported schema version.');
     }
-    if (!OperationAllowlist.allowedOperationTypes.containsAll(plan.operations.map((op) => op.type))) {
+    if (!OperationAllowlist.allowedOperationTypes
+        .containsAll(plan.operations.map((op) => op.type))) {
       errors.add('Plan contains disallowed operations.');
     }
 
@@ -36,7 +37,8 @@ class LocalPlanValidator {
     for (final op in plan.operations) {
       switch (op) {
         case FilterRowsOperation():
-          _validateConditionGroup(op.where, canResolveTarget, errors, unresolvedTargets);
+          _validateConditionGroup(
+              op.where, canResolveTarget, errors, unresolvedTargets);
         case SortRowsOperation():
           for (final key in op.keys) {
             if (!canResolveTarget(key.targetRef)) {
@@ -55,7 +57,8 @@ class LocalPlanValidator {
           if (op.exchangeRateSource.trim().isEmpty) {
             errors.add('Currency conversion requires an exchange-rate source.');
           }
-          if (op.rateTimestamp.toUtc().isAfter(DateTime.now().toUtc().add(const Duration(minutes: 1)))) {
+          if (op.rateTimestamp.toUtc().isAfter(
+              DateTime.now().toUtc().add(const Duration(minutes: 1)))) {
             errors.add('Currency conversion rate timestamp is invalid.');
           }
         case CreatePivotOperation():
@@ -63,7 +66,8 @@ class LocalPlanValidator {
             errors.add('Pivot requires at least one value field.');
           }
           for (final value in op.values) {
-            if (!OperationAllowlist.allowedAggregations.contains(value.aggregation)) {
+            if (!OperationAllowlist.allowedAggregations
+                .contains(value.aggregation)) {
               errors.add('Pivot aggregation is not allowed.');
             }
             if (!canResolveTarget(value.targetRef)) {
@@ -78,26 +82,86 @@ class LocalPlanValidator {
           if (op.nameSeed.trim().isEmpty) {
             errors.add('Sheet name seed is required.');
           }
+        case GroupedAggregationOperation():
+          if (op.groupBy.isNotEmpty) {
+            for (final targetRef in op.groupBy) {
+              if (!canResolveTarget(targetRef)) {
+                unresolvedTargets.add(targetRef);
+              }
+            }
+          }
+          if (op.metrics.isEmpty) {
+            errors.add('Grouped aggregation requires at least one metric.');
+          }
+          for (final metric in op.metrics) {
+            if (!OperationAllowlist.allowedAggregations
+                .contains(metric.aggregation)) {
+              errors.add('Grouped aggregation uses a disallowed aggregation.');
+            }
+            if (!canResolveTarget(metric.targetRef)) {
+              unresolvedTargets.add(metric.targetRef);
+            }
+          }
+        case SummaryStatisticsOperation():
+          for (final statistic in op.statistics) {
+            if (!OperationAllowlist.allowedSummaryStatistics
+                .contains(statistic)) {
+              errors.add('Summary statistic is not allowed.');
+            }
+          }
+          for (final targetRef in op.columns) {
+            if (!canResolveTarget(targetRef)) {
+              unresolvedTargets.add(targetRef);
+            }
+          }
+        case MissingValueAnalysisOperation():
+          for (final targetRef in op.columns) {
+            if (!canResolveTarget(targetRef)) {
+              unresolvedTargets.add(targetRef);
+            }
+          }
+        case DuplicateDetectionOperation():
+          for (final targetRef in op.keys) {
+            if (!canResolveTarget(targetRef)) {
+              unresolvedTargets.add(targetRef);
+            }
+          }
+        case OutlierDetectionOperation():
+          if (op.threshold <= 0) {
+            errors.add('Outlier threshold must be positive.');
+          }
+          if (!OperationAllowlist.allowedOutlierMethods.contains(op.method)) {
+            errors.add('Outlier method is not allowed.');
+          }
+          for (final targetRef in op.columns) {
+            if (!canResolveTarget(targetRef)) {
+              unresolvedTargets.add(targetRef);
+            }
+          }
       }
     }
 
     final ok = errors.isEmpty && unresolvedTargets.isEmpty;
-    return LocalPlanValidationResult(ok: ok, errors: errors, unresolvedTargets: unresolvedTargets.toSet().toList(growable: false));
+    return LocalPlanValidationResult(
+        ok: ok,
+        errors: errors,
+        unresolvedTargets: unresolvedTargets.toSet().toList(growable: false));
   }
 
   void _validateConditionGroup(
-    ConditionGroup group,
-    bool Function(String targetId) canResolveTarget,
-    List<String> errors,
-    List<String> unresolvedTargets
-  ) {
+      ConditionGroup group,
+      bool Function(String targetId) canResolveTarget,
+      List<String> errors,
+      List<String> unresolvedTargets) {
     for (final item in group.conditions) {
       if (item is ConditionGroup) {
-        _validateConditionGroup(item, canResolveTarget, errors, unresolvedTargets);
+        _validateConditionGroup(
+            item, canResolveTarget, errors, unresolvedTargets);
         continue;
       }
       final condition = item as Condition;
-      if (!OperationAllowlist.allowedConditionOperators.contains(condition.operator)) {
+      if (!OperationAllowlist.allowedConditionOperators
+          .contains(condition.operator)) {
         errors.add('Condition operator is not allowed.');
       }
       if (!canResolveTarget(condition.targetRef)) {

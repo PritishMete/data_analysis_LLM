@@ -51,21 +51,25 @@ class NeedsUserSelectionException extends WorkbookPlanException {
 }
 
 class ValueNotFoundException extends WorkbookPlanException {
-  const ValueNotFoundException(String message) : super('VALUE_NOT_FOUND', message);
+  const ValueNotFoundException(String message)
+      : super('VALUE_NOT_FOUND', message);
 }
 
 class MissingPivotSpecificationException extends WorkbookPlanException {
-  const MissingPivotSpecificationException(String message) : super('NEEDS_PIVOT_SPECIFICATION', message);
+  const MissingPivotSpecificationException(String message)
+      : super('NEEDS_PIVOT_SPECIFICATION', message);
 }
 
 class MissingCurrencyRateException extends WorkbookPlanException {
-  const MissingCurrencyRateException(String message) : super('MISSING_EXCHANGE_RATE', message);
+  const MissingCurrencyRateException(String message)
+      : super('MISSING_EXCHANGE_RATE', message);
 }
 
 class WorkbookExecutionEngine {
   final ConditionEvaluator _conditionEvaluator = const ConditionEvaluator();
   final SheetNameGenerator _sheetNameGenerator = const SheetNameGenerator();
-  final LocalSemanticColumnResolver _semanticResolver = const LocalSemanticColumnResolver();
+  final LocalSemanticColumnResolver _semanticResolver =
+      const LocalSemanticColumnResolver();
   final LocalEntityDiscovery _entityDiscovery = const LocalEntityDiscovery();
 
   const WorkbookExecutionEngine();
@@ -94,7 +98,8 @@ class WorkbookExecutionEngine {
     final validator = const LocalPlanValidator();
     final validation = validator.validate(
       plan,
-      canResolveTarget: (targetId) => resolution.resolutions[targetId]?.resolvedColumnId != null,
+      canResolveTarget: (targetId) =>
+          resolution.resolutions[targetId]?.resolvedColumnId != null,
     );
 
     if (!validation.ok) {
@@ -104,24 +109,30 @@ class WorkbookExecutionEngine {
         warnings: const [],
         errors: validation.errors.isNotEmpty
             ? validation.errors
-            : ['Unresolved targets: ${validation.unresolvedTargets.join(', ')}'],
+            : [
+                'Unresolved targets: ${validation.unresolvedTargets.join(', ')}'
+              ],
         activeSheetId: session.activeSheet.id,
       );
     }
 
-    final workingSheets = session.sheets.map(_MutableSheet.fromSheet).toList(growable: true);
+    final workingSheets =
+        session.sheets.map(_MutableSheet.fromSheet).toList(growable: true);
     var activeSheet = workingSheets[session.activeSheetIndex];
     final originalSheetId = activeSheet.id;
     final messages = <String>[];
     final warnings = <String>[];
-    final charts = session.charts.map((chart) => chart.clone()).toList(growable: true);
-    var resultSheetName = _sheetNameGenerator.fromPlan(plan, requestText: requestText);
+    final charts =
+        session.charts.map((chart) => chart.clone()).toList(growable: true);
+    var resultSheetName =
+        _sheetNameGenerator.fromPlan(plan, requestText: requestText);
     var createdSheet = false;
     try {
       for (final operation in plan.operations) {
         switch (operation) {
           case FilterRowsOperation():
-            final filteredRows = _applyFilter(activeSheet, operation.where, resolution);
+            final filteredRows =
+                _applyFilter(activeSheet, operation.where, resolution);
             activeSheet.rows
               ..clear()
               ..addAll(filteredRows);
@@ -131,23 +142,32 @@ class WorkbookExecutionEngine {
             _sortRows(activeSheet, operation.keys, resolution);
             messages.add('Sorted rows locally.');
           case CategorizeColumnsOperation():
-            final indices = _scopeColumns(activeSheet, operation.scope, resolution, mode: 'categorize');
-            final outcome = _categorizeColumns(activeSheet, indices, operation.strategy);
+            final indices = _scopeColumns(
+                activeSheet, operation.scope, resolution,
+                mode: 'categorize');
+            final outcome =
+                _categorizeColumns(activeSheet, indices, operation.strategy);
             messages.addAll(outcome.messages);
             warnings.addAll(outcome.warnings);
           case NormalizeColumnsOperation():
-            final indices = _scopeColumns(activeSheet, operation.scope, resolution, mode: 'normalize');
-            final outcome = _normalizeColumns(activeSheet, indices, operation.actions);
+            final indices = _scopeColumns(
+                activeSheet, operation.scope, resolution,
+                mode: 'normalize');
+            final outcome =
+                _normalizeColumns(activeSheet, indices, operation.actions);
             messages.addAll(outcome.messages);
             warnings.addAll(outcome.warnings);
           case ConvertCurrencyOperation():
-            final outcome = await _convertCurrency(activeSheet, operation, exchangeRateService, resolution);
+            final outcome = await _convertCurrency(
+                activeSheet, operation, exchangeRateService, resolution);
             messages.addAll(outcome.messages);
             warnings.addAll(outcome.warnings);
           case CreatePivotOperation():
             final pivot = _createPivot(activeSheet, operation, resolution);
             final pivotName = sanitizeSheetName(
-              resultSheetName.isEmpty ? _sheetNameGenerator.fromPlan(plan, requestText: requestText) : resultSheetName,
+              resultSheetName.isEmpty
+                  ? _sheetNameGenerator.fromPlan(plan, requestText: requestText)
+                  : resultSheetName,
               existingNames: workingSheets.map((sheet) => sheet.name).toSet(),
             );
             pivot.id = pivotName;
@@ -161,9 +181,11 @@ class WorkbookExecutionEngine {
               '${_sheetNameGenerator.fromPlan(plan, requestText: requestText)}_Chart',
               existingNames: workingSheets.map((sheet) => sheet.name).toSet(),
             );
-            final chart = _buildChartSpec(activeSheet, operation, resolution, requestText);
+            final chart = _buildChartSpec(
+                activeSheet, operation, resolution, requestText);
             charts.add(chart);
-            activeSheet = _MutableSheet.fromSheet(_createResultSheet(source: activeSheet, name: chartName, original: false));
+            activeSheet = _MutableSheet.fromSheet(_createResultSheet(
+                source: activeSheet, name: chartName, original: false));
             workingSheets.add(activeSheet);
             createdSheet = true;
             messages.add('Generated chart data locally.');
@@ -173,6 +195,51 @@ class WorkbookExecutionEngine {
               existingNames: workingSheets.map((sheet) => sheet.name).toSet(),
             );
             messages.add('Renamed result sheet.');
+          case GroupedAggregationOperation():
+            activeSheet = _groupedAggregationSheet(
+              source: activeSheet,
+              operation: operation,
+              resolution: resolution,
+            );
+            workingSheets.add(activeSheet);
+            createdSheet = true;
+            messages.add('Created grouped aggregation sheet locally.');
+          case SummaryStatisticsOperation():
+            activeSheet = _summaryStatisticsSheet(
+              source: activeSheet,
+              operation: operation,
+              resolution: resolution,
+            );
+            workingSheets.add(activeSheet);
+            createdSheet = true;
+            messages.add('Created summary statistics sheet locally.');
+          case MissingValueAnalysisOperation():
+            activeSheet = _missingValueAnalysisSheet(
+              source: activeSheet,
+              operation: operation,
+              resolution: resolution,
+            );
+            workingSheets.add(activeSheet);
+            createdSheet = true;
+            messages.add('Created missing value analysis sheet locally.');
+          case DuplicateDetectionOperation():
+            activeSheet = _duplicateDetectionSheet(
+              source: activeSheet,
+              operation: operation,
+              resolution: resolution,
+            );
+            workingSheets.add(activeSheet);
+            createdSheet = true;
+            messages.add('Created duplicate detection sheet locally.');
+          case OutlierDetectionOperation():
+            activeSheet = _outlierDetectionSheet(
+              source: activeSheet,
+              operation: operation,
+              resolution: resolution,
+            );
+            workingSheets.add(activeSheet);
+            createdSheet = true;
+            messages.add('Created outlier detection sheet locally.');
         }
       }
 
@@ -181,7 +248,8 @@ class WorkbookExecutionEngine {
           resultSheetName,
           existingNames: workingSheets.map((sheet) => sheet.name).toSet(),
         );
-        activeSheet = _MutableSheet.fromSheet(_createResultSheet(source: activeSheet, name: finalName, original: false));
+        activeSheet = _MutableSheet.fromSheet(_createResultSheet(
+            source: activeSheet, name: finalName, original: false));
         workingSheets.add(activeSheet);
       } else {
         final finalName = sanitizeSheetName(
@@ -196,7 +264,9 @@ class WorkbookExecutionEngine {
       final activeSheetIndex = workingSheets.length - 1;
       final sessionResult = WorkbookSession(
         workbookName: session.workbookName,
-        sheets: workingSheets.map((sheet) => sheet.toSheet()).toList(growable: false),
+        sheets: workingSheets
+            .map((sheet) => sheet.toSheet())
+            .toList(growable: false),
         activeSheetIndex: activeSheetIndex,
         sourceFileName: session.sourceFileName,
         charts: charts,
@@ -269,9 +339,11 @@ class WorkbookExecutionEngine {
     );
   }
 
-  ColumnResolution _resolveSemanticTarget(SemanticTarget target, WorkbookSnapshot snapshot) {
+  ColumnResolution _resolveSemanticTarget(
+      SemanticTarget target, WorkbookSnapshot snapshot) {
     if (target.kind == 'entity' && target.hint.trim().isNotEmpty) {
-      final discovered = _entityDiscovery.discover(target.hint, snapshot.toTableSnapshot());
+      final discovered =
+          _entityDiscovery.discover(target.hint, snapshot.toTableSnapshot());
       if (!discovered.found || discovered.columnId == null) {
         throw ValueNotFoundException('Value not found: ${target.hint}');
       }
@@ -284,8 +356,10 @@ class WorkbookExecutionEngine {
       );
     }
 
-    final resolverResult = _semanticResolver.resolveTarget(target, snapshot.toTableSnapshot());
-    if (resolverResult.needsUserSelection || resolverResult.resolvedColumnId == null) {
+    final resolverResult =
+        _semanticResolver.resolveTarget(target, snapshot.toTableSnapshot());
+    if (resolverResult.needsUserSelection ||
+        resolverResult.resolvedColumnId == null) {
       if (target.required) {
         throw NeedsUserSelectionException(
           targetId: target.targetId,
@@ -300,7 +374,9 @@ class WorkbookExecutionEngine {
   WorkbookSnapshot _snapshot(WorkbookSheet sheet) {
     return WorkbookSnapshot(
       sheet: sheet,
-      rows: sheet.rows.map((row) => List<Object?>.from(row, growable: true)).toList(growable: true),
+      rows: sheet.rows
+          .map((row) => List<Object?>.from(row, growable: true))
+          .toList(growable: true),
       columnIds: List<String>.from(sheet.columnIds, growable: false),
       headers: List<String>.from(sheet.originalHeaders, growable: false),
       profiles: sheet.profiles
@@ -313,7 +389,8 @@ class WorkbookExecutionEngine {
               numericness: profile.numericness,
               booleanness: profile.booleanness,
               dateness: profile.dateness,
-              headerTokens: List<String>.from(profile.headerTokens, growable: false),
+              headerTokens:
+                  List<String>.from(profile.headerTokens, growable: false),
             ),
           )
           .toList(growable: false),
@@ -328,6 +405,394 @@ class WorkbookExecutionEngine {
     return source.toSheet(id: name, name: name, isOriginal: original);
   }
 
+  _MutableSheet _createAnalysisSheet({
+    required String name,
+    required List<String> headers,
+    required List<List<Object?>> rows,
+  }) {
+    final columnIds =
+        List<String>.generate(headers.length, columnId, growable: false);
+    return _MutableSheet(
+      id: name,
+      name: name,
+      columnIds: columnIds,
+      originalHeaders: List<String>.from(headers, growable: false),
+      rows: rows
+          .map((row) => List<Object?>.from(row, growable: false))
+          .toList(growable: false),
+      profiles: _buildProfiles(columnIds, headers, rows),
+      isOriginal: false,
+    );
+  }
+
+  _MutableSheet _groupedAggregationSheet({
+    required _MutableSheet source,
+    required GroupedAggregationOperation operation,
+    required ResolvedTargets resolution,
+  }) {
+    final groupIds = operation.groupBy
+        .map((ref) => _resolveColumnRef(source, ref, resolution))
+        .toList(growable: false);
+    final metrics = operation.metrics.asMap().entries.map(
+      (entry) {
+        final metric = entry.value;
+        return _ResolvedMetric(
+          key:
+              '${entry.key}|${metric.targetRef}|${metric.aggregation.name}|${metric.alias ?? ''}',
+          columnId: _resolveColumnRef(source, metric.targetRef, resolution),
+          aggregation: metric.aggregation,
+          alias: metric.alias,
+        );
+      },
+    ).toList(growable: false);
+
+    final buckets = <String, _GroupedBucket>{};
+    final order = <String>[];
+    for (var rowIndex = 0; rowIndex < source.rows.length; rowIndex++) {
+      final row = source.rows[rowIndex];
+      final groupValues = groupIds
+          .map((columnId) => _rowValue(source, row, columnId))
+          .toList(growable: false);
+      final signature = groupValues
+          .map((value) => _duplicateSignatureValue(value, caseSensitive: true))
+          .join('\u0001');
+      final bucket = buckets.putIfAbsent(signature, () {
+        order.add(signature);
+        return _GroupedBucket(
+            groupValues: groupValues,
+            rowIndices: <int>[],
+            metricValues: {
+              for (final metric in metrics) metric.key: <Object?>[]
+            });
+      });
+      bucket.rowIndices.add(rowIndex);
+      for (final metric in metrics) {
+        bucket.metricValues[metric.key]!
+            .add(_rowValue(source, row, metric.columnId));
+      }
+    }
+
+    final headers = [
+      ...groupIds.map((columnId) => _headerFor(source, columnId)),
+      ...metrics.map((metric) =>
+          metric.alias ??
+          _groupMetricHeader(source, metric.columnId, metric.aggregation)),
+    ];
+
+    final rows = <List<Object?>>[];
+    for (final signature in order) {
+      final bucket = buckets[signature]!;
+      final row = <Object?>[
+        ...bucket.groupValues,
+      ];
+      for (final metric in metrics) {
+        row.add(_aggregateBucketValues(
+            bucket.metricValues[metric.key]!, metric.aggregation));
+      }
+      rows.add(row);
+    }
+
+    if (operation.includeTotals && groupIds.isNotEmpty) {
+      final totalRow = <Object?>[
+        ...List<Object?>.filled(groupIds.length, 'All', growable: false),
+      ];
+      for (final metric in metrics) {
+        totalRow.add(_aggregateBucketValues(
+          source.rows
+              .map((row) => _rowValue(source, row, metric.columnId))
+              .toList(growable: false),
+          metric.aggregation,
+        ));
+      }
+      rows.add(totalRow);
+    }
+
+    final sheetName = sanitizeSheetName(
+      _sheetNameGenerator.fromRequest('grouped aggregation'),
+      existingNames: {source.name},
+    );
+    final analysisSheet = _createAnalysisSheet(
+      name: sheetName,
+      headers: headers,
+      rows: rows,
+    );
+    return analysisSheet;
+  }
+
+  _MutableSheet _summaryStatisticsSheet({
+    required _MutableSheet source,
+    required SummaryStatisticsOperation operation,
+    required ResolvedTargets resolution,
+  }) {
+    final columnIds = operation.columns.isEmpty
+        ? source.columnIds.toList(growable: false)
+        : operation.columns
+            .map((ref) => _resolveColumnRef(source, ref, resolution))
+            .toList(growable: false);
+    final rows = <List<Object?>>[];
+    for (final columnId in columnIds) {
+      final values = source.rows
+          .map((row) => _rowValue(source, row, columnId))
+          .toList(growable: false);
+      final numericValues =
+          values.map(_tryNumeric).whereType<double>().toList(growable: false);
+      final nonBlankCount =
+          values.where((value) => !isBlankValue(value)).length;
+      final missingCount = values.length - nonBlankCount;
+      final q1 = _quantile(numericValues, 0.25);
+      final q3 = _quantile(numericValues, 0.75);
+      final stats = <SummaryStatisticKind, Object?>{
+        SummaryStatisticKind.count: nonBlankCount,
+        SummaryStatisticKind.missingCount: missingCount,
+        SummaryStatisticKind.mean: numericValues.isEmpty
+            ? null
+            : numericValues.reduce((a, b) => a + b) / numericValues.length,
+        SummaryStatisticKind.median:
+            numericValues.isEmpty ? null : _median(numericValues),
+        SummaryStatisticKind.stdDev:
+            numericValues.isEmpty ? null : _populationStdDev(numericValues),
+        SummaryStatisticKind.min:
+            numericValues.isEmpty ? null : numericValues.reduce(min),
+        SummaryStatisticKind.max:
+            numericValues.isEmpty ? null : numericValues.reduce(max),
+        SummaryStatisticKind.variance:
+            numericValues.isEmpty ? null : _populationVariance(numericValues),
+        SummaryStatisticKind.q1: q1,
+        SummaryStatisticKind.q3: q3,
+        SummaryStatisticKind.iqr: q1 == null || q3 == null ? null : q3 - q1,
+      };
+
+      for (final statistic in operation.statistics) {
+        rows.add([
+          _headerFor(source, columnId),
+          _summaryStatisticLabel(statistic),
+          stats[statistic],
+        ]);
+      }
+    }
+
+    final sheetName = sanitizeSheetName(
+      _sheetNameGenerator.fromRequest('summary statistics'),
+      existingNames: {source.name},
+    );
+    return _createAnalysisSheet(
+      name: sheetName,
+      headers: const ['Column', 'Statistic', 'Value'],
+      rows: rows,
+    );
+  }
+
+  _MutableSheet _missingValueAnalysisSheet({
+    required _MutableSheet source,
+    required MissingValueAnalysisOperation operation,
+    required ResolvedTargets resolution,
+  }) {
+    final columnIds = operation.columns.isEmpty
+        ? source.columnIds.toList(growable: false)
+        : operation.columns
+            .map((ref) => _resolveColumnRef(source, ref, resolution))
+            .toList(growable: false);
+    final totalRows = source.rows.length.toDouble();
+    final rows = <List<Object?>>[];
+    for (final columnId in columnIds) {
+      final values = source.rows
+          .map((row) => _rowValue(source, row, columnId))
+          .toList(growable: false);
+      final missingCount = values.where((value) => isBlankValue(value)).length;
+      final presentCount = values.length - missingCount;
+      rows.add([
+        _headerFor(source, columnId),
+        missingCount,
+        operation.includePercentages && totalRows > 0
+            ? missingCount / totalRows
+            : null,
+        presentCount,
+        values.length,
+      ]);
+    }
+
+    final sheetName = sanitizeSheetName(
+      _sheetNameGenerator.fromRequest('missing values'),
+      existingNames: {source.name},
+    );
+    return _createAnalysisSheet(
+      name: sheetName,
+      headers: const [
+        'Column',
+        'Missing Count',
+        'Missing Percent',
+        'Present Count',
+        'Total Rows'
+      ],
+      rows: rows,
+    );
+  }
+
+  _MutableSheet _duplicateDetectionSheet({
+    required _MutableSheet source,
+    required DuplicateDetectionOperation operation,
+    required ResolvedTargets resolution,
+  }) {
+    final keyIds = operation.keys.isEmpty
+        ? source.columnIds.toList(growable: false)
+        : operation.keys
+            .map((ref) => _resolveColumnRef(source, ref, resolution))
+            .toList(growable: false);
+    final buckets = <String, _DuplicateBucket>{};
+    final order = <String>[];
+
+    for (var rowIndex = 0; rowIndex < source.rows.length; rowIndex++) {
+      final row = source.rows[rowIndex];
+      final keyValues = keyIds
+          .map((columnId) => _rowValue(source, row, columnId))
+          .toList(growable: false);
+      final signature = keyValues
+          .map((value) => _duplicateSignatureValue(value,
+              caseSensitive: operation.caseSensitive))
+          .join('\u0001');
+      final bucket = buckets.putIfAbsent(signature, () {
+        order.add(signature);
+        return _DuplicateBucket(keyValues: keyValues, rowIndices: <int>[]);
+      });
+      bucket.rowIndices.add(rowIndex);
+    }
+
+    final duplicateRows = <List<Object?>>[];
+    for (final signature in order) {
+      final bucket = buckets[signature]!;
+      if (bucket.rowIndices.length < 2) {
+        continue;
+      }
+      final row = <Object?>[
+        ...bucket.keyValues,
+      ];
+      if (operation.includeCounts) {
+        row.add(bucket.rowIndices.length);
+      }
+      row.add(
+          bucket.rowIndices.map((index) => (index + 1).toString()).join(', '));
+      duplicateRows.add(row);
+    }
+
+    final headers = [
+      ...keyIds.map((columnId) => _headerFor(source, columnId)),
+      if (operation.includeCounts) 'Duplicate Count',
+      'Row Indices',
+    ];
+
+    final sheetName = sanitizeSheetName(
+      _sheetNameGenerator.fromRequest('duplicate detection'),
+      existingNames: {source.name},
+    );
+    return _createAnalysisSheet(
+      name: sheetName,
+      headers: headers,
+      rows: duplicateRows,
+    );
+  }
+
+  _MutableSheet _outlierDetectionSheet({
+    required _MutableSheet source,
+    required OutlierDetectionOperation operation,
+    required ResolvedTargets resolution,
+  }) {
+    final columnIds = operation.columns.isEmpty
+        ? source.columnIds.toList(growable: false)
+        : operation.columns
+            .map((ref) => _resolveColumnRef(source, ref, resolution))
+            .toList(growable: false);
+    final rows = <List<Object?>>[];
+
+    for (final columnId in columnIds) {
+      final observations = <_NumericObservation>[];
+      for (var rowIndex = 0; rowIndex < source.rows.length; rowIndex++) {
+        final value =
+            _tryNumeric(_rowValue(source, source.rows[rowIndex], columnId));
+        if (value != null) {
+          observations
+              .add(_NumericObservation(rowIndex: rowIndex, value: value));
+        }
+      }
+      if (observations.isEmpty) {
+        continue;
+      }
+
+      if (operation.method == OutlierMethod.iqr) {
+        final values = observations
+            .map((observation) => observation.value)
+            .toList(growable: false)
+          ..sort();
+        final q1 = _quantile(values, 0.25);
+        final q3 = _quantile(values, 0.75);
+        if (q1 == null || q3 == null) {
+          continue;
+        }
+        final iqr = q3 - q1;
+        final lower = q1 - operation.threshold * iqr;
+        final upper = q3 + operation.threshold * iqr;
+        for (final observation in observations) {
+          if (observation.value < lower || observation.value > upper) {
+            final score = iqr == 0
+                ? 0
+                : observation.value < lower
+                    ? (lower - observation.value) / iqr
+                    : (observation.value - upper) / iqr;
+            rows.add([
+              _headerFor(source, columnId),
+              observation.rowIndex + 1,
+              observation.value,
+              score,
+              lower,
+              upper,
+              'iqr',
+            ]);
+          }
+        }
+      } else {
+        final values = observations
+            .map((observation) => observation.value)
+            .toList(growable: false);
+        final mean = values.reduce((a, b) => a + b) / values.length;
+        final stdDev = _populationStdDev(values);
+        if (stdDev == 0) {
+          continue;
+        }
+        for (final observation in observations) {
+          final score = ((observation.value - mean).abs()) / stdDev;
+          if (score > operation.threshold) {
+            rows.add([
+              _headerFor(source, columnId),
+              observation.rowIndex + 1,
+              observation.value,
+              score,
+              mean - operation.threshold * stdDev,
+              mean + operation.threshold * stdDev,
+              'zscore',
+            ]);
+          }
+        }
+      }
+    }
+
+    final sheetName = sanitizeSheetName(
+      _sheetNameGenerator.fromRequest('outliers'),
+      existingNames: {source.name},
+    );
+    return _createAnalysisSheet(
+      name: sheetName,
+      headers: const [
+        'Column',
+        'Row Index',
+        'Value',
+        'Score',
+        'Lower Bound',
+        'Upper Bound',
+        'Method'
+      ],
+      rows: rows,
+    );
+  }
+
   List<List<Object?>> _applyFilter(
     _MutableSheet sheet,
     ConditionGroup where,
@@ -338,7 +803,8 @@ class WorkbookExecutionEngine {
         .where((row) => _conditionEvaluator.evaluateGroup(
               where,
               row,
-              (targetRef, rowMap) => _resolveValue(sheet, targetRef, rowMap, resolution),
+              (targetRef, rowMap) =>
+                  _resolveValue(sheet, targetRef, rowMap, resolution),
             ))
         .map((row) => sheet.rowFromMap(row))
         .toList(growable: false);
@@ -359,7 +825,8 @@ class WorkbookExecutionEngine {
       final rightMap = _rowMap(sheet, right.row);
       for (final key in keys) {
         final columnId = _resolveColumnRef(sheet, key.targetRef, resolution);
-        final comparison = _compareValues(leftMap[columnId], rightMap[columnId]);
+        final comparison =
+            _compareValues(leftMap[columnId], rightMap[columnId]);
         if (comparison != 0) {
           return key.direction == SortDirection.asc ? comparison : -comparison;
         }
@@ -385,9 +852,11 @@ class WorkbookExecutionEngine {
       final profile = sheet.profiles[index];
       final category = _pickStrategy(header, profile, strategy);
       for (var rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
-        sheet.rows[rowIndex][index] = _applyNormalizationStrategy(sheet.rows[rowIndex][index], category);
+        sheet.rows[rowIndex][index] =
+            _applyNormalizationStrategy(sheet.rows[rowIndex][index], category);
       }
-      messages.add('Categorized ${header.isEmpty ? 'Column ${index + 1}' : header}.');
+      messages.add(
+          'Categorized ${header.isEmpty ? 'Column ${index + 1}' : header}.');
     }
 
     sheet.refreshProfiles();
@@ -405,10 +874,13 @@ class WorkbookExecutionEngine {
     for (final index in indices) {
       final header = sheet.originalHeaders[index];
       for (var rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
-        final current = index < sheet.rows[rowIndex].length ? sheet.rows[rowIndex][index] : null;
+        final current = index < sheet.rows[rowIndex].length
+            ? sheet.rows[rowIndex][index]
+            : null;
         sheet.rows[rowIndex][index] = _applyActions(current, header, actions);
       }
-      messages.add('Normalized ${header.isEmpty ? 'Column ${index + 1}' : header}.');
+      messages.add(
+          'Normalized ${header.isEmpty ? 'Column ${index + 1}' : header}.');
     }
 
     sheet.refreshProfiles();
@@ -430,9 +902,11 @@ class WorkbookExecutionEngine {
       );
     }
 
-    final indices = _scopeColumns(sheet, op.scope, resolution, mode: 'currency');
+    final indices =
+        _scopeColumns(sheet, op.scope, resolution, mode: 'currency');
     if (indices.isEmpty) {
-      throw const MissingCurrencyRateException('No currency column was found to convert.');
+      throw const MissingCurrencyRateException(
+          'No currency column was found to convert.');
     }
 
     final messages = <String>[];
@@ -440,27 +914,35 @@ class WorkbookExecutionEngine {
     var skippedCount = 0;
     for (final index in indices) {
       for (var rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
-        final current = index < sheet.rows[rowIndex].length ? sheet.rows[rowIndex][index] : null;
-        final numeric = parseCurrencyAmount(current, sourceCurrency: snapshot.sourceCurrency);
+        final current = index < sheet.rows[rowIndex].length
+            ? sheet.rows[rowIndex][index]
+            : null;
+        final numeric = parseCurrencyAmount(current,
+            sourceCurrency: snapshot.sourceCurrency);
         if (numeric == null) {
           skippedCount += 1;
           continue;
         }
-        final converted = _applyRounding(numeric * snapshot.rate, op.roundingMode);
+        final converted =
+            _applyRounding(numeric * snapshot.rate, op.roundingMode);
         sheet.rows[rowIndex][index] = converted;
         convertedCount += 1;
       }
 
       final header = sheet.originalHeaders[index];
-      if (normalizeHeader(header).contains('currency') && normalizeCurrencyCode(snapshot.targetCurrency) == 'INR') {
-        sheet.originalHeaders[index] = formatCurrencyHeader(header, snapshot.targetCurrency);
+      if (normalizeHeader(header).contains('currency') &&
+          normalizeCurrencyCode(snapshot.targetCurrency) == 'INR') {
+        sheet.originalHeaders[index] =
+            formatCurrencyHeader(header, snapshot.targetCurrency);
       }
-      messages.add('Converted ${sheet.originalHeaders[index]} to ${snapshot.targetCurrency}.');
+      messages.add(
+          'Converted ${sheet.originalHeaders[index]} to ${snapshot.targetCurrency}.');
     }
 
     sheet.refreshProfiles();
     if (skippedCount > 0) {
-      messages.add('Converted $convertedCount values and skipped $skippedCount non-currency cells.');
+      messages.add(
+          'Converted $convertedCount values and skipped $skippedCount non-currency cells.');
     }
     return _ColumnMutationResult(messages: messages, warnings: const []);
   }
@@ -474,7 +956,9 @@ class WorkbookExecutionEngine {
     final xColumnId = _resolveColumnRef(sheet, op.x, resolution);
     final yColumns = op.y.isEmpty
         ? <String>[xColumnId]
-        : op.y.map((ref) => _resolveColumnRef(sheet, ref, resolution)).toList(growable: false);
+        : op.y
+            .map((ref) => _resolveColumnRef(sheet, ref, resolution))
+            .toList(growable: false);
     final xIndex = sheet.columnIds.indexOf(xColumnId);
     final yIndex = sheet.columnIds.indexOf(yColumns.first);
     if (xIndex < 0 || yIndex < 0) {
@@ -489,15 +973,20 @@ class WorkbookExecutionEngine {
     for (var rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
       final row = sheet.rows[rowIndex];
       final label = xIndex < row.length ? row[xIndex]?.toString() ?? '' : '';
-      final numeric = _tryNumeric(yIndex < row.length ? row[yIndex] : null) ?? 0;
+      final numeric =
+          _tryNumeric(yIndex < row.length ? row[yIndex] : null) ?? 0;
       points.add(ChartPoint(x: rowIndex.toDouble(), y: numeric, label: label));
     }
 
     return AnalysisChartSpec(
       type: op.chartType,
       title: requestText,
-      xLabel: sheet.originalHeaders[xIndex].isEmpty ? sheet.columnIds[xIndex] : sheet.originalHeaders[xIndex],
-      yLabel: sheet.originalHeaders[yIndex].isEmpty ? sheet.columnIds[yIndex] : sheet.originalHeaders[yIndex],
+      xLabel: sheet.originalHeaders[xIndex].isEmpty
+          ? sheet.columnIds[xIndex]
+          : sheet.originalHeaders[xIndex],
+      yLabel: sheet.originalHeaders[yIndex].isEmpty
+          ? sheet.columnIds[yIndex]
+          : sheet.originalHeaders[yIndex],
       points: points,
       categories: points.map((point) => point.label).toList(growable: false),
     );
@@ -509,12 +998,18 @@ class WorkbookExecutionEngine {
     ResolvedTargets resolution,
   ) {
     if (op.rows.isEmpty || op.values.isEmpty) {
-      throw const MissingPivotSpecificationException('Choose pivot rows and value fields locally.');
+      throw const MissingPivotSpecificationException(
+          'Choose pivot rows and value fields locally.');
     }
 
-    final rowIds = op.rows.map((ref) => _resolveColumnRef(sheet, ref, resolution)).toList(growable: false);
-    final columnIds = op.columns.map((ref) => _resolveColumnRef(sheet, ref, resolution)).toList(growable: false);
-    final valueId = _resolveColumnRef(sheet, op.values.first.targetRef, resolution);
+    final rowIds = op.rows
+        .map((ref) => _resolveColumnRef(sheet, ref, resolution))
+        .toList(growable: false);
+    final columnIds = op.columns
+        .map((ref) => _resolveColumnRef(sheet, ref, resolution))
+        .toList(growable: false);
+    final valueId =
+        _resolveColumnRef(sheet, op.values.first.targetRef, resolution);
     final valueIndex = sheet.columnIds.indexOf(valueId);
 
     if (valueIndex < 0) {
@@ -528,10 +1023,18 @@ class WorkbookExecutionEngine {
     final groups = <String, List<_PivotEntry>>{};
     final keyOrder = <String>[];
     for (final row in sheet.rows) {
-      final rowKey = rowIds.map((columnId) => _stringify(_rowValue(sheet, row, columnId))).join(' | ');
-      final columnKey = columnIds.isEmpty ? 'all' : columnIds.map((columnId) => _stringify(_rowValue(sheet, row, columnId))).join(' | ');
+      final rowKey = rowIds
+          .map((columnId) => _stringify(_rowValue(sheet, row, columnId)))
+          .join(' | ');
+      final columnKey = columnIds.isEmpty
+          ? 'all'
+          : columnIds
+              .map((columnId) => _stringify(_rowValue(sheet, row, columnId)))
+              .join(' | ');
       final entry = _PivotEntry(
-        rowLabelValues: rowIds.map((columnId) => _rowValue(sheet, row, columnId)).toList(growable: false),
+        rowLabelValues: rowIds
+            .map((columnId) => _rowValue(sheet, row, columnId))
+            .toList(growable: false),
         columnLabel: columnKey,
         metricValue: _tryNumeric(_rowValue(sheet, row, valueId)),
       );
@@ -550,7 +1053,10 @@ class WorkbookExecutionEngine {
 
     final headers = [
       ...rowIds.map((columnId) => _headerFor(sheet, columnId)),
-      if (columnIds.isEmpty) _aggregateHeader(sheet, valueId, op.values.first.aggregation) else ...distinctColumns.map((column) => column),
+      if (columnIds.isEmpty)
+        _aggregateHeader(sheet, valueId, op.values.first.aggregation)
+      else
+        ...distinctColumns.map((column) => column),
     ];
 
     final rows = <List<Object?>>[];
@@ -563,18 +1069,26 @@ class WorkbookExecutionEngine {
       }
 
       if (columnIds.isEmpty) {
-        final values = entries.map((entry) => entry.metricValue).whereType<double>().toList(growable: false);
+        final values = entries
+            .map((entry) => entry.metricValue)
+            .whereType<double>()
+            .toList(growable: false);
         rowValues.add(_aggregate(values, op.values.first.aggregation));
       } else {
         for (final columnKey in distinctColumns) {
-          final values = entries.where((entry) => entry.columnLabel == columnKey).map((entry) => entry.metricValue).whereType<double>().toList(growable: false);
+          final values = entries
+              .where((entry) => entry.columnLabel == columnKey)
+              .map((entry) => entry.metricValue)
+              .whereType<double>()
+              .toList(growable: false);
           rowValues.add(_aggregate(values, op.values.first.aggregation));
         }
       }
       rows.add(rowValues);
     }
 
-    final outputColumnIds = List<String>.generate(headers.length, columnId, growable: false);
+    final outputColumnIds =
+        List<String>.generate(headers.length, columnId, growable: false);
     final profiles = _buildProfiles(outputColumnIds, headers, rows);
     return _MutableSheet(
       id: _sheetNameGenerator.fromRequest('pivot'),
@@ -587,10 +1101,14 @@ class WorkbookExecutionEngine {
     );
   }
 
-  List<ColumnProfile> _buildProfiles(List<String> columnIds, List<String> headers, List<List<Object?>> rows) {
+  List<ColumnProfile> _buildProfiles(
+      List<String> columnIds, List<String> headers, List<List<Object?>> rows) {
     return List<ColumnProfile>.generate(columnIds.length, (index) {
-      final values = rows.map((row) => index < row.length ? row[index] : null).toList(growable: false);
-      final nonNull = values.where((value) => !isBlankValue(value)).toList(growable: false);
+      final values = rows
+          .map((row) => index < row.length ? row[index] : null)
+          .toList(growable: false);
+      final nonNull =
+          values.where((value) => !isBlankValue(value)).toList(growable: false);
       final numericCount = nonNull.whereType<num>().length;
       final textCount = nonNull.whereType<String>().length;
       final boolCount = nonNull.whereType<bool>().length;
@@ -617,27 +1135,62 @@ class WorkbookExecutionEngine {
     }, growable: false);
   }
 
-  int _pickStrategy(String header, ColumnProfile profile, String explicitStrategy) {
+  int _pickStrategy(
+      String header, ColumnProfile profile, String explicitStrategy) {
     final normalizedHeader = normalizeHeader(header);
-    if (normalizedHeader.contains('country')) return 1;
-    if (normalizedHeader.contains('gender')) return 2;
-    if (normalizedHeader.contains('bool') || normalizedHeader.contains('flag') || normalizedHeader.contains('delivery') || normalizedHeader.contains('booking')) return 3;
-    if (normalizedHeader.contains('currency') || normalizedHeader.contains('price') || normalizedHeader.contains('amount') || normalizedHeader.contains('cost')) return 4;
-    if (normalizedHeader.contains('date') || normalizedHeader.contains('time')) return 5;
-    if (normalizedHeader.contains('city')) return 6;
-    if (normalizedHeader.contains('rating') || normalizedHeader.contains('score')) return 7;
+    if (normalizedHeader.contains('country')) {
+      return 1;
+    }
+    if (normalizedHeader.contains('gender')) {
+      return 2;
+    }
+    if (normalizedHeader.contains('bool') ||
+        normalizedHeader.contains('flag') ||
+        normalizedHeader.contains('delivery') ||
+        normalizedHeader.contains('booking')) {
+      return 3;
+    }
+    if (normalizedHeader.contains('currency') ||
+        normalizedHeader.contains('price') ||
+        normalizedHeader.contains('amount') ||
+        normalizedHeader.contains('cost')) {
+      return 4;
+    }
+    if (normalizedHeader.contains('date') ||
+        normalizedHeader.contains('time')) {
+      return 5;
+    }
+    if (normalizedHeader.contains('city')) {
+      return 6;
+    }
+    if (normalizedHeader.contains('rating') ||
+        normalizedHeader.contains('score')) {
+      return 7;
+    }
     if (explicitStrategy == 'header_based') {
       return profile.textness > 0.5 ? 8 : 0;
     }
     if (explicitStrategy == 'type_based') {
-      if (profile.booleanness > 0.5) return 3;
-      if (profile.numericness > 0.5) return 4;
-      if (profile.dateness > 0.5) return 5;
+      if (profile.booleanness > 0.5) {
+        return 3;
+      }
+      if (profile.numericness > 0.5) {
+        return 4;
+      }
+      if (profile.dateness > 0.5) {
+        return 5;
+      }
       return 8;
     }
-    if (profile.booleanness > 0.5) return 3;
-    if (profile.numericness > 0.5) return 4;
-    if (profile.dateness > 0.5) return 5;
+    if (profile.booleanness > 0.5) {
+      return 3;
+    }
+    if (profile.numericness > 0.5) {
+      return 4;
+    }
+    if (profile.dateness > 0.5) {
+      return 5;
+    }
     return 8;
   }
 
@@ -671,20 +1224,39 @@ class WorkbookExecutionEngine {
     }
 
     final normalizedHeader = normalizeHeader(header);
-    if (normalizedHeader.contains('country')) return _normalizeCountry(result);
-    if (normalizedHeader.contains('region')) return _normalizeRegion(result);
-    if (normalizedHeader.contains('city')) return _normalizeCity(result);
-    if (normalizedHeader.contains('gender')) return _normalizeGender(result);
-    if (normalizedHeader.contains('bool') || normalizedHeader.contains('flag') || normalizedHeader.contains('delivery') || normalizedHeader.contains('booking')) return _normalizeBoolean(result);
-    if (normalizedHeader.contains('rating') || normalizedHeader.contains('score')) return _normalizeRating(result);
+    if (normalizedHeader.contains('country')) {
+      return _normalizeCountry(result);
+    }
+    if (normalizedHeader.contains('region')) {
+      return _normalizeRegion(result);
+    }
+    if (normalizedHeader.contains('city')) {
+      return _normalizeCity(result);
+    }
+    if (normalizedHeader.contains('gender')) {
+      return _normalizeGender(result);
+    }
+    if (normalizedHeader.contains('bool') ||
+        normalizedHeader.contains('flag') ||
+        normalizedHeader.contains('delivery') ||
+        normalizedHeader.contains('booking')) {
+      return _normalizeBoolean(result);
+    }
+    if (normalizedHeader.contains('rating') ||
+        normalizedHeader.contains('score')) {
+      return _normalizeRating(result);
+    }
     return result;
   }
 
-  Object? _trimWhitespace(Object? value) => value is String ? value.trim() : value;
+  Object? _trimWhitespace(Object? value) =>
+      value is String ? value.trim() : value;
 
-  Object? _standardizeCase(Object? value) => value is String ? value.trim().toLowerCase() : value;
+  Object? _standardizeCase(Object? value) =>
+      value is String ? value.trim().toLowerCase() : value;
 
-  Object? _removeCurrencySymbols(Object? value) => value is String ? value.replaceAll(RegExp(r'[₹$€£,]'), '').trim() : value;
+  Object? _removeCurrencySymbols(Object? value) =>
+      value is String ? value.replaceAll(RegExp(r'[₹$€£,]'), '').trim() : value;
 
   Object? _normalizeCountry(Object? value) {
     if (value == null) return null;
@@ -722,8 +1294,14 @@ class WorkbookExecutionEngine {
   Object? _normalizeBoolean(Object? value) {
     if (value == null) return null;
     final normalized = value.toString().trim().toLowerCase();
-    if (['yes', 'y', 'true', '1', 't', 'available', 'on'].contains(normalized)) return true;
-    if (['no', 'n', 'false', '0', 'f', 'not', 'unavailable', 'off'].contains(normalized)) return false;
+    if (['yes', 'y', 'true', '1', 't', 'available', 'on']
+        .contains(normalized)) {
+      return true;
+    }
+    if (['no', 'n', 'false', '0', 'f', 'not', 'unavailable', 'off']
+        .contains(normalized)) {
+      return false;
+    }
     return value;
   }
 
@@ -759,12 +1337,14 @@ class WorkbookExecutionEngine {
         .join(' ');
   }
 
-  Object? _resolveValue(_MutableSheet sheet, String targetRef, Map<String, Object?> row, ResolvedTargets resolution) {
+  Object? _resolveValue(_MutableSheet sheet, String targetRef,
+      Map<String, Object?> row, ResolvedTargets resolution) {
     final columnId = _resolveColumnRef(sheet, targetRef, resolution);
     return row[columnId];
   }
 
-  String _resolveColumnRef(_MutableSheet sheet, String targetRef, ResolvedTargets resolution) {
+  String _resolveColumnRef(
+      _MutableSheet sheet, String targetRef, ResolvedTargets resolution) {
     if (resolution.columnByTarget.containsKey(targetRef)) {
       return resolution.columnByTarget[targetRef]!;
     }
@@ -827,7 +1407,8 @@ class WorkbookExecutionEngine {
   }) {
     switch (scope) {
       case 'all':
-        return List<int>.generate(sheet.columnIds.length, (index) => index, growable: false);
+        return List<int>.generate(sheet.columnIds.length, (index) => index,
+            growable: false);
       case 'selected':
         return resolution.columnByTarget.values
             .map((columnId) => sheet.columnIds.indexOf(columnId))
@@ -835,11 +1416,13 @@ class WorkbookExecutionEngine {
             .toSet()
             .toList(growable: false);
       case 'matched':
-        return List<int>.generate(sheet.columnIds.length, (index) => index, growable: false)
+        return List<int>.generate(sheet.columnIds.length, (index) => index,
+                growable: false)
             .where((index) => _isMatchedColumn(sheet, index, mode))
             .toList(growable: false);
       default:
-        return List<int>.generate(sheet.columnIds.length, (index) => index, growable: false);
+        return List<int>.generate(sheet.columnIds.length, (index) => index,
+            growable: false);
     }
   }
 
@@ -865,10 +1448,16 @@ class WorkbookExecutionEngine {
       header.contains('time'),
     ];
     if (mode == 'currency') {
-      return header.contains('currency') || header.contains('price') || header.contains('amount') || header.contains('cost');
+      return header.contains('currency') ||
+          header.contains('price') ||
+          header.contains('amount') ||
+          header.contains('cost');
     }
     if (mode == 'normalize') {
-      return candidates.any((item) => item) || profile.booleanness > 0.5 || profile.numericness > 0.5 || profile.dateness > 0.5;
+      return candidates.any((item) => item) ||
+          profile.booleanness > 0.5 ||
+          profile.numericness > 0.5 ||
+          profile.dateness > 0.5;
     }
     return candidates.any((item) => item) || profile.textness > 0.5;
   }
@@ -876,10 +1465,13 @@ class WorkbookExecutionEngine {
   String _headerFor(_MutableSheet sheet, String columnId) {
     final index = sheet.columnIds.indexOf(columnId);
     if (index < 0) return columnId;
-    return sheet.originalHeaders[index].isEmpty ? columnId : sheet.originalHeaders[index];
+    return sheet.originalHeaders[index].isEmpty
+        ? columnId
+        : sheet.originalHeaders[index];
   }
 
-  String _aggregateHeader(_MutableSheet sheet, String valueId, Aggregation aggregation) {
+  String _aggregateHeader(
+      _MutableSheet sheet, String valueId, Aggregation aggregation) {
     final header = _headerFor(sheet, valueId);
     final label = switch (aggregation) {
       Aggregation.sum => 'Sum',
@@ -930,7 +1522,9 @@ class WorkbookExecutionEngine {
   }
 
   double? _tryNumeric(Object? value) {
-    if (value is num) return value.toDouble();
+    if (value is num) {
+      return value.toDouble();
+    }
     if (value is String) {
       final cleaned = value.replaceAll(RegExp(r'[^0-9.\-]'), '');
       return double.tryParse(cleaned);
@@ -975,7 +1569,8 @@ class WorkbookExecutionEngine {
       case Aggregation.count:
         return values.length.toDouble();
       case Aggregation.average:
-        return values.fold<double>(0, (sum, value) => sum + value) / values.length;
+        return values.fold<double>(0, (sum, value) => sum + value) /
+            values.length;
       case Aggregation.min:
         return values.reduce(min);
       case Aggregation.max:
@@ -986,6 +1581,133 @@ class WorkbookExecutionEngine {
       case Aggregation.distinctCount:
         return values.toSet().length.toDouble();
     }
+  }
+
+  String _groupMetricHeader(
+      _MutableSheet sheet, String columnId, Aggregation aggregation) {
+    final header = _headerFor(sheet, columnId);
+    final label = switch (aggregation) {
+      Aggregation.sum => 'Sum',
+      Aggregation.count => 'Count',
+      Aggregation.average => 'Average',
+      Aggregation.min => 'Min',
+      Aggregation.max => 'Max',
+      Aggregation.median => 'Median',
+      Aggregation.distinctCount => 'Distinct Count',
+    };
+    return '$label $header';
+  }
+
+  String _summaryStatisticLabel(SummaryStatisticKind statistic) {
+    return switch (statistic) {
+      SummaryStatisticKind.count => 'Count',
+      SummaryStatisticKind.missingCount => 'Missing Count',
+      SummaryStatisticKind.mean => 'Mean',
+      SummaryStatisticKind.median => 'Median',
+      SummaryStatisticKind.stdDev => 'Std Dev',
+      SummaryStatisticKind.min => 'Min',
+      SummaryStatisticKind.max => 'Max',
+      SummaryStatisticKind.variance => 'Variance',
+      SummaryStatisticKind.q1 => 'Q1',
+      SummaryStatisticKind.q3 => 'Q3',
+      SummaryStatisticKind.iqr => 'IQR',
+    };
+  }
+
+  Object? _aggregateBucketValues(
+      List<Object?> values, Aggregation aggregation) {
+    switch (aggregation) {
+      case Aggregation.count:
+        return values.where((value) => !isBlankValue(value)).length;
+      case Aggregation.distinctCount:
+        return values
+            .where((value) => !isBlankValue(value))
+            .map(
+                (value) => _duplicateSignatureValue(value, caseSensitive: true))
+            .toSet()
+            .length;
+      case Aggregation.sum:
+      case Aggregation.average:
+      case Aggregation.min:
+      case Aggregation.max:
+      case Aggregation.median:
+        final numericValues =
+            values.map(_tryNumeric).whereType<double>().toList(growable: false);
+        if (numericValues.isEmpty) {
+          return null;
+        }
+        if (aggregation == Aggregation.sum) {
+          return numericValues.fold<double>(0, (sum, value) => sum + value);
+        }
+        if (aggregation == Aggregation.average) {
+          return numericValues.fold<double>(0, (sum, value) => sum + value) /
+              numericValues.length;
+        }
+        if (aggregation == Aggregation.min) {
+          return numericValues.reduce(min);
+        }
+        if (aggregation == Aggregation.max) {
+          return numericValues.reduce(max);
+        }
+        return _median(numericValues);
+    }
+  }
+
+  String _duplicateSignatureValue(Object? value, {bool caseSensitive = false}) {
+    if (value == null) {
+      return '';
+    }
+    if (value is String) {
+      final normalized = value.trim();
+      return caseSensitive ? normalized : normalized.toLowerCase();
+    }
+    return value.toString();
+  }
+
+  double? _median(List<double> values) {
+    if (values.isEmpty) {
+      return null;
+    }
+    final sorted = List<double>.from(values)..sort();
+    final middle = sorted.length ~/ 2;
+    if (sorted.length.isOdd) {
+      return sorted[middle];
+    }
+    return (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  double? _quantile(List<double> values, double quantile) {
+    if (values.isEmpty) {
+      return null;
+    }
+    final sorted = List<double>.from(values)..sort();
+    if (sorted.length == 1 || quantile == 0.5) {
+      return sorted.first;
+    }
+    final middle = sorted.length ~/ 2;
+    final lowerHalf = sorted.sublist(0, middle);
+    final upperHalf = sorted.length.isOdd
+        ? sorted.sublist(middle + 1)
+        : sorted.sublist(middle);
+    if (quantile < 0.5) {
+      return _median(lowerHalf.isEmpty ? sorted : lowerHalf);
+    }
+    return _median(upperHalf.isEmpty ? sorted : upperHalf);
+  }
+
+  double _populationVariance(List<double> values) {
+    if (values.isEmpty) {
+      return 0;
+    }
+    final mean =
+        values.fold<double>(0, (sum, value) => sum + value) / values.length;
+    final sumSquares = values.fold<double>(
+        0, (sum, value) => sum + pow(value - mean, 2).toDouble());
+    return sumSquares / values.length;
+  }
+
+  double _populationStdDev(List<double> values) {
+    return sqrt(_populationVariance(values));
   }
 }
 
@@ -1054,8 +1776,11 @@ class _MutableSheet {
       id: sheet.id,
       name: sheet.name,
       columnIds: List<String>.from(sheet.columnIds, growable: false),
-      originalHeaders: List<String>.from(sheet.originalHeaders, growable: false),
-      rows: sheet.rows.map((row) => List<Object?>.from(row, growable: true)).toList(growable: true),
+      originalHeaders:
+          List<String>.from(sheet.originalHeaders, growable: false),
+      rows: sheet.rows
+          .map((row) => List<Object?>.from(row, growable: true))
+          .toList(growable: true),
       profiles: sheet.profiles
           .map(
             (profile) => ColumnProfile(
@@ -1066,7 +1791,8 @@ class _MutableSheet {
               numericness: profile.numericness,
               booleanness: profile.booleanness,
               dateness: profile.dateness,
-              headerTokens: List<String>.from(profile.headerTokens, growable: false),
+              headerTokens:
+                  List<String>.from(profile.headerTokens, growable: false),
             ),
           )
           .toList(growable: false),
@@ -1080,7 +1806,9 @@ class _MutableSheet {
       name: name ?? this.name,
       columnIds: List<String>.from(columnIds, growable: false),
       originalHeaders: List<String>.from(originalHeaders, growable: false),
-      rows: rows.map((row) => List<Object?>.from(row, growable: false)).toList(growable: false),
+      rows: rows
+          .map((row) => List<Object?>.from(row, growable: false))
+          .toList(growable: false),
       profiles: profiles
           .map(
             (profile) => ColumnProfile(
@@ -1091,7 +1819,8 @@ class _MutableSheet {
               numericness: profile.numericness,
               booleanness: profile.booleanness,
               dateness: profile.dateness,
-              headerTokens: List<String>.from(profile.headerTokens, growable: false),
+              headerTokens:
+                  List<String>.from(profile.headerTokens, growable: false),
             ),
           )
           .toList(growable: false),
@@ -1108,13 +1837,18 @@ class _MutableSheet {
   }
 
   List<Object?> rowFromMap(Map<String, Object?> rowMap) {
-    return columnIds.map((columnId) => rowMap[columnId]).toList(growable: false);
+    return columnIds
+        .map((columnId) => rowMap[columnId])
+        .toList(growable: false);
   }
 
   void refreshProfiles() {
     profiles = List<ColumnProfile>.generate(columnIds.length, (index) {
-      final values = rows.map((row) => index < row.length ? row[index] : null).toList(growable: false);
-      final nonNull = values.where((value) => !isBlankValue(value)).toList(growable: false);
+      final values = rows
+          .map((row) => index < row.length ? row[index] : null)
+          .toList(growable: false);
+      final nonNull =
+          values.where((value) => !isBlankValue(value)).toList(growable: false);
       final numericCount = nonNull.whereType<num>().length;
       final textCount = nonNull.whereType<String>().length;
       final boolCount = nonNull.whereType<bool>().length;
@@ -1168,5 +1902,51 @@ class _ColumnMutationResult {
   const _ColumnMutationResult({
     required this.messages,
     required this.warnings,
+  });
+}
+
+class _ResolvedMetric {
+  final String key;
+  final String columnId;
+  final Aggregation aggregation;
+  final String? alias;
+
+  const _ResolvedMetric({
+    required this.key,
+    required this.columnId,
+    required this.aggregation,
+    required this.alias,
+  });
+}
+
+class _GroupedBucket {
+  final List<Object?> groupValues;
+  final List<int> rowIndices;
+  final Map<String, List<Object?>> metricValues;
+
+  const _GroupedBucket({
+    required this.groupValues,
+    required this.rowIndices,
+    required this.metricValues,
+  });
+}
+
+class _DuplicateBucket {
+  final List<Object?> keyValues;
+  final List<int> rowIndices;
+
+  const _DuplicateBucket({
+    required this.keyValues,
+    required this.rowIndices,
+  });
+}
+
+class _NumericObservation {
+  final int rowIndex;
+  final double value;
+
+  const _NumericObservation({
+    required this.rowIndex,
+    required this.value,
   });
 }

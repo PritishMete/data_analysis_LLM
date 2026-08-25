@@ -24,10 +24,29 @@ Burger King,false,false,3.6,Delhi,UK,m,1,300
 Other Bistro,true,false,4.5,Mumbai,India,man,available,400
 ''';
   final bytes = Uint8List.fromList(utf8.encode(csv));
-  return const WorkbookImporter().importBytes(bytes, fileName: 'restaurants.csv').session;
+  return const WorkbookImporter()
+      .importBytes(bytes, fileName: 'restaurants.csv')
+      .session;
 }
 
-Future<WorkbookExecutionResult> _executePlan(String requestText, {ExchangeRateService? exchangeRateService}) async {
+WorkbookSession _buildAnalysisSession() {
+  const csv = '''
+Restaurant Name,Online Delivery,Table Booking,Rating,City,Country,Gender,Bool,Currency,Notes
+Pizza Hut,true,true,4.2,Kolkata,USA,M,yes,100,
+Domino's Pizza,true,true,3.8,Kolkata,India,F,no,200,
+Burger King,false,false,3.6,Delhi,UK,m,1,300,
+Other Bistro,true,false,4.5,Mumbai,India,man,available,400,note
+Pizza Hut,true,true,4.2,Kolkata,USA,M,yes,100,
+Snack Bar,true,false,4.0,Pune,India,F,no,1000,
+''';
+  final bytes = Uint8List.fromList(utf8.encode(csv));
+  return const WorkbookImporter()
+      .importBytes(bytes, fileName: 'analysis.csv')
+      .session;
+}
+
+Future<WorkbookExecutionResult> _executePlan(String requestText,
+    {ExchangeRateService? exchangeRateService}) async {
   final session = _buildSession();
   final fallback = const DeterministicFallbackParser();
   final requestId = 'req-test';
@@ -38,7 +57,8 @@ Future<WorkbookExecutionResult> _executePlan(String requestText, {ExchangeRateSe
     session: session,
     plan: plan!,
     requestText: requestText,
-    exchangeRateService: exchangeRateService ?? const ManualExchangeRateService(snapshot: null),
+    exchangeRateService:
+        exchangeRateService ?? const ManualExchangeRateService(snapshot: null),
   );
 }
 
@@ -58,7 +78,8 @@ void main() {
       expect((row[3] as num).toDouble(), greaterThan(3.5));
     });
 
-    test('preserves entity, delivery, booking and city for Domino\'s query', () async {
+    test('preserves entity, delivery, booking and city for Domino\'s query',
+        () async {
       final result = await _executePlan(
         'Show Domino\'s Pizza restaurants with delivery and booking in Kolkata.',
       );
@@ -73,7 +94,8 @@ void main() {
     });
 
     test('filters by rating below threshold', () async {
-      final result = await _executePlan('Show restaurants having rating below 3.9.');
+      final result =
+          await _executePlan('Show restaurants having rating below 3.9.');
 
       expect(result.success, isTrue, reason: result.errors.join(' | '));
       expect(result.session.activeSheet.rows, hasLength(2));
@@ -108,7 +130,8 @@ void main() {
       final plan = InsightFlowPlan(
         schemaVersion: '1.0',
         requestId: 'req-currency',
-        intent: const PlanIntent(taskClass: TaskClass.transform, summary: 'Convert currency'),
+        intent: const PlanIntent(
+            taskClass: TaskClass.transform, summary: 'Convert currency'),
         semanticTargets: const [
           SemanticTarget(
             targetId: 'currency',
@@ -129,7 +152,10 @@ void main() {
             roundingMode: 'round',
           ),
         ],
-        output: const OutputSpec(sheetNameSeed: 'currency_inr', openAutomatically: true, artifactKind: ArtifactKind.worksheet),
+        output: const OutputSpec(
+            sheetNameSeed: 'currency_inr',
+            openAutomatically: true,
+            artifactKind: ArtifactKind.worksheet),
         needsUserConfirmation: false,
         clarifyingQuestions: const [],
         warnings: const [],
@@ -154,7 +180,8 @@ void main() {
 
       expect(result.success, isTrue, reason: result.errors.join(' | '));
       expect(result.session.activeSheet.originalHeaders[8], 'Currency (₹)');
-      expect((result.session.activeSheet.rows.first[8] as num).toDouble(), closeTo(8300, 0.001));
+      expect((result.session.activeSheet.rows.first[8] as num).toDouble(),
+          closeTo(8300, 0.001));
     });
 
     test('converts symbol-prefixed currency values locally', () async {
@@ -194,7 +221,8 @@ void main() {
       final plan = InsightFlowPlan(
         schemaVersion: '1.0',
         requestId: 'req-symbols',
-        intent: const PlanIntent(taskClass: TaskClass.transform, summary: 'Convert currency'),
+        intent: const PlanIntent(
+            taskClass: TaskClass.transform, summary: 'Convert currency'),
         semanticTargets: const [
           SemanticTarget(
             targetId: 'currency',
@@ -215,7 +243,10 @@ void main() {
             roundingMode: 'round',
           ),
         ],
-        output: const OutputSpec(sheetNameSeed: 'currency_inr', openAutomatically: true, artifactKind: ArtifactKind.worksheet),
+        output: const OutputSpec(
+            sheetNameSeed: 'currency_inr',
+            openAutomatically: true,
+            artifactKind: ArtifactKind.worksheet),
         needsUserConfirmation: false,
         clarifyingQuestions: const [],
         warnings: const [],
@@ -238,18 +269,322 @@ void main() {
 
       expect(result.success, isTrue, reason: result.errors.join(' | '));
       expect(result.session.activeSheet.originalHeaders.single, 'Currency (₹)');
-      expect((result.session.activeSheet.rows[0][0] as num).toDouble(), closeTo(8300, 0.001));
-      expect((result.session.activeSheet.rows[1][0] as num).toDouble(), closeTo(16641.5, 0.001));
-      expect((result.session.activeSheet.rows[2][0] as num).toDouble(), closeTo(24900, 0.001));
+      expect((result.session.activeSheet.rows[0][0] as num).toDouble(),
+          closeTo(8300, 0.001));
+      expect((result.session.activeSheet.rows[1][0] as num).toDouble(),
+          closeTo(16641.5, 0.001));
+      expect((result.session.activeSheet.rows[2][0] as num).toDouble(),
+          closeTo(24900, 0.001));
     });
 
     test('creates a pivot table showing average rating by city', () async {
-      final result = await _executePlan('Create a pivot table showing average rating by city.');
+      final result = await _executePlan(
+          'Create a pivot table showing average rating by city.');
 
       expect(result.success, isTrue);
       expect(result.session.activeSheet.originalHeaders.first, 'City');
       expect(result.session.activeSheet.originalHeaders.last, 'Average Rating');
       expect(result.session.activeSheet.rows, isNotEmpty);
+    });
+
+    test('creates a grouped aggregation sheet locally', () async {
+      final session = _buildAnalysisSession();
+      final plan = InsightFlowPlan(
+        schemaVersion: '1.0',
+        requestId: 'req-grouped',
+        intent: const PlanIntent(
+            taskClass: TaskClass.analyze, summary: 'grouped aggregation'),
+        semanticTargets: const [
+          SemanticTarget(
+              targetId: 'city',
+              kind: 'category',
+              hint: 'city',
+              expectedType: 'string',
+              cardinality: 'single',
+              required: true,
+              nullable: false),
+          SemanticTarget(
+              targetId: 'rating',
+              kind: 'metric',
+              hint: 'rating',
+              expectedType: 'number',
+              cardinality: 'single',
+              required: true,
+              nullable: false),
+        ],
+        operations: const [
+          GroupedAggregationOperation(
+            groupBy: ['city'],
+            metrics: [
+              GroupAggregationMetric(
+                  targetRef: 'rating', aggregation: Aggregation.average),
+            ],
+            includeTotals: false,
+          ),
+        ],
+        output: const OutputSpec(
+            sheetNameSeed: 'avg_by_city',
+            openAutomatically: true,
+            artifactKind: ArtifactKind.worksheet),
+        needsUserConfirmation: false,
+        clarifyingQuestions: const [],
+        warnings: const [],
+        confidence: 1,
+      );
+
+      final result = await const WorkbookExecutionEngine().execute(
+        session: session,
+        plan: plan,
+        requestText: 'Show average rating by city.',
+        exchangeRateService: const ManualExchangeRateService(snapshot: null),
+      );
+
+      expect(result.success, isTrue, reason: result.errors.join(' | '));
+      expect(result.session.activeSheet.isOriginal, isFalse);
+      expect(result.session.activeSheet.originalHeaders,
+          ['City', 'Average Rating']);
+      expect(result.session.activeSheet.rows, hasLength(4));
+      expect(result.session.activeSheet.rows[0][0], 'Kolkata');
+      expect((result.session.activeSheet.rows[0][1] as num).toDouble(),
+          closeTo(4.0666666667, 1e-9));
+      expect(result.messages.single, contains('grouped aggregation'));
+    });
+
+    test('creates a summary statistics sheet with exact values', () async {
+      final session = _buildAnalysisSession();
+      final plan = InsightFlowPlan(
+        schemaVersion: '1.0',
+        requestId: 'req-summary',
+        intent: const PlanIntent(
+            taskClass: TaskClass.analyze, summary: 'summary statistics'),
+        semanticTargets: const [
+          SemanticTarget(
+              targetId: 'rating',
+              kind: 'metric',
+              hint: 'rating',
+              expectedType: 'number',
+              cardinality: 'single',
+              required: true,
+              nullable: false),
+        ],
+        operations: const [
+          SummaryStatisticsOperation(
+            columns: ['rating'],
+            statistics: [
+              SummaryStatisticKind.count,
+              SummaryStatisticKind.missingCount,
+              SummaryStatisticKind.mean,
+              SummaryStatisticKind.median,
+              SummaryStatisticKind.stdDev,
+              SummaryStatisticKind.min,
+              SummaryStatisticKind.max,
+              SummaryStatisticKind.variance,
+              SummaryStatisticKind.q1,
+              SummaryStatisticKind.q3,
+              SummaryStatisticKind.iqr,
+            ],
+          ),
+        ],
+        output: const OutputSpec(
+            sheetNameSeed: 'summary',
+            openAutomatically: true,
+            artifactKind: ArtifactKind.worksheet),
+        needsUserConfirmation: false,
+        clarifyingQuestions: const [],
+        warnings: const [],
+        confidence: 1,
+      );
+
+      final result = await const WorkbookExecutionEngine().execute(
+        session: session,
+        plan: plan,
+        requestText: 'Show summary statistics for rating.',
+        exchangeRateService: const ManualExchangeRateService(snapshot: null),
+      );
+
+      expect(result.success, isTrue, reason: result.errors.join(' | '));
+      expect(result.session.activeSheet.originalHeaders,
+          ['Column', 'Statistic', 'Value']);
+      expect(result.session.activeSheet.rows, hasLength(11));
+      expect(result.session.activeSheet.rows[0], ['Rating', 'Count', 6]);
+      expect(
+          result.session.activeSheet.rows[1], ['Rating', 'Missing Count', 0]);
+      expect((result.session.activeSheet.rows[2][2] as num).toDouble(),
+          closeTo(4.05, 1e-9));
+      expect((result.session.activeSheet.rows[3][2] as num).toDouble(),
+          closeTo(4.1, 1e-9));
+      expect((result.session.activeSheet.rows[4][2] as num).toDouble(),
+          closeTo(0.2929798770, 1e-5));
+      expect((result.session.activeSheet.rows[5][2] as num).toDouble(),
+          closeTo(3.6, 1e-9));
+      expect((result.session.activeSheet.rows[6][2] as num).toDouble(),
+          closeTo(4.5, 1e-9));
+      expect((result.session.activeSheet.rows[7][2] as num).toDouble(),
+          closeTo(0.0858333333, 1e-9));
+      expect((result.session.activeSheet.rows[8][2] as num).toDouble(),
+          closeTo(3.8, 1e-9));
+      expect((result.session.activeSheet.rows[9][2] as num).toDouble(),
+          closeTo(4.2, 1e-9));
+      expect((result.session.activeSheet.rows[10][2] as num).toDouble(),
+          closeTo(0.4, 1e-9));
+      expect(result.messages.single, contains('summary statistics'));
+    });
+
+    test('reports missing values, duplicates and outliers locally', () async {
+      final session = _buildAnalysisSession();
+      final missingPlan = InsightFlowPlan(
+        schemaVersion: '1.0',
+        requestId: 'req-missing',
+        intent:
+            const PlanIntent(taskClass: TaskClass.analyze, summary: 'missing'),
+        semanticTargets: const [
+          SemanticTarget(
+              targetId: 'notes',
+              kind: 'text',
+              hint: 'notes',
+              expectedType: 'any',
+              cardinality: 'single',
+              required: true,
+              nullable: true),
+        ],
+        operations: const [
+          MissingValueAnalysisOperation(
+              columns: ['notes'], includePercentages: true),
+        ],
+        output: const OutputSpec(
+            sheetNameSeed: 'missing',
+            openAutomatically: true,
+            artifactKind: ArtifactKind.worksheet),
+        needsUserConfirmation: false,
+        clarifyingQuestions: const [],
+        warnings: const [],
+        confidence: 1,
+      );
+
+      final duplicatePlan = InsightFlowPlan(
+        schemaVersion: '1.0',
+        requestId: 'req-duplicate',
+        intent: const PlanIntent(
+            taskClass: TaskClass.analyze, summary: 'duplicate'),
+        semanticTargets: const [
+          SemanticTarget(
+              targetId: 'restaurant_name',
+              kind: 'text',
+              hint: 'restaurant name',
+              expectedType: 'any',
+              cardinality: 'single',
+              required: true,
+              nullable: false),
+        ],
+        operations: const [
+          DuplicateDetectionOperation(
+              keys: ['restaurant_name'],
+              includeCounts: true,
+              caseSensitive: false),
+        ],
+        output: const OutputSpec(
+            sheetNameSeed: 'duplicates',
+            openAutomatically: true,
+            artifactKind: ArtifactKind.worksheet),
+        needsUserConfirmation: false,
+        clarifyingQuestions: const [],
+        warnings: const [],
+        confidence: 1,
+      );
+
+      final outlierPlan = InsightFlowPlan(
+        schemaVersion: '1.0',
+        requestId: 'req-outlier',
+        intent:
+            const PlanIntent(taskClass: TaskClass.analyze, summary: 'outlier'),
+        semanticTargets: const [
+          SemanticTarget(
+              targetId: 'currency',
+              kind: 'metric',
+              hint: 'currency',
+              expectedType: 'number',
+              cardinality: 'single',
+              required: true,
+              nullable: false),
+        ],
+        operations: const [
+          OutlierDetectionOperation(
+              columns: ['currency'], method: OutlierMethod.iqr, threshold: 1.5),
+        ],
+        output: const OutputSpec(
+            sheetNameSeed: 'outliers',
+            openAutomatically: true,
+            artifactKind: ArtifactKind.worksheet),
+        needsUserConfirmation: false,
+        clarifyingQuestions: const [],
+        warnings: const [],
+        confidence: 1,
+      );
+
+      final engine = const WorkbookExecutionEngine();
+
+      final missingResult = await engine.execute(
+        session: session,
+        plan: missingPlan,
+        requestText: 'Show missing values for notes.',
+        exchangeRateService: const ManualExchangeRateService(snapshot: null),
+      );
+      expect(missingResult.success, isTrue,
+          reason: missingResult.errors.join(' | '));
+      expect(missingResult.session.activeSheet.originalHeaders, [
+        'Column',
+        'Missing Count',
+        'Missing Percent',
+        'Present Count',
+        'Total Rows'
+      ]);
+      expect(missingResult.session.activeSheet.rows.single[0], 'Notes');
+      expect(missingResult.session.activeSheet.rows.single[1], 5);
+      expect(
+          (missingResult.session.activeSheet.rows.single[2] as num).toDouble(),
+          closeTo(5 / 6, 1e-12));
+      expect(missingResult.messages.single, contains('missing value analysis'));
+
+      final duplicateResult = await engine.execute(
+        session: session,
+        plan: duplicatePlan,
+        requestText: 'Find duplicate restaurants by name.',
+        exchangeRateService: const ManualExchangeRateService(snapshot: null),
+      );
+      expect(duplicateResult.success, isTrue,
+          reason: duplicateResult.errors.join(' | '));
+      expect(duplicateResult.session.activeSheet.originalHeaders,
+          ['Restaurant Name', 'Duplicate Count', 'Row Indices']);
+      expect(duplicateResult.session.activeSheet.rows, hasLength(1));
+      expect(duplicateResult.session.activeSheet.rows.single[0], 'Pizza Hut');
+      expect(duplicateResult.session.activeSheet.rows.single[1], 2);
+      expect(duplicateResult.session.activeSheet.rows.single[2], '1, 5');
+      expect(duplicateResult.messages.single, contains('duplicate detection'));
+
+      final outlierResult = await engine.execute(
+        session: session,
+        plan: outlierPlan,
+        requestText: 'Show outliers in amount.',
+        exchangeRateService: const ManualExchangeRateService(snapshot: null),
+      );
+      expect(outlierResult.success, isTrue,
+          reason: outlierResult.errors.join(' | '));
+      expect(outlierResult.session.activeSheet.originalHeaders, [
+        'Column',
+        'Row Index',
+        'Value',
+        'Score',
+        'Lower Bound',
+        'Upper Bound',
+        'Method'
+      ]);
+      expect(outlierResult.session.activeSheet.rows, hasLength(1));
+      expect(outlierResult.session.activeSheet.rows.single[0], 'Currency');
+      expect(outlierResult.session.activeSheet.rows.single[1], 6);
+      expect(
+          (outlierResult.session.activeSheet.rows.single[2] as num).toDouble(),
+          closeTo(1000, 1e-9));
+      expect(outlierResult.messages.single, contains('outlier detection'));
     });
   });
 
@@ -260,46 +595,47 @@ void main() {
         capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({
-          'ok': true,
-          'request_id': 'req-123',
-          'plan': {
-            'schema_version': '1.0',
+            'ok': true,
             'request_id': 'req-123',
-            'intent': {'task_class': 'filter', 'summary': 'filter'},
-            'semantic_targets': [],
-            'operations': [
-              {
-                'type': 'filter_rows',
-                'where': {
-                  'logic': 'AND',
-                  'conditions': [
-                    {
-                      'target_ref': 'rating',
-                      'operator': 'gt',
-                      'value': 3.9,
-                      'value_type': 'number',
-                      'case_sensitive': false,
-                    }
-                  ],
-                },
-              }
-            ],
-            'output': {
-              'sheet_name_seed': 'rating',
-              'open_automatically': true,
-              'artifact_kind': 'worksheet',
+            'plan': {
+              'schema_version': '1.0',
+              'request_id': 'req-123',
+              'intent': {'task_class': 'filter', 'summary': 'filter'},
+              'semantic_targets': [],
+              'operations': [
+                {
+                  'type': 'filter_rows',
+                  'where': {
+                    'logic': 'AND',
+                    'conditions': [
+                      {
+                        'target_ref': 'rating',
+                        'operator': 'gt',
+                        'value': 3.9,
+                        'value_type': 'number',
+                        'case_sensitive': false,
+                      }
+                    ],
+                  },
+                }
+              ],
+              'output': {
+                'sheet_name_seed': 'rating',
+                'open_automatically': true,
+                'artifact_kind': 'worksheet',
+              },
+              'confidence': 1,
             },
-            'confidence': 1,
-          },
-          'model_id': 'test-model',
-          'repaired': false,
+            'model_id': 'test-model',
+            'repaired': false,
           }),
           200,
           headers: {'content-type': 'application/json'},
         );
       });
 
-      final api = PlanClient(endpoint: Uri.parse('https://example.com/v1/plan'), client: client);
+      final api = PlanClient(
+          endpoint: Uri.parse('https://example.com/v1/plan'), client: client);
       final response = await api.requestPlan(
         const PlanRequestPayload(
           requestId: 'req-privacy',
@@ -311,7 +647,8 @@ void main() {
 
       expect(response.ok, isTrue);
       expect(capturedBody, isNotNull);
-      expect(capturedBody!['request_text'], 'Show restaurants having rating below 3.9.');
+      expect(capturedBody!['request_text'],
+          'Show restaurants having rating below 3.9.');
       expect(capturedBody!['locale'], 'en-US');
       expect(capturedBody!['client_version'], 'web');
       expect(capturedBody!['request_text'], isNot(contains('Sheet1')));
@@ -343,9 +680,12 @@ void main() {
       expect(controller.hasCurrencyRateConfig, isTrue);
       expect(controller.operationHistory, hasLength(1));
       expect(controller.operationHistory.single.kind, 'currency_rate');
-      expect(controller.operationHistory.single.metadata['source_currency'], 'USD');
-      expect(controller.operationHistory.single.metadata['target_currency'], 'INR');
-      expect(controller.operationHistory.single.metadata['rate_source'], 'manual');
+      expect(controller.operationHistory.single.metadata['source_currency'],
+          'USD');
+      expect(controller.operationHistory.single.metadata['target_currency'],
+          'INR');
+      expect(
+          controller.operationHistory.single.metadata['rate_source'], 'manual');
     });
   });
 }
