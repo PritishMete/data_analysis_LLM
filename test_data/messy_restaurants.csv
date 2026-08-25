@@ -1,0 +1,11 @@
+Restaurant Name,Online Delivery,Table Booking,Rating,City,Country,Category,Price For Two,Currency,Opened On,Notes
+"Pizza Hut",YES,Yes,4.2,Kolkata,usa,Pizza,₹850.00,₹,2024-03-18," flagship branch "
+"Domino's Pizza",true,TRUE,3.8,Kolkata,India,Pizza,$22.50,USD,2023-11-02," late-night delivery "
+"Burger King",No,no,3.6,Delhi,UK,Burger,£18.00,GBP,2022-08-14," drive thru "
+"Taco Bell",Y,1,4.1,Mumbai,india,Fast Food,1,250.00 INR,2021-06-01," "
+"Pasta Corner",yes,false,4.4,Bengaluru,IN,Italian,₹1,150.50,INR,2024-01-10," family-friendly "
+"Curry House",n,0,3.4,Hyderabad,Bangladesh,Indian,BDT 650,BDT,2020-09-30," cash only "
+"Sushi World",TRUE,YES,4.7,Chennai,Singapore,Japanese,S$45.90,SGD,2023-04-22," premium "
+"BBQ Grill",false,Yes,3.9,Pune,Canada,Grill,C$58.00,CAD,2022-12-05," weekend buffet "
+"Falafel Point",yes,yes,4.0,Kolkata,AED,UAE Cuisine,د.إ 39.00,AED,2024-05-07," vegetarian "
+"Mystery Diner",,No,,Jaipur,,Fusion,₹999,INR,," missing data "
