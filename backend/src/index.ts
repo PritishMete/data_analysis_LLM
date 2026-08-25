@@ -2,6 +2,7 @@ import Ajv2020 from "ajv/dist/2020";
 import type { ErrorObject } from "ajv";
 import addFormats from "ajv-formats";
 import planSchema from "../../shared/insightflow-plan.schema.json";
+import { DATA_ANALYST_SYSTEM_PROMPT } from "./prompts/data-analyst-system";
 
 type ModelBinding = {
   run(model: string, input: unknown): Promise<unknown>;
@@ -213,15 +214,7 @@ async function buildPlan(args: {
   const modelId = args.env.MODEL_ID || MODEL_ID_DEFAULT;
   const responseSchema = planSchema;
 
-  const systemPrompt = [
-    "You are InsightFlow's planning engine.",
-    "Return a single JSON object that matches the provided JSON Schema.",
-    "Do not write code, formulas, SQL, Python, JavaScript, or Dart.",
-    "Do not mention workbook contents, columns, filenames, sheets, values, or statistics.",
-    "Only produce operation plans.",
-    "Preserve all stated filter conditions.",
-    "If a required semantic target is ambiguous or unresolved, include it in the plan rather than dropping it."
-  ].join(" ");
+  const systemPrompt = DATA_ANALYST_SYSTEM_PROMPT;
 
   const userPrompt = [
     `request_id: ${args.requestId}`,

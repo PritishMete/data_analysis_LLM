@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import worker, { extractBalancedJson, normalizeAjvErrors } from "../src/index";
+import { DATA_ANALYST_SYSTEM_PROMPT } from "../src/prompts/data-analyst-system";
 
 describe("JSON extraction", () => {
   it("extracts balanced JSON from code fences", () => {
@@ -87,5 +88,14 @@ describe("plan route", () => {
     expect(userPrompt).toContain("locale: en-US");
     expect(userPrompt).toContain("client_version: web");
     expect(userPrompt).not.toContain("Sheet1");
+  });
+});
+
+describe("system prompt", () => {
+  it("covers analyst behavior and privacy constraints", () => {
+    expect(DATA_ANALYST_SYSTEM_PROMPT).toContain("privacy-preserving data analyst");
+    expect(DATA_ANALYST_SYSTEM_PROMPT).toContain("Never request, infer, or depend on workbook files");
+    expect(DATA_ANALYST_SYSTEM_PROMPT).toContain("Preserve every stated condition exactly");
+    expect(DATA_ANALYST_SYSTEM_PROMPT).toContain("browser performs all workbook manipulation locally");
   });
 });
