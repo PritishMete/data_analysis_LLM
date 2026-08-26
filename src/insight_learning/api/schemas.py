@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class SafeField(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    semantic_role: str
+    dtype: str
+
+
+class DatasetProfile(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    fields: list[SafeField] = Field(default_factory=list)
+
+
+class QueryFeaturesPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    predicate_count: int = 0
+    logical_structure: str = "SINGLE"
+    semantic_roles: list[str] = Field(default_factory=list)
+    operators: list[str] = Field(default_factory=list)
+
+
+class PlanRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    intent: str
+    query_features: QueryFeaturesPayload
+    dataset_profile: DatasetProfile
+
+
+class ExperienceRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: int = 1
+    intent: str
+    query_features: QueryFeaturesPayload
+    plan: dict[str, Any]
+    execution: dict[str, Any]
+    validation: dict[str, Any]
+    quality_score: float = 0.0
+
+
+class FeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    decision_id: str | None = None
+    feedback_score: int | None = None
+    correction_type: str | None = None
+    affected_intent: str | None = None
+    generalized_lesson: str | None = None
+    dataset_semantic_signature: str | None = None
+    requested_role: str | None = None
+    resolution_preference: str | None = None
+    preferred_semantic_candidate: str | None = None
+
+
+class PlanResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plan_source: str
+    confidence: float
+    tool_graph: list[str]
+    plan_template_id: str | None = None
+    critic_status: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperienceResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    stored: bool
+    learning_outcome: dict[str, Any]
+
+
+class FeedbackResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    accepted: bool
+    outcome: dict[str, Any] = Field(default_factory=dict)
+
+
+class SkillResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    skills: list[dict[str, Any]]
+
+
+class MetricsResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    metrics: dict[str, Any]
+

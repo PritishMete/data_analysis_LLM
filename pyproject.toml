@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insight-learning"
+version = "0.1.0"
+description = "Self-learning privacy-safe analytics intelligence service"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "pydantic>=2.7",
+  "pandas>=2.2",
+  "numpy>=1.26",
+  "sqlalchemy>=2.0",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["ref_data_analysis", ".git", "__pycache__", ".pytest_cache"]
+addopts = "-q"
+

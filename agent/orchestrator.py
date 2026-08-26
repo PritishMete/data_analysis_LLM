@@ -154,16 +154,17 @@ class AgenticLearningOrchestrator:
         context = planner_context or self.build_context(user_text, df=df, available_columns=available_columns)
         decision = self.planner.plan(user_text, df, available_columns, planner_context=context)
         ok, notes = self.critic.review(decision, context=context)
+        merged_notes = list(dict.fromkeys([*(decision.validation_notes or []), *notes]))
         if not ok:
             return LearningDecision(
                 route="unknown",
                 confidence=0.0,
                 message="A learned plan was considered unsafe or incomplete.",
-                validation_notes=notes,
+                validation_notes=merged_notes,
                 features=decision.features,
                 retrieval_trace=decision.retrieval_trace,
             )
-        decision.validation_notes = notes
+        decision.validation_notes = merged_notes
         return decision
 
     def track(

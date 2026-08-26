@@ -1,0 +1,20 @@
+ANALYTIC_INTENTS = [
+    "filter",
+    "sort",
+    "aggregate",
+    "rank",
+    "pivot",
+    "normalize",
+    "categorize",
+    "clean",
+    "summarize",
+    "detect_missing",
+    "detect_duplicates",
+    "detect_outliers",
+    "compare",
+    "trend",
+    "correlate",
+    "segment",
+    "analyze",
+]
+

@@ -79,11 +79,13 @@ def _choose_column(columns: list[str], text: str, *, role_hint: str | None = Non
 
 def _build_sql_filter_plan(text: str, columns: list[str], roles: dict[str, str]) -> dict[str, Any] | None:
     normalized = _normalize_text(text)
-    if not any(token in normalized for token in {"show", "find", "filter", "list", "display", "view", "return"}):
+    compact_text = _compact(text)
+    if not any(token in normalized for token in {"show", "find", "filter", "list", "display", "view", "return", "with", "having", "where"}):
         return None
 
     filters: list[dict[str, Any]] = []
     seen_filters: set[tuple[str, str, str]] = set()
+    raw_text = text or ""
 
     def add_filter(column: str, operator: str, value: Any) -> None:
         key = (column, operator, json.dumps(value, sort_keys=True, default=str))
@@ -97,7 +99,7 @@ def _build_sql_filter_plan(text: str, columns: list[str], roles: dict[str, str])
         if role in {"restaurant_entity", "customer_entity", "product_entity", "entity_name", "category"}:
             entity_column = column
             break
-    if entity_column:
+    if entity_column and (re.search(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", raw_text) or re.search(r"['\"]([^'\"]+)['\"]", raw_text or "")):
         cleaned = normalized
         for verb in ("show", "find", "filter", "display", "list", "view", "return", "rows", "records"):
             cleaned = re.sub(rf"\b{verb}\b", " ", cleaned)
@@ -120,6 +122,47 @@ def _build_sql_filter_plan(text: str, columns: list[str], roles: dict[str, str])
             column = column or _choose_column(columns, phrase, role_hint=column_hint, roles=roles)
             if column:
                 add_filter(column, "equals", value)
+
+    numeric_roles = {"rating_metric", "numeric_metric", "currency_metric", "count", "percentage"}
+    boolean_aliases = {"active", "verified", "approved", "express", "delivery", "booking", "available", "open", "closed", "enabled"}
+
+    for column in columns:
+        role = roles.get(column, "unknown")
+        column_norm = _normalize_text(column)
+        column_compact = _compact(column)
+        if role in {"boolean_capability", "delivery_capability", "table_booking_capability"} or any(alias in column_compact for alias in boolean_aliases):
+            if column_compact and column_compact in compact_text or any(token and token in normalized for token in column_norm.split()):
+                add_filter(column, "equals", True)
+                continue
+        if role in numeric_roles:
+            operator_map = {
+                "above": "greater_than",
+                "over": "greater_than",
+                "greater than": "greater_than",
+                "more than": "greater_than",
+                "at least": "greater_than_equal",
+                "below": "less_than",
+                "under": "less_than",
+                "less than": "less_than",
+                "equal to": "equals",
+                "equals": "equals",
+                "equal": "equals",
+            }
+            exact_pattern = rf"{re.escape(column_norm)}\s*(?:is\s*)?(?P<op>above|over|greater than|more than|at least|below|under|less than|equal to|equals?)\s+(?P<value>-?\d+(?:\.\d+)?)"
+            match = re.search(exact_pattern, normalized)
+            if match is None and role == "rating_metric":
+                rating_pattern = r"\brating\b.*?(?P<op>above|over|greater than|more than|at least|below|under|less than|equal to|equals?)\s+(?P<value>-?\d+(?:\.\d+)?)"
+                match = re.search(rating_pattern, normalized)
+                if match is None:
+                    rating_pattern = r"(?P<op>above|over|greater than|more than|at least|below|under|less than|equal to|equals?)\s+(?P<value>-?\d+(?:\.\d+)?)\s*\b(?:rating|score|stars?)\b"
+                    match = re.search(rating_pattern, normalized)
+            if match is None and column_compact in compact_text:
+                match = re.search(
+                    r"(?P<op>above|over|greater than|more than|at least|below|under|less than|equal to|equals?)\s+(?P<value>-?\d+(?:\.\d+)?)",
+                    normalized,
+                )
+            if match:
+                add_filter(column, operator_map.get(match.group("op").lower(), "greater_than"), match.group("value"))
 
     rating_source = (text or "").lower()
     rating_match = re.search(
@@ -154,9 +197,23 @@ def _build_sql_filter_plan(text: str, columns: list[str], roles: dict[str, str])
 
     explicit_conditions = [token for token in (" and ", " with ", " having ", " where ") if token in normalized]
     if len(filters) >= 2 or explicit_conditions:
-        return {"group_by": [], "metrics": [], "filters": filters, "limit": None, "order_by": []}
+        return {
+            "group_by": [],
+            "metrics": [],
+            "filters": filters,
+            "limit": None,
+            "order_by": [],
+            "tool_sequence": ["sql.filter"],
+        }
 
-    return {"group_by": [], "metrics": [], "filters": filters, "limit": None, "order_by": []} if filters else None
+    return {
+        "group_by": [],
+        "metrics": [],
+        "filters": filters,
+        "limit": None,
+        "order_by": [],
+        "tool_sequence": ["sql.filter"],
+    } if filters else None
 
 
 def _build_operation_plan(text: str, columns: list[str]) -> dict[str, Any] | None:
@@ -186,6 +243,52 @@ def _build_operation_plan(text: str, columns: list[str]) -> dict[str, Any] | Non
             "categories": [],
             "unmatchedLabel": "Other",
         },
+    }
+
+
+def _build_sql_aggregate_plan(text: str, columns: list[str], roles: dict[str, str]) -> dict[str, Any] | None:
+    normalized = _normalize_text(text)
+    if not any(token in normalized for token in {"top", "bottom", "rank", "group by", "average", "avg", "sum", "count", "highest", "lowest"}):
+        return None
+
+    numeric_roles = {"rating_metric", "numeric_metric", "currency_metric", "count", "percentage"}
+    dimension_roles = {"category", "status", "geographic_area", "entity_name", "restaurant_entity", "customer_entity", "product_entity", "supplier_entity", "employee_entity"}
+
+    dimension_column = None
+    metric_column = None
+
+    for column in columns:
+        role = roles.get(column, "unknown")
+        if dimension_column is None and role in dimension_roles:
+            dimension_column = column
+        if metric_column is None and role in numeric_roles:
+            metric_column = column
+
+    if dimension_column is None:
+        dimension_column = next((column for column in columns if roles.get(column, "unknown") not in numeric_roles and roles.get(column, "unknown") != "boolean_capability"), None)
+    if metric_column is None:
+        metric_column = next((column for column in columns if roles.get(column, "unknown") in numeric_roles), None)
+
+    if dimension_column is None or metric_column is None:
+        return None
+
+    agg_function = "avg" if any(token in normalized for token in {"average", "avg", "mean"}) else "sum"
+    if any(token in normalized for token in {"count", "how many", "number of"}):
+        agg_function = "count"
+    if any(token in normalized for token in {"top", "bottom", "rank", "highest", "lowest"}) and agg_function == "sum":
+        agg_function = "avg"
+
+    metric_alias = f"{agg_function}_{re.sub(r'\\W+', '_', metric_column.lower()).strip('_')}"
+    order_direction = "desc" if any(token in normalized for token in {"top", "highest"}) else "asc" if "bottom" in normalized or "lowest" in normalized else "desc"
+    limit = 5 if any(token in normalized for token in {"top", "bottom", "rank"}) else None
+
+    return {
+        "group_by": [dimension_column],
+        "metrics": [{"column": metric_column, "function": agg_function, "alias": metric_alias}],
+        "filters": [],
+        "limit": limit,
+        "order_by": [{"column": metric_alias, "direction": order_direction}],
+        "tool_sequence": ["sql.group_by"],
     }
 
 
@@ -275,6 +378,8 @@ class LearningPlanner:
         context = planner_context or build_planner_context(user_text, df, columns)
         features = context.features
         roles = _column_roles(df, columns)
+        if context.dataset_semantic_profile is not None and not any(role != "unknown" for role in roles.values()):
+            roles = dict(context.dataset_semantic_profile.column_roles)
         retrieval_trace = _score_retrieval_context(context, self.registry)
         retrieval_trace.update(context.retrieval_trace)
 
@@ -325,18 +430,27 @@ class LearningPlanner:
             retrieval_trace["selected_template_id"] = plan_template_id
 
         if plan is None and (features.intent in {"filter", "analytics"} or (skill_id and skill_id.startswith("filter."))):
-            plan = _build_sql_filter_plan(user_text, columns, roles)
+            if features.intent == "analytics" or any(token in _normalize_text(user_text) for token in {"top", "bottom", "rank", "average", "avg", "sum", "count", "group by"}):
+                plan = _build_sql_aggregate_plan(user_text, columns, roles)
+            if plan is None:
+                plan = _build_sql_filter_plan(user_text, columns, roles)
             if plan is not None:
                 route = "sql"
-                confidence = 0.9 if len(plan.get("filters") or []) > 1 else 0.84
-                plan_source = "bootstrap_skill" if skill_id else "deterministic_fallback"
-                if len(plan.get("filters") or []) > 1:
-                    skill_id = "filter.multi_condition.v1"
-                    skill_name = "Multi-condition filtering"
+                if plan.get("group_by") or plan.get("metrics"):
+                    confidence = 0.88
+                    skill_id = "analytics.group_by.v1"
+                    skill_name = "Grouped aggregation"
+                    message = "Matched a learned aggregation skill and built a local plan."
                 else:
-                    skill_id = "filter.entity_search.v1"
-                    skill_name = "Entity search"
-                message = "Matched a learned filter skill and built a local plan."
+                    confidence = 0.9 if len(plan.get("filters") or []) > 1 else 0.84
+                    if len(plan.get("filters") or []) > 1:
+                        skill_id = "filter.multi_condition.v1"
+                        skill_name = "Multi-condition filtering"
+                    else:
+                        skill_id = "filter.entity_search.v1"
+                        skill_name = "Entity search"
+                    message = "Matched a learned filter skill and built a local plan."
+                plan_source = "bootstrap_skill" if skill_id and retrieval_trace.get("experience_count", 0) == 0 else "experience_transfer"
 
         if route == "unknown" and plan is None and (features.intent in {"cleaning", "operation"} or (skill_id and skill_id.startswith("clean."))):
             plan = _build_operation_plan(user_text, columns)
@@ -354,10 +468,19 @@ class LearningPlanner:
             message = "Matched a learned sentiment route."
 
         if route == "unknown" and plan is None and features.intent == "analytics":
-            route = "sql"
-            confidence = 0.62
-            plan_source = "deterministic_fallback"
-            message = "Matched an analytical query shape but no confident local plan."
+            plan = _build_sql_aggregate_plan(user_text, columns, roles)
+            if plan is not None:
+                route = "sql"
+                confidence = 0.74
+                plan_source = "deterministic_fallback" if retrieval_trace.get("experience_count", 0) == 0 else "experience_transfer"
+                skill_id = skill_id or "analytics.group_by.v1"
+                skill_name = skill_name or "Grouped aggregation"
+                message = "Matched an analytical query shape and built a local aggregation plan."
+            else:
+                route = "sql"
+                confidence = 0.62
+                plan_source = "deterministic_fallback"
+                message = "Matched an analytical query shape but no confident local plan."
 
         validation_notes: list[str] = []
         if route == "sql" and plan is not None:
@@ -367,13 +490,13 @@ class LearningPlanner:
                 validation_notes.append("planned fewer predicates than requested")
             if features.logical_structure in {"AND", "MIXED"} and planned < 2:
                 validation_notes.append("did not preserve multi-condition structure")
-            if retrieval_trace.get("failure_lesson_count"):
-                validation_notes.append("applied failure lesson guidance")
         if skill_id:
             for record in retrieval_trace["experiences"]:
                 if record.get("skill_id") == skill_id:
                     validation_notes.append("retrieved prior experience for this skill")
                     break
+        if retrieval_trace.get("failure_lesson_count"):
+            validation_notes.append("failure lesson guidance applied")
 
         return LearningDecision(
             route=route,

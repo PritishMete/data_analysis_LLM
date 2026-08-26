@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>InsightFlow Secure Excel Assistant</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <p class="eyebrow">Local-only Excel assistant</p>
+      <h1>InsightFlow Secure Excel</h1>
+      <p class="lede">Upload a workbook, keep the data local, and issue natural-language requests without exposing raw columns or values to a remote model.</p>
+    </section>
+
+    <section class="card">
+      <label>Workbook</label>
+      <input id="file" type="file" accept=".xlsx,.xlsm" />
+      <div class="grid">
+        <input id="sheetName" placeholder="Sheet name (optional)" />
+        <input id="activeCell" placeholder="Active cell like D6 (optional)" />
+      </div>
+      <button id="createSession">Create Session</button>
+    </section>
+
+    <section class="card">
+      <label>Query</label>
+      <textarea id="query" rows="4" placeholder="show restaurants in Kolkata having online delivery"></textarea>
+      <button id="runQuery" disabled>Run Query</button>
+      <pre id="output">No session yet.</pre>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>
+

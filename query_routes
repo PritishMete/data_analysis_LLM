@@ -1,0 +1,205 @@
+"""
+query_routes.py
+----------------
+Natural-language-ish query processing WITHOUT any paid API.
+
+Two layers:
+1. RULE-BASED PARSER (free, instant, 100% accurate)
+   Handles common patterns: highest/lowest/top N/average/count/list/filter
+2. OPTIONAL LOCAL LLM FALLBACK (Ollama)
+   Only used if the rule parser can't understand the question.
+   Requires Ollama running locally/on server with a small model pulled,
+   e.g. `ollama pull llama3.2` — still free, no API key.
+
+If you don't want to set up Ollama at all, just leave USE_LLM_FALLBACK = False
+and unsupported questions will return a helpful error instead of guessing.
+"""
+
+import io
+import re
+import requests
+import pandas as pd
+from fastapi import APIRouter, UploadFile, File, Form
+
+query_router = APIRouter()
+
+# ---------------------------------------------------------
+# Config
+# ---------------------------------------------------------
+USE_LLM_FALLBACK = False          # set True if you set up Ollama
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3.2"         # any small model you've pulled
+
+
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+def load_dataframe(filename: str, contents: bytes) -> pd.DataFrame:
+    filename = filename.lower()
+    if filename.endswith(".csv"):
+        return pd.read_csv(io.BytesIO(contents))
+    elif filename.endswith(".xlsx"):
+        return pd.read_excel(io.BytesIO(contents))
+    elif filename.endswith(".json"):
+        return pd.read_json(io.BytesIO(contents))
+    raise ValueError("Unsupported file format")
+
+
+def find_column(df: pd.DataFrame, keyword: str):
+    """Fuzzy-match a keyword to a column name."""
+    keyword = keyword.lower().strip()
+    for col in df.columns:
+        if keyword == col.lower():
+            return col
+    for col in df.columns:
+        if keyword in col.lower() or col.lower() in keyword:
+            return col
+    return None
+
+
+def numeric_columns(df: pd.DataFrame):
+    return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+
+# ---------------------------------------------------------
+# Rule-based intent handlers
+# ---------------------------------------------------------
+def try_rule_based(df: pd.DataFrame, question: str):
+    q = question.lower().strip()
+    name_col = df.columns[0] if not df.empty else None
+    for c in df.columns:
+        if c.lower() in ("name", "title", "restaurant", "restaurant_name"):
+            name_col = c
+            break
+
+    # ---- "highest/top/maximum <col>" ----
+    m = re.search(r"(highest|top|maximum|max)\s+([a-z_ ]+)", q)
+    if m:
+        col = find_column(df, m.group(2))
+        if col and col in numeric_columns(df):
+            row = df.loc[df[col].idxmax()]
+            return f"{row[name_col]} has the highest {col} ({row[col]})." if name_col else str(row[col])
+
+    # ---- "lowest/bottom/minimum <col>" ----
+    m = re.search(r"(lowest|bottom|minimum|min)\s+([a-z_ ]+)", q)
+    if m:
+        col = find_column(df, m.group(2))
+        if col and col in numeric_columns(df):
+            row = df.loc[df[col].idxmin()]
+            return f"{row[name_col]} has the lowest {col} ({row[col]})." if name_col else str(row[col])
+
+    # ---- "average/mean <col>" ----
+    m = re.search(r"(average|mean)\s+([a-z_ ]+)", q)
+    if m:
+        col = find_column(df, m.group(2))
+        if col and col in numeric_columns(df):
+            return f"The average {col} is {df[col].mean():.2f}."
+
+    # ---- "total/sum <col>" ----
+    m = re.search(r"(total|sum)\s+([a-z_ ]+)", q)
+    if m:
+        col = find_column(df, m.group(2))
+        if col and col in numeric_columns(df):
+            return f"The total {col} is {df[col].sum()}."
+
+    # ---- "how many <col/rows>" / count ----
+    if "how many" in q or "count" in q:
+        m = re.search(r"how many ([a-z_ ]+)", q)
+        if m:
+            col = find_column(df, m.group(1))
+            if col:
+                return f"There are {df[col].nunique()} unique {col} entries."
+        return f"There are {len(df)} rows in total."
+
+    # ---- "list all <name_col>" / "all <name_col> names" ----
+    if "list all" in q or "all names" in q or ("list" in q and name_col):
+        if name_col:
+            names = df[name_col].dropna().unique().tolist()
+            return names
+
+    # ---- "<col> of <name>" e.g. "rating of Tandoor Hut" ----
+    m = re.search(r"([a-z_ ]+) of ([a-z0-9 &'\-]+)", q)
+    if m and name_col:
+        col = find_column(df, m.group(1))
+        target_name = m.group(2).strip()
+        if col:
+            match = df[df[name_col].str.lower().str.contains(target_name, na=False)]
+            if not match.empty:
+                row = match.iloc[0]
+                return f"{row[name_col]}: {col} = {row[col]}"
+
+    return None  # couldn't handle it with rules
+
+
+# ---------------------------------------------------------
+# Optional local LLM fallback (Ollama, free)
+# ---------------------------------------------------------
+def try_ollama_fallback(df: pd.DataFrame, question: str):
+    prompt = f"""You have a pandas DataFrame df with columns: {list(df.columns)}
+Sample:
+{df.head(5).to_string(index=False)}
+
+Question: {question}
+
+Return ONLY pandas code, assigning the answer to a variable called result.
+No explanation, no markdown."""
+
+    try:
+        resp = requests.post(
+            OLLAMA_URL,
+            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+            timeout=30,
+        )
+        code = resp.json().get("response", "").strip()
+        code = re.sub(r"^```(python)?", "", code).strip()
+        code = re.sub(r"```$", "", code).strip()
+
+        banned = ["import os", "import sys", "subprocess", "open(", "exec(",
+                  "eval(", "__import__", "shutil", "requests", "socket"]
+        if any(b in code for b in banned):
+            return None, "Generated code failed safety check."
+
+        local_vars = {"df": df, "pd": pd}
+        exec(code, {"__builtins__": {}}, local_vars)
+        return local_vars.get("result"), code
+    except Exception as e:
+        return None, f"Ollama fallback failed: {str(e)}"
+
+
+# ---------------------------------------------------------
+# Route
+# ---------------------------------------------------------
+@query_router.post("/ask")
+async def ask_question(
+    file: UploadFile = File(...),
+    question: str = Form(...),
+):
+    try:
+        contents = await file.read()
+        df = load_dataframe(file.filename, contents)
+    except Exception as e:
+        return {"error": f"Failed to read file: {str(e)}"}
+
+    answer = try_rule_based(df, question)
+    if answer is not None:
+        return {"question": question, "method": "rule-based", "answer": answer}
+
+    if USE_LLM_FALLBACK:
+        result, code_or_err = try_ollama_fallback(df, question)
+        if result is not None:
+            if isinstance(result, (pd.DataFrame, pd.Series)):
+                result = result.head(50).to_dict()
+            return {
+                "question": question,
+                "method": "ollama-fallback",
+                "code": code_or_err,
+                "answer": str(result),
+            }
+        return {"error": code_or_err}
+
+    return {
+        "error": "Could not understand the question with rule-based parsing, "
+                 "and LLM fallback is disabled. Try rephrasing, e.g. "
+                 "'highest rating', 'average cost', 'list all names', "
+                 "'total rating_count', 'rating of Tandoor Hut'."
+    }

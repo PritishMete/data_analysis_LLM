@@ -201,30 +201,43 @@ def _choose_column_for_role(
     dataset_profile: DatasetSemanticProfile,
     user_text: str | None = None,
     correction_candidates: dict[str, str] | None = None,
+    excluded_columns: set[str] | None = None,
 ) -> str | None:
     available = dataset_profile.available_columns
     column_roles = dataset_profile.column_roles
+    numeric_role_family = {"numeric_measure", "numeric_metric", "currency_metric", "count", "percentage", "rating_metric"}
+    excluded_columns = excluded_columns or set()
     if correction_candidates:
         preferred = correction_candidates.get(role)
-        if preferred and preferred in available:
+        if preferred and preferred in available and preferred not in excluded_columns:
             return preferred
 
-    candidates = [column for column in available if column_roles.get(column) == role]
+    candidates = [column for column in available if column_roles.get(column) == role and column not in excluded_columns]
+    if not candidates and role in numeric_role_family:
+        candidates = [column for column in available if column_roles.get(column) in numeric_role_family and column not in excluded_columns]
     if candidates:
         if user_text:
             normalized = re.sub(r"[^a-z0-9]+", "", user_text.lower())
             for candidate in candidates:
                 if re.sub(r"[^a-z0-9]+", "", candidate.lower()) in normalized:
                     return candidate
+        if role == "rating_metric":
+            for candidate in candidates:
+                normalized_candidate = re.sub(r"[^a-z0-9]+", "", candidate.lower())
+                if any(alias in normalized_candidate for alias in {"rating", "score", "grade", "rate", "metric", "defect", "margin", "revenue", "amount", "price"}):
+                    return candidate
         return candidates[0]
 
     alias_sets = {
         "numeric_measure": {"revenue", "profit", "score", "rating", "amount", "defect", "margin", "sales", "quantity"},
+        "rating_metric": {"rating", "score", "grade", "rate", "defect", "margin", "revenue", "amount", "price"},
         "dimension": {"category", "region", "country", "city", "type", "segment", "group", "status", "name"},
         "boolean_capability": {"verified", "approved", "express", "active", "delivery", "booking", "available"},
     }
     aliases = alias_sets.get(role, set())
     for candidate in available:
+        if candidate in excluded_columns:
+            continue
         normalized = re.sub(r"[^a-z0-9]+", "", candidate.lower())
         if any(alias in normalized for alias in aliases):
             return candidate
@@ -255,13 +268,21 @@ def bind_template(
     resolved_roles: dict[str, str] = {}
     unresolved_roles: list[str] = []
     binding_confidence = 0.5
+    used_columns: set[str] = set()
 
     for idx, role in enumerate(template.required_roles):
-        column = _choose_column_for_role(role, dataset_profile, user_text=user_text, correction_candidates=correction_map)
+        column = _choose_column_for_role(
+            role,
+            dataset_profile,
+            user_text=user_text,
+            correction_candidates=correction_map,
+            excluded_columns=used_columns,
+        )
         if column is None:
             unresolved_roles.append(role)
             continue
         resolved_roles[f"role_{idx}:{role}"] = column
+        used_columns.add(column)
         binding_confidence += 0.08
 
     if unresolved_roles:
