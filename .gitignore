@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+env/
+enterprise_registry.db
+training_data.json
+ref_data_analysis/
+*.sqlite
+*.db-journal
