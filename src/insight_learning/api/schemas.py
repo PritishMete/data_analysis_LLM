@@ -33,6 +33,7 @@ class QueryFeaturesPayload(BaseModel):
 class PlanRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    text: str | None = None
     intent: str
     query_features: QueryFeaturesPayload
     dataset_profile: DatasetProfile

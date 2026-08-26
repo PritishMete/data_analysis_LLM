@@ -95,6 +95,7 @@ class InsightLearningService:
     def plan(self, request: PlanRequest) -> dict[str, Any]:
         features = _query_features_payload(request)
         dataset_profile = _dataset_profile_payload(request.dataset_profile.model_dump())
+        planner_text = request.text or _synthetic_user_text(request.intent, request.query_features.model_dump(), request.dataset_profile.model_dump())
         context = PlannerContext(
             features=features,
             dataset_profile=dataset_profile.to_dict() | {"available_columns": dataset_profile.available_columns},
@@ -102,7 +103,7 @@ class InsightLearningService:
             retrieval_trace={},
         )
         decision = self.orchestrator.planner.plan(
-            _synthetic_user_text(request.intent, request.query_features.model_dump(), request.dataset_profile.model_dump()),
+            planner_text,
             df=None,
             available_columns=dataset_profile.available_columns,
             planner_context=context,
