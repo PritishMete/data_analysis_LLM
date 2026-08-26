@@ -15,6 +15,7 @@ from learning.models import (
     SkillState,
     stable_hash,
 )
+from learning.canonical_training import TrainingCandidateInvalidation
 
 
 def _default_root() -> Path:
@@ -33,6 +34,7 @@ class LearningExperienceStore:
         self.plan_templates_path = self.root / "plan_templates.jsonl"
         self.corrections_path = self.root / "corrections.jsonl"
         self.candidate_strategies_path = self.root / "candidate_strategies.jsonl"
+        self.training_invalidations_path = self.root / "training_invalidations.jsonl"
         self.summary_path = self.root / "experience_state.json"
         self._migrate_experiences()
 
@@ -76,6 +78,16 @@ class LearningExperienceStore:
             "plan_provenance",
             "created_at",
             "version",
+        }
+
+    @staticmethod
+    def _safe_invalidation_keys() -> set[str]:
+        return {
+            "source_id",
+            "family_fingerprint",
+            "reason",
+            "created_at",
+            "corpus_version",
         }
 
     @staticmethod
@@ -166,6 +178,26 @@ class LearningExperienceStore:
         clean = {key: data.get(key) for key in self._safe_experience_keys()}
         clean["query_features"] = query_features
         return clean
+
+    def _sanitize_training_invalidation_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data = dict(payload)
+        source_id = data.get("source_id")
+        family_fingerprint = data.get("family_fingerprint")
+        reason = data.get("reason") or "manual"
+        if source_id is not None and not isinstance(source_id, str):
+            source_id = str(source_id)
+        if family_fingerprint is not None and not isinstance(family_fingerprint, str):
+            family_fingerprint = str(family_fingerprint)
+        if source_id is not None and not source_id:
+            source_id = None
+        if family_fingerprint is not None and not family_fingerprint:
+            family_fingerprint = None
+        clean = TrainingCandidateInvalidation(
+            source_id=source_id,
+            family_fingerprint=family_fingerprint,
+            reason=str(reason),
+        ).to_dict()
+        return {key: clean.get(key) for key in self._safe_invalidation_keys()}
 
     def _migrate_experiences(self) -> None:
         if not self.experiences_path.exists():
@@ -291,6 +323,30 @@ class LearningExperienceStore:
         values = list(latest.values())
         values.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return values[:limit]
+
+    def append_training_invalidation(self, invalidation: TrainingCandidateInvalidation | dict[str, Any]) -> dict[str, Any]:
+        payload = invalidation.to_dict() if isinstance(invalidation, TrainingCandidateInvalidation) else dict(invalidation)
+        clean = self._sanitize_training_invalidation_payload(payload)
+        self._append_jsonl(self.training_invalidations_path, clean)
+        return clean
+
+    def invalidate_training_candidate(
+        self,
+        *,
+        source_id: str | None = None,
+        family_fingerprint: str | None = None,
+        reason: str = "manual",
+    ) -> dict[str, Any]:
+        return self.append_training_invalidation(
+            {
+                "source_id": source_id,
+                "family_fingerprint": family_fingerprint,
+                "reason": reason,
+            }
+        )
+
+    def load_training_invalidations(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self._load_jsonl(self.training_invalidations_path, limit, TrainingCandidateInvalidation.from_dict)
 
     def _load_jsonl(
         self,

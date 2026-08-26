@@ -11,6 +11,13 @@ import os
 import re
 from typing import Any
 
+from learning.canonical_training import (
+    PlannerTrainingBackend,
+    TrainingCandidateInvalidation,
+    TrainingDatasetManifest,
+    TrainingReadinessAssessment,
+    build_training_dataset_manifest,
+)
 from learning.experience_store import LearningExperienceStore
 from learning.models import stable_hash
 
@@ -270,6 +277,7 @@ class TrainingExportBundle:
     step_distribution: Counter[int]
     predicate_complexity_distribution: Counter[int]
     average_quality: float
+    dataset_version: str = ""
 
     def report(self) -> dict[str, Any]:
         split_counts = Counter(record.split for record in self.records)
@@ -279,12 +287,14 @@ class TrainingExportBundle:
             "rejected_examples": self.rejected_count,
             "rejection_reasons": dict(sorted(self.rejected_reasons.items())),
             "duplicates_removed": self.duplicates_removed,
+            "family_count": len({record.family_fingerprint for record in self.records}),
             "intent_distribution": dict(sorted(self.intent_distribution.items())),
             "tool_graph_distribution": dict(sorted(self.tool_graph_distribution.items())),
             "number_of_steps_distribution": dict(sorted(self.step_distribution.items())),
             "predicate_complexity_distribution": dict(sorted(self.predicate_complexity_distribution.items())),
             "plan_source_distribution": dict(sorted(self.source_distribution.items())),
             "average_quality": round(self.average_quality, 4) if self.records else 0.0,
+            "dataset_version": self.dataset_version,
             "train_count": int(split_counts.get("train", 0)),
             "validation_count": int(split_counts.get("validation", 0)),
             "test_count": int(split_counts.get("test", 0)),
@@ -299,6 +309,7 @@ class TrainingDatasetExporter:
     def __init__(self, store: LearningExperienceStore | None = None, policy: TrainingExportPolicy | None = None):
         self.store = store or LearningExperienceStore()
         self.policy = policy or TrainingExportPolicy.from_env()
+        self.backend = PlannerTrainingBackend()
 
     def _query_features_shape(self, features: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -457,7 +468,8 @@ class TrainingDatasetExporter:
     def _safe_record_from_strategy(self, item: dict[str, Any]) -> tuple[TrainingExportRecord | None, str | None]:
         state = str(item.get("state") or "candidate")
         lifecycle = str(item.get("lifecycle_state") or "observed")
-        if state not in ALLOWED_CANDIDATE_STATES or lifecycle not in ALLOWED_CANDIDATE_LIFECYCLES:
+        allowed_lifecycles = set(self.policy.allow_candidate_lifecycles or ALLOWED_CANDIDATE_LIFECYCLES)
+        if state not in ALLOWED_CANDIDATE_STATES or lifecycle not in allowed_lifecycles:
             return None, "strategy_lifecycle_not_trusted"
         evidence_count = _normalise_int(item.get("evidence_count")) or 0
         average_quality = _normalise_float(item.get("average_quality")) or 0.0
@@ -581,6 +593,17 @@ class TrainingDatasetExporter:
         rejected_reasons: Counter[str] = Counter()
         dedupe_removed = 0
         candidates: list[TrainingExportRecord] = []
+        invalidations = self.store.load_training_invalidations(limit=self.policy.export_limit)
+        invalidated_source_ids = {
+            str(item.get("source_id") or "")
+            for item in invalidations
+            if str(item.get("source_id") or "")
+        }
+        invalidated_fingerprints = {
+            str(item.get("family_fingerprint") or "")
+            for item in invalidations
+            if str(item.get("family_fingerprint") or "")
+        }
 
         source_items: list[tuple[str, dict[str, Any]]] = []
         for item in self.store.load_recent(limit=self.policy.export_limit):
@@ -598,6 +621,9 @@ class TrainingDatasetExporter:
             if record is None:
                 rejected_reasons[rejection or "rejected"] += 1
                 continue
+            if record.source_id in invalidated_source_ids or record.family_fingerprint in invalidated_fingerprints:
+                rejected_reasons["invalidated"] += 1
+                continue
             candidates.append(record)
 
         if not candidates:
@@ -614,6 +640,7 @@ class TrainingDatasetExporter:
                 step_distribution=Counter(),
                 predicate_complexity_distribution=Counter(),
                 average_quality=0.0,
+                dataset_version="",
             )
             return bundle, []
 
@@ -676,6 +703,7 @@ class TrainingDatasetExporter:
             step_distribution=Counter(len(record.tool_graph) for record in selected),
             predicate_complexity_distribution=Counter(int(record.predicate_graph.get("predicate_count") or 0) for record in selected),
             average_quality=avg_quality,
+            dataset_version="",
         )
 
         preview = [record.to_export_dict() for record in selected[: self.policy.preview_limit]]
@@ -716,6 +744,49 @@ class TrainingDatasetExporter:
             return self._records_to_csv(records)
         raise ValueError(f"Unsupported export format: {fmt}")
 
+    def build_manifest(
+        self,
+        bundle: TrainingExportBundle,
+        *,
+        split_paths: dict[str, str] | None = None,
+    ) -> TrainingDatasetManifest:
+        report = bundle.report()
+        report["dataset_version"] = report.get("dataset_version") or stable_hash(
+            {
+                "policy": self.policy.to_dict(),
+                "eligible_examples": report.get("eligible_examples", 0),
+                "family_count": report.get("family_count", 0),
+                "train_count": report.get("train_count", 0),
+                "validation_count": report.get("validation_count", 0),
+                "test_count": report.get("test_count", 0),
+                "intent_distribution": report.get("intent_distribution", {}),
+                "tool_graph_distribution": report.get("tool_graph_distribution", {}),
+                "average_quality": report.get("average_quality", 0.0),
+                "duplicates_removed": report.get("duplicates_removed", 0),
+            }
+        )[:16]
+        manifest = build_training_dataset_manifest(report, policy=self.policy, split_paths=split_paths)
+        bundle.dataset_version = manifest.dataset_version
+        return manifest
+
+    def evaluate_readiness(self, bundle: TrainingExportBundle) -> TrainingReadinessAssessment:
+        manifest = self.build_manifest(bundle)
+        return manifest.readiness or self.backend.evaluate(bundle.report(), policy=self.policy)
+
+    def invalidate_training_candidate(
+        self,
+        *,
+        source_id: str | None = None,
+        family_fingerprint: str | None = None,
+        reason: str = "manual",
+    ) -> dict[str, Any]:
+        invalidation = TrainingCandidateInvalidation(
+            source_id=source_id,
+            family_fingerprint=family_fingerprint,
+            reason=reason,
+        )
+        return self.store.append_training_invalidation(invalidation)
+
     def validate_export_record(self, record: dict[str, Any]) -> tuple[bool, str | None]:
         allowed_keys = {"input", "output", "metadata", "source_kind", "source_id", "split", "family_fingerprint"}
         if not isinstance(record, dict):
@@ -753,7 +824,11 @@ class TrainingDatasetExporter:
             path = target_dir / f"{split}.jsonl"
             path.write_bytes(self._records_to_jsonl(split_records))
             split_paths[split] = path
+        manifest = self.build_manifest(bundle, split_paths={key: str(value) for key, value in split_paths.items()})
         report_path = target_dir / "dataset_report.json"
         report_path.write_text(json.dumps(bundle.report(), indent=2, sort_keys=True), encoding="utf-8")
+        manifest_path = target_dir / "dataset_manifest.json"
+        manifest_path.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
         split_paths["report"] = report_path
+        split_paths["manifest"] = manifest_path
         return split_paths

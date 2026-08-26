@@ -133,6 +133,10 @@ The export API supports:
 - `GET /v1/export/training-dataset?format=json`
 - `GET /v1/export/training-dataset?format=jsonl`
 - `GET /v1/export/training-dataset?format=csv`
+- `GET /v1/export/training-dataset?format=manifest`
+- `GET /v1/export/training-dataset?format=readiness`
+- `POST /v1/export/training-dataset/create`
+- `POST /v1/export/training-dataset/invalidate`
 
 The service can also write local training files under `runtime/training/`:
 
@@ -140,6 +144,7 @@ The service can also write local training files under `runtime/training/`:
 - `validation.jsonl`
 - `test.jsonl`
 - `dataset_report.json`
+- `dataset_manifest.json`
 
 Those files are ignored by Git and are not committed.
 
@@ -150,6 +155,8 @@ Those files are ignored by Git and are not committed.
 - Default splitting is 80/10/10.
 - The privacy validator rejects any example that still contains unsafe payloads after sanitization.
 - Unsafe or repaired examples are rejected instead of being "best effort" exported.
+- Invalidated source events or strategy families are excluded before export.
+- The manifest captures a versioned summary plus readiness status for the canonical corpus.
 
 ## Repository boundary audit
 

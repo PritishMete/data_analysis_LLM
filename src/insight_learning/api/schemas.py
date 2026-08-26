@@ -42,7 +42,7 @@ class PlanRequest(BaseModel):
 class LearningEvent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    schema_version: int = 1
+    schema_version: int = 2
     event_id: str | None = None
     intent: str
     query_features: QueryFeaturesPayload
@@ -57,6 +57,7 @@ class LearningEvent(BaseModel):
     skill_id: str | None = None
     plan_template_id: str | None = None
     dataset_semantic_signature: str | None = None
+    execution_success: bool | None = None
     critic_passed: bool | None = None
     result_validation_passed: bool | None = None
     plan_completeness_passed: bool | None = None
@@ -120,3 +121,18 @@ class MetricsResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     metrics: dict[str, Any]
+
+
+class TrainingDatasetCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    include_candidate_strategies: bool = True
+    limit: int = Field(1000, ge=1, le=10_000)
+
+
+class TrainingCandidateInvalidationRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    source_id: str | None = None
+    family_fingerprint: str | None = None
+    reason: str = "manual"

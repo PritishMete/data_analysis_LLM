@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 app_module = importlib.import_module("insight_learning.api.app")
 from insight_learning.api.app import create_app
+from learning.canonical_training import FineTuningCandidate, StructuralFamily
 from learning.experience_store import LearningExperienceStore
 from learning.models import ExperienceRecord, stable_hash
 from learning.training_export import TrainingDatasetExporter, TrainingExportPolicy
@@ -20,6 +21,14 @@ SENSITIVE_VALUES = [
     "SecretCompanyXYZ",
     "9876543210",
 ]
+
+
+def _client(tmp_path, monkeypatch):
+    monkeypatch.setenv("INSIGHT_LEARNING_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DATA_ANALYSIS_LLM_STATE_DIR", str(tmp_path / "state"))
+    app_module._SERVICE = None
+    app = create_app()
+    return TestClient(app)
 
 
 def _experience_record(
@@ -297,3 +306,85 @@ def test_dataset_balance_applies_intent_caps(tmp_path):
     assert report["rejection_reasons"]["intent_cap"] == 5
     assert report["intent_distribution"]["filter"] == 2
     assert report["intent_distribution"]["aggregate"] == 2
+
+
+def test_manifest_readiness_and_create_endpoint_are_safe(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    service = app_module.get_service()
+    service.store.append(_experience_record(event_id="evt_manifest"))
+
+    manifest = service.build_training_dataset_manifest()
+    assert manifest["manifest_version"] == 1
+    assert manifest["readiness"]["ready"] is True
+    assert manifest["dataset_version"]
+
+    readiness = client.get("/v1/export/training-dataset?format=readiness")
+    assert readiness.status_code == 200
+    readiness_payload = readiness.json()
+    assert readiness_payload["format"] == "readiness"
+    assert readiness_payload["readiness"]["ready"] is True
+
+    manifest_response = client.get("/v1/export/training-dataset?format=manifest")
+    assert manifest_response.status_code == 200
+    manifest_payload = manifest_response.json()
+    assert manifest_payload["format"] == "manifest"
+    assert manifest_payload["manifest"]["dataset_version"]
+
+    created = client.post(
+        "/v1/export/training-dataset/create",
+        json={"include_candidate_strategies": True, "limit": 1000},
+    )
+    assert created.status_code == 200
+    created_payload = created.json()
+    assert created_payload["created"] is True
+    assert "manifest" in created_payload["paths"]
+    _assert_no_sensitive_text([Path(path) for path in created_payload["paths"].values()])
+
+
+def test_invalidation_excludes_candidate_from_export(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    service = app_module.get_service()
+    service.store.append(_experience_record(event_id="evt_invalidated"))
+
+    invalidation = client.post(
+        "/v1/export/training-dataset/invalidate",
+        json={"source_id": "evt_invalidated", "reason": "correction"},
+    )
+    assert invalidation.status_code == 200
+    assert invalidation.json()["invalidated"] is True
+
+    exporter = TrainingDatasetExporter(service.store, service.training_export_policy)
+    bundle, _ = exporter.build_bundle()
+    report = bundle.report()
+    assert report["eligible_examples"] == 0
+    assert report["rejection_reasons"]["invalidated"] == 1
+
+
+def test_canonical_training_models_round_trip_safe_shapes():
+    record = {
+        "source_kind": "experience",
+        "source_id": "evt_shape",
+        "input": {
+            "intent": "filter",
+            "semantic_roles": ["boolean", "numeric_measure"],
+            "operators": ["equals_true", "less_than"],
+            "logical_structure": "AND",
+            "predicate_graph": {"operator": "AND"},
+        },
+        "output": {
+            "tool_graph": ["resolve_semantic_targets", "filter_rows", "validate_filter"],
+            "plan_source": "validated_template",
+            "plan_template_id": "plan.template.safe",
+        },
+        "metadata": {
+            "quality": 0.97,
+            "split": "train",
+            "family_size": 2,
+        },
+        "family_fingerprint": "0123456789abcdef",
+    }
+    family = StructuralFamily.from_record(record)
+    candidate = FineTuningCandidate.from_record(record)
+    assert family.fingerprint == "0123456789abcdef"
+    assert candidate.family.fingerprint == family.fingerprint
+    assert candidate.to_dict()["eligible"] is True

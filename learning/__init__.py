@@ -25,6 +25,20 @@ from .models import (
     SkillState,
     PlanStep,
 )
+from .canonical_training import (
+    CANONICAL_CORPUS_VERSION,
+    DEFAULT_MINIMUM_QUALITY,
+    FineTuningCandidate,
+    PlannerModelVersion,
+    PlannerTrainingBackend,
+    StructuralFamily,
+    TrainingBenchmarkResult,
+    TrainingCandidateInvalidation,
+    TrainingDatasetManifest,
+    TrainingReadinessAssessment,
+    build_training_dataset_manifest,
+    evaluate_training_readiness,
+)
 
 __all__ = [
     "bootstrap_skill_specs",
@@ -45,4 +59,16 @@ __all__ = [
     "SkillSpec",
     "SkillState",
     "PlanStep",
+    "CANONICAL_CORPUS_VERSION",
+    "DEFAULT_MINIMUM_QUALITY",
+    "FineTuningCandidate",
+    "PlannerModelVersion",
+    "PlannerTrainingBackend",
+    "StructuralFamily",
+    "TrainingBenchmarkResult",
+    "TrainingCandidateInvalidation",
+    "TrainingDatasetManifest",
+    "TrainingReadinessAssessment",
+    "build_training_dataset_manifest",
+    "evaluate_training_readiness",
 ]

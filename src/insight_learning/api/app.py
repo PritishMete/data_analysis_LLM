@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from agent.orchestrator import AgenticLearningOrchestrator
+from learning.canonical_training import PlannerTrainingBackend
 from learning.models import CandidateStrategy, CorrectionRecord, DatasetSemanticProfile, LearningDecision, PlannerContext, QueryFeatures, stable_hash
 from learning.training_export import TrainingDatasetExporter, TrainingExportBundle, TrainingExportPolicy
 from learning.skill_registry import SkillRegistry
@@ -88,6 +89,7 @@ class InsightLearningService:
         self.registry = SkillRegistry(state_path=root / "skills_state.json")
         self.orchestrator = AgenticLearningOrchestrator(registry=self.registry, store=self.store)
         self.training_export_policy = TrainingExportPolicy.from_env()
+        self.training_backend = PlannerTrainingBackend()
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "service": "insight-learning"}
@@ -202,6 +204,58 @@ class InsightLearningService:
         exporter = TrainingDatasetExporter(self.store, self.training_export_policy)
         bundle, _ = exporter.build_bundle(limit=limit, include_candidate_strategies=include_candidate_strategies)
         return bundle
+
+    def build_training_dataset_manifest(
+        self,
+        *,
+        include_candidate_strategies: bool = True,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        exporter = TrainingDatasetExporter(self.store, self.training_export_policy)
+        bundle, _ = exporter.build_bundle(limit=limit, include_candidate_strategies=include_candidate_strategies)
+        manifest = exporter.build_manifest(bundle)
+        return manifest.to_dict()
+
+    def evaluate_training_dataset_readiness(
+        self,
+        *,
+        include_candidate_strategies: bool = True,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        exporter = TrainingDatasetExporter(self.store, self.training_export_policy)
+        bundle, _ = exporter.build_bundle(limit=limit, include_candidate_strategies=include_candidate_strategies)
+        readiness = exporter.evaluate_readiness(bundle)
+        return readiness.to_dict()
+
+    def create_training_dataset(
+        self,
+        *,
+        include_candidate_strategies: bool = True,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        paths = self.export_training_dataset_files(
+            include_candidate_strategies=include_candidate_strategies,
+            limit=limit,
+        )
+        manifest = self.build_training_dataset_manifest(
+            include_candidate_strategies=include_candidate_strategies,
+            limit=limit,
+        )
+        return {"manifest": manifest, "paths": paths}
+
+    def invalidate_training_candidate(
+        self,
+        *,
+        source_id: str | None = None,
+        family_fingerprint: str | None = None,
+        reason: str = "manual",
+    ) -> dict[str, Any]:
+        exporter = TrainingDatasetExporter(self.store, self.training_export_policy)
+        return exporter.invalidate_training_candidate(
+            source_id=source_id,
+            family_fingerprint=family_fingerprint,
+            reason=reason,
+        )
 
     def export_training_dataset_files(
         self,
