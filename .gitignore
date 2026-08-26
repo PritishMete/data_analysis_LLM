@@ -1,6 +1,0 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-ref_data_analysis/
-enterprise_registry.db
-*.tmp
