@@ -79,6 +79,7 @@ Only generalized structure is persisted:
 - `POST /v1/experience`
 - `POST /v1/feedback`
 - `GET /v1/skills`
+- `GET /v1/export/training-dataset`
 - `GET /v1/metrics`
 
 ## Local development
@@ -101,6 +102,69 @@ The teacher app can call the student like this:
 
 ## Future fine-tuning
 
-No model fine-tuning happens yet. The codebase includes a dataset export path
-for trusted, privacy-safe examples that can be used later.
+Every validated interaction can contribute to continual learning.
 
+Not every interaction becomes fine-tuning data.
+
+Only high-quality, validator-approved, privacy-safe, deduplicated examples
+qualify for future fine-tuning. The repository includes a strict export path
+for those examples, but no model fine-tuning happens yet.
+
+### Training eligibility gate
+
+An example must satisfy the full gate before export:
+
+- execution success
+- critic pass
+- result validation pass
+- plan completeness pass
+- privacy validation pass
+- no unresolved ambiguity
+- no critical repair
+- minimum quality threshold of `0.95`
+
+Unknown or missing validation evidence makes the example ineligible.
+
+### Export and local files
+
+The export API supports:
+
+- `GET /v1/export/training-dataset?format=report`
+- `GET /v1/export/training-dataset?format=json`
+- `GET /v1/export/training-dataset?format=jsonl`
+- `GET /v1/export/training-dataset?format=csv`
+
+The service can also write local training files under `runtime/training/`:
+
+- `train.jsonl`
+- `validation.jsonl`
+- `test.jsonl`
+- `dataset_report.json`
+
+Those files are ignored by Git and are not committed.
+
+### Deduplication, splitting, and privacy
+
+- Export deduplicates by structural fingerprint, not raw query text.
+- Structurally related examples stay in the same train/validation/test split.
+- Default splitting is 80/10/10.
+- The privacy validator rejects any example that still contains unsafe payloads after sanitization.
+- Unsafe or repaired examples are rejected instead of being "best effort" exported.
+
+## Repository boundary audit
+
+Only generalized metadata crosses from the teacher app into this repository:
+
+- sanitized natural-language intent
+- aliased field IDs
+- semantic roles and dtypes
+- structured query features
+- plan summaries and validation outcomes
+
+The following never need to cross the boundary:
+
+- workbook rows or cell values
+- filenames, sheet names, or file bytes
+- customer names, emails, phone numbers, or account IDs
+- raw free-form result tables
+- any other row-level business data

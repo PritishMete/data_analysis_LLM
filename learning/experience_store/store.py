@@ -39,6 +39,7 @@ class LearningExperienceStore:
     @staticmethod
     def _safe_experience_keys() -> set[str]:
         return {
+            "event_id",
             "intent",
             "query_features",
             "semantic_roles",
@@ -58,6 +59,13 @@ class LearningExperienceStore:
             "failure_reason",
             "feedback_score",
             "repair_count",
+            "critic_passed",
+            "result_validation_passed",
+            "plan_completeness_passed",
+            "privacy_validation_passed",
+            "no_unresolved_ambiguity",
+            "no_critical_repair",
+            "correction_state",
             "skill_state_before",
             "skill_state_after",
             "correction_type",
@@ -68,6 +76,30 @@ class LearningExperienceStore:
             "plan_provenance",
             "created_at",
             "version",
+        }
+
+    @staticmethod
+    def _safe_query_feature_keys() -> set[str]:
+        return {
+            "intent",
+            "predicate_count",
+            "boolean_predicate_count",
+            "numeric_comparison_count",
+            "entity_reference_count",
+            "logical_structure",
+            "semantic_roles",
+            "operators",
+            "operation_hints",
+            "tool_hints",
+            "query_shape",
+            "dataset_semantic_signature",
+            "semantic_signature",
+            "confidence",
+            "predicate_graph",
+            "role_candidates",
+            "step_count",
+            "has_multiple_steps",
+            "schema_version",
         }
 
     def _sanitize_experience_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -83,6 +115,7 @@ class LearningExperienceStore:
         query_features = data.get("query_features")
         if not isinstance(query_features, dict):
             query_features = {}
+        query_features = {key: query_features.get(key) for key in self._safe_query_feature_keys() if key in query_features}
         query_features.setdefault("intent", data.get("intent") or data.get("route") or "unknown")
         query_features.setdefault("logical_structure", data.get("logical_structure") or "SINGLE")
         query_features.setdefault("predicate_count", len(data.get("operators") or []))
@@ -104,6 +137,7 @@ class LearningExperienceStore:
         data.setdefault("tool_sequence", [])
         data.setdefault("result_summary", {})
         data.setdefault("dataset_semantic_signature", None)
+        data.setdefault("event_id", None)
         data.setdefault("semantic_signature", query_features.get("semantic_signature"))
         data.setdefault("route", "unknown")
         data.setdefault("skill_id", None)
@@ -115,6 +149,13 @@ class LearningExperienceStore:
         data.setdefault("failure_reason", None)
         data.setdefault("feedback_score", None)
         data.setdefault("repair_count", 0)
+        data.setdefault("critic_passed", None)
+        data.setdefault("result_validation_passed", None)
+        data.setdefault("plan_completeness_passed", None)
+        data.setdefault("privacy_validation_passed", None)
+        data.setdefault("no_unresolved_ambiguity", None)
+        data.setdefault("no_critical_repair", None)
+        data.setdefault("correction_state", None)
         data.setdefault("skill_state_before", None)
         data.setdefault("skill_state_after", None)
         data.setdefault("correction_type", None)
@@ -161,8 +202,28 @@ class LearningExperienceStore:
 
     def append(self, record: ExperienceRecord) -> ExperienceRecord:
         payload = self._sanitize_experience_payload(record.to_dict())
+        event_id = payload.get("event_id")
+        if event_id:
+            existing = self._find_experience_by_event_id(str(event_id))
+            if existing is not None:
+                return ExperienceRecord.from_dict(existing)
         self._append_jsonl(self.experiences_path, payload)
         return ExperienceRecord.from_dict(payload)
+
+    def _find_experience_by_event_id(self, event_id: str) -> dict[str, Any] | None:
+        if not event_id or not self.experiences_path.exists():
+            return None
+        lines = self.experiences_path.read_text(encoding="utf-8").splitlines()
+        for raw in reversed(lines):
+            if not raw.strip():
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(payload, dict) and str(payload.get("event_id") or "") == event_id:
+                return self._sanitize_experience_payload(payload)
+        return None
 
     def load_recent(self, limit: int = 50) -> list[dict[str, Any]]:
         if not self.experiences_path.exists():

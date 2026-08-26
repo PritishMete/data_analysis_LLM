@@ -26,6 +26,8 @@ class QueryFeaturesPayload(BaseModel):
     logical_structure: str = "SINGLE"
     semantic_roles: list[str] = Field(default_factory=list)
     operators: list[str] = Field(default_factory=list)
+    predicate_graph: list[dict[str, Any]] = Field(default_factory=list)
+    tool_hints: list[str] = Field(default_factory=list)
 
 
 class PlanRequest(BaseModel):
@@ -36,16 +38,37 @@ class PlanRequest(BaseModel):
     dataset_profile: DatasetProfile
 
 
-class ExperienceRequest(BaseModel):
+class LearningEvent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: int = 1
+    event_id: str | None = None
     intent: str
     query_features: QueryFeaturesPayload
+    dataset_profile: DatasetProfile | None = None
+    tool_graph: list[str] = Field(default_factory=list)
     plan: dict[str, Any]
     execution: dict[str, Any]
     validation: dict[str, Any]
     quality_score: float = 0.0
+    route: str | None = None
+    plan_source: str | None = None
+    skill_id: str | None = None
+    plan_template_id: str | None = None
+    dataset_semantic_signature: str | None = None
+    critic_passed: bool | None = None
+    result_validation_passed: bool | None = None
+    plan_completeness_passed: bool | None = None
+    privacy_validation_passed: bool | None = None
+    no_unresolved_ambiguity: bool | None = None
+    no_critical_repair: bool | None = None
+    repair_count: int | None = None
+    correction_state: str | None = None
+    safe_query_abstraction: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperienceRequest(LearningEvent):
+    model_config = ConfigDict(extra="allow")
 
 
 class FeedbackRequest(BaseModel):
@@ -96,4 +119,3 @@ class MetricsResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     metrics: dict[str, Any]
-

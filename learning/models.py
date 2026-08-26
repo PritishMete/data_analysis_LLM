@@ -270,11 +270,19 @@ class ExperienceRecord:
     confidence: float
     success: bool
     score: float
+    event_id: str | None = None
     plan_hash: str | None = None
     plan_summary: dict[str, Any] = field(default_factory=dict)
     failure_reason: str | None = None
     feedback_score: int | None = None
     repair_count: int = 0
+    critic_passed: bool | None = None
+    result_validation_passed: bool | None = None
+    plan_completeness_passed: bool | None = None
+    privacy_validation_passed: bool | None = None
+    no_unresolved_ambiguity: bool | None = None
+    no_critical_repair: bool | None = None
+    correction_state: str | None = None
     skill_state_before: dict[str, Any] | None = None
     skill_state_after: dict[str, Any] | None = None
     plan_source: str = "deterministic_fallback"
@@ -299,6 +307,7 @@ class ExperienceRecord:
         data.setdefault("tool_sequence", [])
         data.setdefault("result_summary", {})
         data.setdefault("dataset_semantic_signature", None)
+        data.setdefault("event_id", None)
         data.setdefault(
             "semantic_signature",
             stable_hash({"intent": data.get("intent"), "route": data.get("route"), "skill_id": data.get("skill_id")}),
@@ -313,6 +322,13 @@ class ExperienceRecord:
         data.setdefault("failure_reason", None)
         data.setdefault("feedback_score", None)
         data.setdefault("repair_count", 0)
+        data.setdefault("critic_passed", None)
+        data.setdefault("result_validation_passed", None)
+        data.setdefault("plan_completeness_passed", None)
+        data.setdefault("privacy_validation_passed", None)
+        data.setdefault("no_unresolved_ambiguity", None)
+        data.setdefault("no_critical_repair", None)
+        data.setdefault("correction_state", None)
         data.setdefault("skill_state_before", None)
         data.setdefault("skill_state_after", None)
         data.setdefault("plan_source", "deterministic_fallback")

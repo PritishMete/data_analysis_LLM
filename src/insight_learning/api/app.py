@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from agent.orchestrator import AgenticLearningOrchestrator
 from learning.models import CandidateStrategy, CorrectionRecord, DatasetSemanticProfile, LearningDecision, PlannerContext, QueryFeatures, stable_hash
+from learning.training_export import TrainingDatasetExporter, TrainingExportBundle, TrainingExportPolicy
 from learning.skill_registry import SkillRegistry
 from learning.experience_store import LearningExperienceStore
 
@@ -60,9 +61,18 @@ def _query_features_payload(request: PlanRequest | ExperienceRequest) -> QueryFe
 
 
 def _dataset_profile_payload(dataset_profile: dict[str, Any]) -> DatasetSemanticProfile:
-    fields = list(dataset_profile.get("fields") or [])
-    available_columns = [str(field.get("id")) for field in fields]
-    column_roles = {str(field.get("id")): str(field.get("semantic_role") or "unknown") for field in fields}
+    raw_fields = list(dataset_profile.get("fields") or [])
+    fields = [
+        {
+            "id": str(field.get("id") or ""),
+            "semantic_role": str(field.get("semantic_role") or "unknown"),
+            "dtype": str(field.get("dtype") or "unknown"),
+        }
+        for field in raw_fields
+        if isinstance(field, dict)
+    ]
+    available_columns = [field["id"] for field in fields if field["id"]]
+    column_roles = {field["id"]: field["semantic_role"] for field in fields if field["id"]}
     return DatasetSemanticProfile(
         available_columns=available_columns,
         safe_profile={"fields": fields},
@@ -77,6 +87,7 @@ class InsightLearningService:
         self.store = LearningExperienceStore(root=root)
         self.registry = SkillRegistry(state_path=root / "skills_state.json")
         self.orchestrator = AgenticLearningOrchestrator(registry=self.registry, store=self.store)
+        self.training_export_policy = TrainingExportPolicy.from_env()
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "service": "insight-learning"}
@@ -109,6 +120,14 @@ class InsightLearningService:
 
     def experience(self, request: ExperienceRequest) -> dict[str, Any]:
         features = _query_features_payload(request)
+        dataset_profile_payload = request.dataset_profile.model_dump() if request.dataset_profile is not None else {"fields": []}
+        dataset_profile = _dataset_profile_payload(dataset_profile_payload)
+        context = PlannerContext(
+            features=features,
+            dataset_profile=dataset_profile.to_dict() | {"available_columns": dataset_profile.available_columns},
+            dataset_semantic_profile=dataset_profile,
+            retrieval_trace={},
+        )
         tool_sequence = list(request.plan.get("tool_sequence") or [])
         route = "sql" if any(tool.startswith("sql") for tool in tool_sequence) or request.intent in {"filter", "aggregate", "rank", "compare", "trend"} else "operation"
         decision = LearningDecision(
@@ -119,6 +138,8 @@ class InsightLearningService:
             features=features.to_dict(),
             retrieval_trace={},
             tool_sequence=tool_sequence,
+            plan_source=str(request.plan_source or "validated_template"),
+            plan_template_id=request.plan_template_id,
         )
         stored = self.orchestrator.record_result(
             user_text=_synthetic_user_text(request.intent, request.query_features.model_dump(), {"fields": []}),
@@ -127,12 +148,21 @@ class InsightLearningService:
             available_columns=[],
             result_summary={
                 "result_kind": "table" if request.validation.get("success") else "error",
-                "row_count": None,
-                "column_count": None,
+                "row_count": 1 if request.validation.get("success") else None,
+                "column_count": max(1, len(dataset_profile.available_columns)) if request.validation.get("success") else None,
                 "quality": request.quality_score,
             },
             success=bool(request.execution.get("success")) and bool(request.validation.get("success")),
             feedback_score=None,
+            event_id=request.event_id,
+            critic_passed=request.critic_passed,
+            result_validation_passed=request.result_validation_passed,
+            plan_completeness_passed=request.plan_completeness_passed,
+            privacy_validation_passed=request.privacy_validation_passed,
+            no_unresolved_ambiguity=request.no_unresolved_ambiguity,
+            no_critical_repair=request.no_critical_repair,
+            correction_state=request.correction_state,
+            planner_context=context,
         )
         return {
             "stored": True,
@@ -162,6 +192,31 @@ class InsightLearningService:
     def skills(self) -> list[dict[str, Any]]:
         return [spec.to_dict() for spec in self.registry.all()]
 
+    def export_training_dataset(
+        self,
+        *,
+        include_candidate_strategies: bool = True,
+        limit: int = 1000,
+    ) -> TrainingExportBundle:
+        exporter = TrainingDatasetExporter(self.store, self.training_export_policy)
+        bundle, _ = exporter.build_bundle(limit=limit, include_candidate_strategies=include_candidate_strategies)
+        return bundle
+
+    def export_training_dataset_files(
+        self,
+        *,
+        output_dir: Path | None = None,
+        include_candidate_strategies: bool = True,
+        limit: int = 1000,
+    ) -> dict[str, str]:
+        exporter = TrainingDatasetExporter(self.store, self.training_export_policy)
+        paths = exporter.export_files(
+            output_dir=output_dir,
+            include_candidate_strategies=include_candidate_strategies,
+            limit=limit,
+        )
+        return {key: str(path) for key, path in paths.items()}
+
     def metrics(self) -> dict[str, Any]:
         return {
             "experiences": len(self.store.load_recent(limit=10_000)),
@@ -189,6 +244,7 @@ def create_app() -> FastAPI:
     from .routes_plan import router as plan_routes
     from .routes_experience import router as experience_routes
     from .routes_feedback import router as feedback_routes
+    from .routes_export import router as export_routes
     from .routes_skills import router as skills_routes
 
     @app.get("/v1/health")
@@ -202,6 +258,7 @@ def create_app() -> FastAPI:
     app.include_router(plan_routes)
     app.include_router(experience_routes)
     app.include_router(feedback_routes)
+    app.include_router(export_routes)
     app.include_router(skills_routes)
     return app
 
