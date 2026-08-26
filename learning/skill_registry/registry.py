@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
-import re
 from typing import Any
 
 from learning.bootstrap.skills import bootstrap_skill_specs
@@ -28,7 +27,9 @@ class SkillRegistry:
     def __init__(self, state_path: Path | None = None):
         self.state_path = state_path or (_default_state_dir() / "skills_state.json")
         self._specs = {spec.id: spec for spec in bootstrap_skill_specs()}
+        self._dynamic_specs: dict[str, SkillSpec] = {}
         self._states = self._load_states()
+        self._load_dynamic_specs()
         for skill_id, spec in self._specs.items():
             self._states.setdefault(skill_id, SkillState(skill_id=skill_id, confidence=spec.confidence))
 
@@ -36,13 +37,14 @@ class SkillRegistry:
         return RegistrySnapshot(specs=dict(self._specs), states=dict(self._states))
 
     def all(self) -> list[SkillSpec]:
-        return list(self._specs.values())
+        return list(self._specs.values()) + list(self._dynamic_specs.values())
 
     def get(self, skill_id: str) -> SkillSpec | None:
-        return self._specs.get(skill_id)
+        return self._specs.get(skill_id) or self._dynamic_specs.get(skill_id)
 
     def state_for(self, skill_id: str) -> SkillState:
-        return self._states.setdefault(skill_id, SkillState(skill_id=skill_id, confidence=self.get(skill_id).confidence if self.get(skill_id) else 0.5))
+        spec = self.get(skill_id)
+        return self._states.setdefault(skill_id, SkillState(skill_id=skill_id, confidence=spec.confidence if spec else 0.5))
 
     def effective_confidence(self, skill_id: str) -> float:
         spec = self.get(skill_id)
@@ -56,6 +58,7 @@ class SkillRegistry:
         payload = {
             "schema_version": 1,
             "skills": {skill_id: state.to_dict() for skill_id, state in self._states.items()},
+            "dynamic_skills": {skill_id: spec.to_dict() for skill_id, spec in self._dynamic_specs.items()},
         }
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -80,6 +83,25 @@ class SkillRegistry:
                     continue
         return states
 
+    def _load_dynamic_specs(self) -> None:
+        if not self.state_path.exists():
+            return
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        raw = payload.get("dynamic_skills") if isinstance(payload, dict) else {}
+        if not isinstance(raw, dict):
+            return
+        for skill_id, spec_payload in raw.items():
+            if isinstance(spec_payload, dict):
+                try:
+                    spec = SkillSpec(**spec_payload)
+                except Exception:
+                    continue
+                self._dynamic_specs[skill_id] = spec
+                self._states.setdefault(skill_id, SkillState(skill_id=skill_id, confidence=spec.confidence))
+
     def match(self, features: QueryFeatures) -> list[SkillMatch]:
         from learning.retriever import score_skill
 
@@ -92,8 +114,13 @@ class SkillRegistry:
         matches.sort(key=lambda item: (item.score, self.effective_confidence(item.spec.id)), reverse=True)
         return matches
 
+    def register_dynamic_skill(self, spec: SkillSpec) -> None:
+        self._dynamic_specs[spec.id] = spec
+        self._states.setdefault(spec.id, SkillState(skill_id=spec.id, confidence=spec.confidence, state="candidate"))
+        self.save()
+
     def update_from_experience(self, skill_id: str | None, *, success: bool, score: float, now_iso: str | None = None) -> tuple[SkillState | None, SkillState | None]:
-        if not skill_id or skill_id not in self._specs:
+        if not skill_id or self.get(skill_id) is None:
             return None, None
 
         state_before = SkillState.from_dict(self.state_for(skill_id).to_dict())

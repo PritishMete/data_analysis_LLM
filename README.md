@@ -187,9 +187,9 @@ of the existing deterministic tools.
 What it means:
 
 - The system bootstraps structured skills from the expert code already in this repo.
-- Successful executions become experiences that can be retrieved later.
-- Repeated success raises skill confidence and can promote a skill from bootstrap
-  to candidate or promoted state.
+- Successful executions become privacy-safe experiences that can be retrieved later.
+- Repeated success can surface a candidate strategy and promote a skill from bootstrap
+  to candidate, promoted, or dynamic learned state.
 - The planner still prefers local deterministic tools and only falls back to the
   remote model when no learned skill is confident enough.
 
@@ -198,6 +198,8 @@ What it does not mean:
 - No foundation model is trained from scratch.
 - No runtime request edits source code or deploys itself.
 - No raw workbook rows are written into the learning store.
+- No raw query text, sheet names, filenames, or workbook values are persisted in
+  the learning memory.
 
 Lifecycle:
 
@@ -219,6 +221,9 @@ flowchart TD
 Memory and promotion:
 
 - Experiences are written to a local append-only JSONL log.
+- Failure lessons and correction records are stored separately from experiences.
+- Candidate strategies are discovered from repeated successful patterns and can
+  be promoted into dynamic learned skills.
 - Skill confidence is stored separately as versioned JSON state.
 - Promotion happens only after repeated successful, validated use.
 - Demotion happens when a skill repeatedly fails.
@@ -226,8 +231,8 @@ Memory and promotion:
 Privacy:
 
 - Raw workbook values are never stored in the experience log.
-- Only safe summaries, plan metadata, confidence values, and hashed schema
-  signatures are retained.
+- Only safe summaries, plan metadata, confidence values, hashed semantic
+  signatures, and structural features are retained.
 - The remote LLM boundary stays the same as before: it is only used when the
   local planner cannot confidently resolve the request.
 

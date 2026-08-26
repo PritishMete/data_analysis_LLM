@@ -29,6 +29,18 @@ async def list_experiences(limit: int = 50):
     return {"experiences": orchestrator.store.load_recent(limit=limit)}
 
 
+@learning_router.get("/failure-lessons")
+async def list_failure_lessons(limit: int = 50):
+    orchestrator = get_agentic_orchestrator()
+    return {"failure_lessons": orchestrator.store.load_failure_lessons(limit=limit)}
+
+
+@learning_router.get("/candidate-strategies")
+async def list_candidate_strategies(limit: int = 50):
+    orchestrator = get_agentic_orchestrator()
+    return {"candidate_strategies": orchestrator.store.load_candidate_strategies(limit=limit)}
+
+
 @learning_router.post("/plan")
 async def plan_query(payload: dict):
     orchestrator = get_agentic_orchestrator()

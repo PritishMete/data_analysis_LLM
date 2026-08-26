@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+from typing import Any
 import json
 import re
-from dataclasses import dataclass
-from typing import Any
 
 import pandas as pd
 
-from learning.models import LearningDecision, QueryFeatures
-from learning.retriever import tokenize
+from learning.feature_extractor import build_planner_context
+from learning.models import LearningDecision, PlannerContext
+from learning.skill_registry import SkillRegistry, get_skill_registry
+
 from secure_excel.semantic_roles import detect_column_role
 
 
-_NUMBER_RE = re.compile(r"(?P<op>above|over|greater than|more than|at least|below|under|less than|equal to|equals?)\s+(?P<value>-?\d+(?:\.\d+)?)", re.I)
 _GENERIC_ENTITY_STOPWORDS = {
     "restaurant",
     "restaurants",
@@ -29,16 +29,18 @@ _GENERIC_ENTITY_STOPWORDS = {
 
 
 def _normalize_text(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (text or "").lower())).strip()
 
 
 def _compact(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
 
-def _column_roles(df: pd.DataFrame) -> dict[str, str]:
+def _column_roles(df: pd.DataFrame | None, columns: list[str]) -> dict[str, str]:
+    if df is None:
+        return {str(column): "unknown" for column in columns}
     roles: dict[str, str] = {}
-    for column in df.columns:
+    for column in columns:
         try:
             roles[str(column)] = detect_column_role(str(column), df[column])["role"]
         except Exception:
@@ -46,7 +48,7 @@ def _column_roles(df: pd.DataFrame) -> dict[str, str]:
     return roles
 
 
-def _choose_column(columns: list[str], text: str, *, role_hint: str | None = None) -> str | None:
+def _choose_column(columns: list[str], text: str, *, role_hint: str | None = None, roles: dict[str, str] | None = None) -> str | None:
     normalized = _normalize_text(text)
     compact = _compact(text)
     for column in columns:
@@ -66,6 +68,10 @@ def _choose_column(columns: list[str], text: str, *, role_hint: str | None = Non
         for column in columns:
             column_norm = _normalize_text(column)
             if any(alias in column_norm for alias in aliases):
+                return column
+    if roles:
+        for column, role in roles.items():
+            if role == role_hint:
                 return column
     return columns[0] if columns else None
 
@@ -91,7 +97,6 @@ def _build_sql_filter_plan(text: str, columns: list[str], roles: dict[str, str])
             entity_column = column
             break
     if entity_column:
-        # Try to detect explicit entity values from the user text by stripping known verbs.
         cleaned = normalized
         for verb in ("show", "find", "filter", "display", "list", "view", "return", "rows", "records"):
             cleaned = re.sub(rf"\b{verb}\b", " ", cleaned)
@@ -111,7 +116,7 @@ def _build_sql_filter_plan(text: str, columns: list[str], roles: dict[str, str])
     ):
         if phrase in normalized:
             column = next((col for col, role in roles.items() if role == "boolean_capability" or phrase.replace(" ", "") in _compact(col)), None)
-            column = column or _choose_column(columns, phrase, role_hint=column_hint)
+            column = column or _choose_column(columns, phrase, role_hint=column_hint, roles=roles)
             if column:
                 add_filter(column, "equals", value)
 
@@ -142,7 +147,7 @@ def _build_sql_filter_plan(text: str, columns: list[str], roles: dict[str, str])
             "equal": "equals",
         }
         column = next((col for col, role in roles.items() if role == "rating_metric" or "rating" in _compact(col)), None)
-        column = column or _choose_column(columns, "rating", role_hint="rating_metric")
+        column = column or _choose_column(columns, "rating", role_hint="rating_metric", roles=roles)
         if column:
             add_filter(column, operator_map.get(op, "greater_than"), value)
 
@@ -183,54 +188,127 @@ def _build_operation_plan(text: str, columns: list[str]) -> dict[str, Any] | Non
     }
 
 
+def _score_retrieval_context(context: PlannerContext, registry: SkillRegistry) -> dict[str, Any]:
+    features = context.features
+    skills = registry.match(features)[:5]
+    experiences = sorted(
+        context.similar_experiences,
+        key=lambda item: (item.get("score", 0.0), item.get("created_at", "")),
+        reverse=True,
+    )[:5]
+    lessons = sorted(
+        context.failure_lessons,
+        key=lambda item: (item.get("score", 0.0), item.get("created_at", "")),
+        reverse=True,
+    )[:5]
+    candidates = sorted(
+        context.candidate_strategies,
+        key=lambda item: (item.get("score", 0.0), item.get("created_at", "")),
+        reverse=True,
+    )[:5]
+    return {
+        "skills": [match.to_dict() for match in skills],
+        "experiences": experiences,
+        "failure_lessons": lessons,
+        "candidate_strategies": candidates,
+        "feature_signature": features.semantic_signature,
+    }
+
+
 class LearningPlanner:
-    def plan(self, user_text: str, df: pd.DataFrame | None, available_columns: list[str] | None = None) -> LearningDecision:
+    def __init__(self, registry: SkillRegistry | None = None):
+        self.registry = registry or get_skill_registry()
+
+    def plan(
+        self,
+        user_text: str,
+        df: pd.DataFrame | None,
+        available_columns: list[str] | None = None,
+        planner_context: PlannerContext | None = None,
+    ) -> LearningDecision:
         columns = list(available_columns or (list(df.columns) if df is not None else []))
-        roles = _column_roles(df) if df is not None else {}
-        normalized = _normalize_text(user_text)
-        features = QueryFeatures(
-            query=user_text,
-            normalized_query=normalized,
-            tokens=tokenize(user_text),
-            available_columns=columns,
-            semantic_roles=roles,
-            numeric_columns=[col for col, role in roles.items() if role in {"numeric_metric", "currency_metric", "rating_metric", "count", "percentage"}],
-            boolean_columns=[col for col, role in roles.items() if role == "boolean_capability"],
-            text_columns=[col for col, role in roles.items() if role in {"description", "category", "entity_name"}],
-            schema_signature=None,
-            intent_hints=[token for token in ("filter", "categorize", "classify", "normalize", "aggregate", "group", "show") if token in normalized],
-        )
+        context = planner_context or build_planner_context(user_text, df, columns)
+        features = context.features
+        roles = _column_roles(df, columns)
+        retrieval_trace = _score_retrieval_context(context, self.registry)
+        retrieval_trace.update(context.retrieval_trace)
 
-        sql_plan = _build_sql_filter_plan(user_text, columns, roles)
-        if sql_plan is not None:
-            confidence = 0.88 if len(sql_plan.get("filters") or []) > 1 else 0.82
-            return LearningDecision(
-                route="sql",
-                confidence=confidence,
-                message="Matched a learned filter skill and built a local SQL plan.",
-                skill_id="filter.multi_condition.v1" if len(sql_plan.get("filters") or []) > 1 else "filter.entity_search.v1",
-                skill_name="Multi-condition filtering" if len(sql_plan.get("filters") or []) > 1 else "Entity search",
-                plan=sql_plan,
-                validation_notes=[],
-                features=features.to_dict(),
-            )
+        if retrieval_trace["skills"]:
+            retrieval_trace["top_skill_id"] = retrieval_trace["skills"][0]["spec"]["id"]
+            retrieval_trace["top_skill_score"] = retrieval_trace["skills"][0]["score"]
 
-        operation_plan = _build_operation_plan(user_text, columns)
-        if operation_plan is not None:
-            return LearningDecision(
-                route="operation",
-                confidence=0.8,
-                message="Matched a learned operation skill and built a local command.",
-                skill_id="clean.boolean_normalization.v1" if "normalize" in normalized else "clean.gender_normalization.v1",
-                skill_name="Categorization / normalization",
-                plan=operation_plan,
-                validation_notes=[],
-                features=features.to_dict(),
-            )
+        route = "unknown"
+        plan: dict[str, Any] | None = None
+        skill_id: str | None = None
+        skill_name: str | None = None
+        message = "No learned skill matched with sufficient confidence."
+        confidence = 0.0
+
+        top_skill = retrieval_trace["skills"][0] if retrieval_trace["skills"] else None
+        if top_skill and top_skill["score"] >= 0.35:
+            skill_id = top_skill["spec"]["id"]
+            skill_name = top_skill["spec"]["name"]
+
+        if features.intent in {"filter", "analytics"} or (skill_id and skill_id.startswith("filter.")):
+            plan = _build_sql_filter_plan(user_text, columns, roles)
+            if plan is not None:
+                route = "sql"
+                confidence = 0.9 if len(plan.get("filters") or []) > 1 else 0.84
+                if len(plan.get("filters") or []) > 1:
+                    skill_id = "filter.multi_condition.v1"
+                    skill_name = "Multi-condition filtering"
+                else:
+                    skill_id = "filter.entity_search.v1"
+                    skill_name = "Entity search"
+                message = "Matched a learned filter skill and built a local plan."
+
+        if route == "unknown" and (features.intent in {"cleaning", "operation"} or (skill_id and skill_id.startswith("clean."))):
+            plan = _build_operation_plan(user_text, columns)
+            if plan is not None:
+                route = "operation"
+                confidence = 0.82
+                skill_id = skill_id or "clean.boolean_normalization.v1"
+                skill_name = skill_name or "Categorization / normalization"
+                message = "Matched a learned operation skill and built a local command."
+
+        if route == "unknown" and features.intent == "sentiment":
+            route = "sentiment"
+            confidence = 0.78
+            message = "Matched a learned sentiment route."
+
+        if route == "unknown" and features.intent == "analytics":
+            route = "sql"
+            confidence = 0.62
+            message = "Matched an analytical query shape but no confident local plan."
+
+        validation_notes: list[str] = []
+        if route == "sql" and plan is not None:
+            requested = features.predicate_count
+            planned = len(plan.get("filters") or [])
+            if requested and planned < requested:
+                validation_notes.append("planned fewer predicates than requested")
+            if features.logical_structure in {"AND", "MIXED"} and planned < 2:
+                validation_notes.append("did not preserve multi-condition structure")
+        if skill_id:
+            for record in retrieval_trace["experiences"]:
+                if record.get("skill_id") == skill_id:
+                    validation_notes.append("retrieved prior experience for this skill")
+                    break
 
         return LearningDecision(
-            route="unknown",
-            confidence=0.0,
-            message="No learned skill matched with sufficient confidence.",
+            route=route,
+            confidence=round(confidence, 4),
+            message=message,
+            skill_id=skill_id,
+            skill_name=skill_name,
+            plan=plan,
+            validation_notes=validation_notes,
             features=features.to_dict(),
+            retrieval_trace=retrieval_trace,
+            tool_sequence=(
+                ["sql.filter"] if route == "sql" else
+                ["categorization_agent._deterministic_special_mapping"] if route == "operation" else
+                ["sentiment.analyzer"] if route == "sentiment" else
+                []
+            ),
         )

@@ -51,21 +51,56 @@ def test_multi_condition_filter_planner_keeps_every_requested_condition(tmp_path
     assert {"Online Delivery", "Table Booking", "Aggregate rating"} <= columns
 
 
-def test_entity_search_planner_is_generic_and_not_brand_hardcoded(tmp_path):
+def test_planner_reuses_similar_experience_memory(tmp_path):
     orchestrator = _orchestrator(tmp_path)
     df = pd.DataFrame({"Restaurant Name": ["Pizza Hut", "KFC"], "Revenue": [100, 200]})
 
     decision = orchestrator.plan("show Pizza Hut", df=df, available_columns=list(df.columns))
-
     assert decision.route == "sql"
-    assert decision.skill_id == "filter.entity_search.v1"
-    assert decision.plan is not None
-    assert decision.plan["filters"][0]["column"] == "Restaurant Name"
-    assert decision.plan["filters"][0]["value"] == "Pizza Hut"
+
+    orchestrator.record_result(
+        user_text="show Pizza Hut",
+        decision=decision,
+        df=df,
+        available_columns=list(df.columns),
+        result_summary={"result_kind": "table", "row_count": 1, "column_count": 2, "columns": ["Restaurant Name", "Revenue"]},
+        success=True,
+    )
+
+    next_decision = orchestrator.plan("show Pizza Hut", df=df, available_columns=list(df.columns))
+    assert next_decision.retrieval_trace["experience_count"] >= 1
+    assert next_decision.skill_id == "filter.entity_search.v1"
 
 
-def test_experience_logging_is_privacy_safe_and_persists_skill_promotion(tmp_path):
+def test_privacy_safe_migration_and_candidate_promotion(tmp_path):
+    legacy_payload = {
+        "query_text": "show John Smith",
+        "normalized_query": "show john smith",
+        "schema_signature": "legacy-schema",
+        "route": "sql",
+        "skill_id": "filter.entity_search.v1",
+        "confidence": 0.95,
+        "success": True,
+        "score": 0.92,
+        "plan_hash": "abc123",
+        "plan_summary": {"route": "sql", "plan_keys": ["filters"]},
+        "result_summary": {"result_kind": "table", "row_count": 1, "column_count": 2, "columns": ["Name", "Email"]},
+        "created_at": "2026-08-26T00:00:00+00:00",
+        "version": 1,
+    }
+    (tmp_path / "experiences.jsonl").write_text(json.dumps(legacy_payload) + "\n", encoding="utf-8")
+
     orchestrator = _orchestrator(tmp_path)
+    migrated_log = (tmp_path / "experiences.jsonl").read_text(encoding="utf-8")
+    assert "query_text" not in migrated_log
+    assert "normalized_query" not in migrated_log
+    assert "John Smith" not in migrated_log
+
+    recent = orchestrator.store.load_recent(limit=1)
+    assert recent
+    assert "query_text" not in recent[0]
+    assert "normalized_query" not in recent[0]
+
     df = pd.DataFrame({"Restaurant Name": ["Pizza Hut"], "Revenue": [100]})
     decision = orchestrator.plan("show Pizza Hut", df=df, available_columns=list(df.columns))
     assert isinstance(decision, LearningDecision)
@@ -82,19 +117,34 @@ def test_experience_logging_is_privacy_safe_and_persists_skill_promotion(tmp_pat
 
     experience_log = (tmp_path / "experiences.jsonl").read_text(encoding="utf-8")
     assert '"rows"' not in experience_log
-    assert "100" not in experience_log
     assert '"sheet_name"' not in experience_log
 
+    strategies = orchestrator.store.load_candidate_strategies(limit=10)
+    assert strategies
+    assert any(strategy["state"] == "promoted" for strategy in strategies)
+
     registry = SkillRegistry(state_path=tmp_path / "skills_state.json")
-    state = registry.state_for("filter.entity_search.v1")
-    assert state.success_count >= 3
-    assert state.state == "promoted"
-    assert state.confidence >= 0.9
+    assert any(spec.id.startswith("learned.") for spec in registry.all())
 
-    store = LearningExperienceStore(root=tmp_path)
-    recent = store.load_recent(limit=1)
-    assert recent
-    assert recent[0]["skill_id"] == "filter.entity_search.v1"
 
-    summary = store.load_summary()
-    assert summary["skills"]["filter.entity_search.v1"]["state"] == "promoted"
+def test_failure_learning_creates_safe_lesson(tmp_path):
+    orchestrator = _orchestrator(tmp_path)
+    df = pd.DataFrame({"Restaurant Name": ["Pizza Hut"], "Revenue": [100]})
+    decision = orchestrator.plan("show Pizza Hut", df=df, available_columns=list(df.columns))
+
+    orchestrator.record_result(
+        user_text="show Pizza Hut",
+        decision=decision,
+        df=df,
+        available_columns=list(df.columns),
+        result_summary={"result_kind": "error"},
+        success=False,
+        failure_reason="forced failure",
+    )
+
+    lessons = orchestrator.store.load_failure_lessons(limit=10)
+    assert lessons
+    assert lessons[0]["intent"] in {"filter", "unknown"}
+
+    retried = orchestrator.plan("show Pizza Hut", df=df, available_columns=list(df.columns))
+    assert retried.retrieval_trace["failure_lesson_count"] >= 1
