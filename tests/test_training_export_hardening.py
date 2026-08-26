@@ -145,7 +145,7 @@ def test_strict_eligibility_rejects_bad_results_and_low_quality(tmp_path):
     assert len(preview) == 1
 
 
-def test_event_id_idempotency_prevents_double_learning(tmp_path, monkeypatch, caplog):
+def test_event_id_idempotency_prevents_double_learning_end_to_end(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("INSIGHT_LEARNING_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("DATA_ANALYSIS_LLM_STATE_DIR", str(tmp_path / "state"))
     app_module._SERVICE = None
@@ -230,7 +230,7 @@ def test_event_id_idempotency_prevents_double_learning(tmp_path, monkeypatch, ca
     assert all(value not in caplog.text for value in SENSITIVE_VALUES)
 
 
-def test_event_id_idempotency_prevents_double_learning(tmp_path):
+def test_event_id_idempotency_prevents_double_learning_store(tmp_path):
     store = LearningExperienceStore(root=tmp_path / "runtime")
     record = _experience_record(event_id="evt_idempotent")
     store.append(record)
@@ -315,14 +315,16 @@ def test_manifest_readiness_and_create_endpoint_are_safe(tmp_path, monkeypatch):
 
     manifest = service.build_training_dataset_manifest()
     assert manifest["manifest_version"] == 1
-    assert manifest["readiness"]["ready"] is True
+    assert manifest["readiness"]["ready"] is False
+    assert manifest["readiness"]["ready_for_prototype"] is False
+    assert "eligible_examples_below_threshold" in manifest["readiness"]["reason"]
     assert manifest["dataset_version"]
 
     readiness = client.get("/v1/export/training-dataset?format=readiness")
     assert readiness.status_code == 200
     readiness_payload = readiness.json()
     assert readiness_payload["format"] == "readiness"
-    assert readiness_payload["readiness"]["ready"] is True
+    assert readiness_payload["readiness"]["ready"] is False
 
     manifest_response = client.get("/v1/export/training-dataset?format=manifest")
     assert manifest_response.status_code == 200

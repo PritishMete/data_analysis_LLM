@@ -133,6 +133,12 @@ def _normalise_float(value: Any) -> float | None:
 @dataclass(slots=True)
 class TrainingExportPolicy:
     minimum_quality: float = 0.95
+    minimum_readiness_quality: float = 0.96
+    minimum_eligible_examples: int = 500
+    minimum_family_count: int = 50
+    minimum_intent_count: int = 10
+    max_single_intent_share: float = 0.40
+    max_single_tool_graph_share: float = 0.40
     require_execution_success: bool = True
     require_critic_pass: bool = True
     require_result_validation: bool = True
@@ -155,6 +161,12 @@ class TrainingExportPolicy:
     def from_env(cls) -> "TrainingExportPolicy":
         policy = cls(
             minimum_quality=_env_float("INSIGHT_LEARNING_EXPORT_MIN_QUALITY", 0.95),
+            minimum_readiness_quality=_env_float("INSIGHT_LEARNING_EXPORT_MIN_READINESS_QUALITY", 0.96),
+            minimum_eligible_examples=max(1, _env_int("INSIGHT_LEARNING_EXPORT_MIN_ELIGIBLE_EXAMPLES", 500)),
+            minimum_family_count=max(1, _env_int("INSIGHT_LEARNING_EXPORT_MIN_FAMILY_COUNT", 50)),
+            minimum_intent_count=max(1, _env_int("INSIGHT_LEARNING_EXPORT_MIN_INTENT_COUNT", 10)),
+            max_single_intent_share=_env_float("INSIGHT_LEARNING_EXPORT_MAX_SINGLE_INTENT_SHARE", 0.40),
+            max_single_tool_graph_share=_env_float("INSIGHT_LEARNING_EXPORT_MAX_SINGLE_TOOL_GRAPH_SHARE", 0.40),
             require_execution_success=_env_bool("INSIGHT_LEARNING_EXPORT_REQUIRE_EXECUTION_SUCCESS", True),
             require_critic_pass=_env_bool("INSIGHT_LEARNING_EXPORT_REQUIRE_CRITIC_PASS", True),
             require_result_validation=_env_bool("INSIGHT_LEARNING_EXPORT_REQUIRE_RESULT_VALIDATION", True),
@@ -281,16 +293,53 @@ class TrainingExportBundle:
 
     def report(self) -> dict[str, Any]:
         split_counts = Counter(record.split for record in self.records)
+        eligible = len(self.records)
+        intent_distribution = dict(sorted(self.intent_distribution.items()))
+        tool_distribution = dict(sorted(self.tool_graph_distribution.items()))
+        step_distribution = dict(sorted(self.step_distribution.items()))
+        family_count = len({record.family_fingerprint for record in self.records})
+        intent_count = len(intent_distribution)
+        tool_graph_count = len(tool_distribution)
+        largest_intent_share = (max(intent_distribution.values()) / eligible) if eligible and intent_distribution else 0.0
+        largest_tool_graph_share = (max(tool_distribution.values()) / eligible) if eligible and tool_distribution else 0.0
+        average_steps = (
+            sum(step * count for step, count in self.step_distribution.items()) / eligible
+            if eligible
+            else 0.0
+        )
+        single_step_pct = round((self.step_distribution.get(1, 0) / eligible) * 100, 2) if eligible else 0.0
+        multi_step_pct = round(100.0 - single_step_pct, 2) if eligible else 0.0
+        privacy_rejections = sum(
+            count
+            for reason, count in self.rejected_reasons.items()
+            if reason.startswith("unsafe_") or "privacy" in reason
+        )
+        invalidated_excluded = int(self.rejected_reasons.get("invalidated", 0))
+        balance_warnings: list[str] = []
+        if eligible and largest_intent_share > self.policy.max_single_intent_share:
+            balance_warnings.append(f"largest_intent_share={largest_intent_share:.3f}")
+        if eligible and largest_tool_graph_share > self.policy.max_single_tool_graph_share:
+            balance_warnings.append(f"largest_tool_graph_share={largest_tool_graph_share:.3f}")
         return {
             "total_experiences_inspected": self.inspected_count,
-            "eligible_examples": len(self.records),
+            "eligible_examples": eligible,
             "rejected_examples": self.rejected_count,
             "rejection_reasons": dict(sorted(self.rejected_reasons.items())),
             "duplicates_removed": self.duplicates_removed,
-            "family_count": len({record.family_fingerprint for record in self.records}),
-            "intent_distribution": dict(sorted(self.intent_distribution.items())),
-            "tool_graph_distribution": dict(sorted(self.tool_graph_distribution.items())),
-            "number_of_steps_distribution": dict(sorted(self.step_distribution.items())),
+            "invalidated_excluded": invalidated_excluded,
+            "privacy_rejections": privacy_rejections,
+            "family_count": family_count,
+            "intent_count": intent_count,
+            "tool_graph_count": tool_graph_count,
+            "largest_intent_share": round(largest_intent_share, 4),
+            "largest_tool_graph_share": round(largest_tool_graph_share, 4),
+            "average_tool_steps": round(average_steps, 4),
+            "single_step_pct": single_step_pct,
+            "multi_step_pct": multi_step_pct,
+            "balance_warnings": balance_warnings,
+            "intent_distribution": intent_distribution,
+            "tool_graph_distribution": tool_distribution,
+            "number_of_steps_distribution": step_distribution,
             "predicate_complexity_distribution": dict(sorted(self.predicate_complexity_distribution.items())),
             "plan_source_distribution": dict(sorted(self.source_distribution.items())),
             "average_quality": round(self.average_quality, 4) if self.records else 0.0,

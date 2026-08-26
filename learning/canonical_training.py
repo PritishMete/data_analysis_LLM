@@ -10,6 +10,12 @@ from .models import SCHEMA_VERSION, stable_hash
 CANONICAL_CORPUS_VERSION = 1
 DEFAULT_SPLITS = ("train", "validation", "test")
 DEFAULT_MINIMUM_QUALITY = 0.95
+DEFAULT_MINIMUM_READINESS_QUALITY = 0.96
+DEFAULT_MINIMUM_ELIGIBLE_EXAMPLES = 500
+DEFAULT_MINIMUM_FAMILY_COUNT = 50
+DEFAULT_MINIMUM_INTENT_COUNT = 10
+DEFAULT_MAX_SINGLE_INTENT_SHARE = 0.40
+DEFAULT_MAX_SINGLE_TOOL_GRAPH_SHARE = 0.40
 
 
 def _utcnow_iso() -> str:
@@ -88,6 +94,13 @@ def _dataset_version(report: dict[str, Any], policy: dict[str, Any]) -> str:
         "duplicates_removed": report.get("duplicates_removed", 0),
     }
     return stable_hash(payload)[:16]
+
+
+def _distribution_share(distribution: Mapping[str, Any]) -> float:
+    total = sum(int(value or 0) for value in distribution.values())
+    if total <= 0:
+        return 0.0
+    return max(int(value or 0) for value in distribution.values()) / float(total)
 
 
 @dataclass(slots=True)
@@ -210,8 +223,13 @@ class TrainingCandidateInvalidation:
 class TrainingBenchmarkResult:
     dataset_version: str
     eligible_examples: int
+    family_count: int
+    intent_count: int
+    tool_graph_count: int
     average_quality: float
     readiness_score: float
+    largest_intent_share: float = 0.0
+    largest_tool_graph_share: float = 0.0
     notes: list[str] = field(default_factory=list)
     version: int = CANONICAL_CORPUS_VERSION
 
@@ -222,25 +240,39 @@ class TrainingBenchmarkResult:
 @dataclass(slots=True)
 class TrainingReadinessAssessment:
     ready: bool
+    ready_for_prototype: bool
     reason: str | None
     checked_at: str
     dataset_version: str
     eligible_examples: int
+    family_count: int
+    intent_count: int
+    tool_graph_count: int
     rejected_examples: int
     minimum_quality: float
+    minimum_readiness_quality: float
+    minimum_eligible_examples: int
+    minimum_family_count: int
+    minimum_intent_count: int
+    max_single_intent_share: float
+    max_single_tool_graph_share: float
     all_required_gates_passed: bool
     privacy_gate_passed: bool
     dedupe_gate_passed: bool
     split_integrity_passed: bool
     average_quality: float
+    largest_intent_share: float
+    largest_tool_graph_share: float
     benchmark: TrainingBenchmarkResult | None = None
     notes: list[str] = field(default_factory=list)
+    balance_warnings: list[str] = field(default_factory=list)
     version: int = CANONICAL_CORPUS_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         if self.benchmark is not None:
             payload["benchmark"] = self.benchmark.to_dict()
+        payload["ready_for_prototype"] = self.ready_for_prototype
         return payload
 
 
@@ -306,13 +338,24 @@ def evaluate_training_readiness(
     report_payload = dict(report)
     policy_payload = _policy_payload(policy)
     minimum_quality = float(policy_payload.get("minimum_quality", DEFAULT_MINIMUM_QUALITY) or DEFAULT_MINIMUM_QUALITY)
+    minimum_readiness_quality = float(policy_payload.get("minimum_readiness_quality", DEFAULT_MINIMUM_READINESS_QUALITY) or DEFAULT_MINIMUM_READINESS_QUALITY)
+    minimum_eligible_examples = int(policy_payload.get("minimum_eligible_examples", DEFAULT_MINIMUM_ELIGIBLE_EXAMPLES) or DEFAULT_MINIMUM_ELIGIBLE_EXAMPLES)
+    minimum_family_count = int(policy_payload.get("minimum_family_count", DEFAULT_MINIMUM_FAMILY_COUNT) or DEFAULT_MINIMUM_FAMILY_COUNT)
+    minimum_intent_count = int(policy_payload.get("minimum_intent_count", DEFAULT_MINIMUM_INTENT_COUNT) or DEFAULT_MINIMUM_INTENT_COUNT)
+    max_single_intent_share = float(policy_payload.get("max_single_intent_share", DEFAULT_MAX_SINGLE_INTENT_SHARE) or DEFAULT_MAX_SINGLE_INTENT_SHARE)
+    max_single_tool_graph_share = float(policy_payload.get("max_single_tool_graph_share", DEFAULT_MAX_SINGLE_TOOL_GRAPH_SHARE) or DEFAULT_MAX_SINGLE_TOOL_GRAPH_SHARE)
     eligible_examples = int(report_payload.get("eligible_examples") or 0)
+    family_count = int(report_payload.get("family_count") or 0)
+    intent_count = int(report_payload.get("intent_count") or len(report_payload.get("intent_distribution") or {}))
+    tool_graph_count = int(report_payload.get("tool_graph_count") or len(report_payload.get("tool_graph_distribution") or {}))
     rejected_examples = int(report_payload.get("rejected_examples") or 0)
     average_quality = float(report_payload.get("average_quality") or 0.0)
     train_count = int(report_payload.get("train_count") or 0)
     validation_count = int(report_payload.get("validation_count") or 0)
     test_count = int(report_payload.get("test_count") or 0)
     duplicates_removed = int(report_payload.get("duplicates_removed") or 0)
+    largest_intent_share = float(report_payload.get("largest_intent_share") or _distribution_share(report_payload.get("intent_distribution") or {}))
+    largest_tool_graph_share = float(report_payload.get("largest_tool_graph_share") or _distribution_share(report_payload.get("tool_graph_distribution") or {}))
     privacy_gate_passed = eligible_examples > 0 and rejected_examples >= 0
     dedupe_gate_passed = duplicates_removed >= 0
     split_integrity_passed = (train_count + validation_count + test_count) == eligible_examples
@@ -323,38 +366,89 @@ def evaluate_training_readiness(
         and dedupe_gate_passed
         and split_integrity_passed
     )
+    volume_gate_passed = eligible_examples >= minimum_eligible_examples
+    family_gate_passed = family_count >= minimum_family_count
+    intent_gate_passed = intent_count >= minimum_intent_count
+    quality_gate_passed = average_quality >= minimum_readiness_quality
+    concentration_gate_passed = largest_intent_share <= max_single_intent_share and largest_tool_graph_share <= max_single_tool_graph_share
     notes: list[str] = []
+    balance_warnings: list[str] = []
+    if eligible_examples < minimum_eligible_examples:
+        notes.append("eligible_examples_below_threshold")
+    if family_count < minimum_family_count:
+        notes.append("family_count_below_threshold")
+    if intent_count < minimum_intent_count:
+        notes.append("intent_count_below_threshold")
+    if average_quality < minimum_readiness_quality:
+        notes.append("quality_below_readiness_threshold")
+    if largest_intent_share > max_single_intent_share:
+        warning = f"largest_intent_share={largest_intent_share:.3f}"
+        notes.append(warning)
+        balance_warnings.append(warning)
+    if largest_tool_graph_share > max_single_tool_graph_share:
+        warning = f"largest_tool_graph_share={largest_tool_graph_share:.3f}"
+        notes.append(warning)
+        balance_warnings.append(warning)
     if eligible_examples <= 0:
         notes.append("no_eligible_examples")
-    if average_quality < minimum_quality:
-        notes.append("quality_below_threshold")
     if not split_integrity_passed:
         notes.append("split_integrity_failed")
-    ready = all_required_gates_passed
+    ready = all_required_gates_passed and volume_gate_passed and family_gate_passed and intent_gate_passed and quality_gate_passed and concentration_gate_passed
     reason = None if ready else ",".join(notes) if notes else "not_ready"
-    readiness_score = min(1.0, max(0.0, (average_quality / minimum_quality) if minimum_quality else average_quality))
+    readiness_score = min(
+        1.0,
+        max(
+            0.0,
+            (
+                0.30 * min(1.0, eligible_examples / float(minimum_eligible_examples))
+                + 0.20 * min(1.0, family_count / float(minimum_family_count))
+                + 0.15 * min(1.0, intent_count / float(minimum_intent_count))
+                + 0.20 * min(1.0, average_quality / minimum_readiness_quality)
+                + 0.075 * max(0.0, 1.0 - (largest_intent_share / max_single_intent_share if max_single_intent_share else largest_intent_share))
+                + 0.075 * max(0.0, 1.0 - (largest_tool_graph_share / max_single_tool_graph_share if max_single_tool_graph_share else largest_tool_graph_share))
+            ),
+        ),
+    )
     benchmark = benchmark or TrainingBenchmarkResult(
         dataset_version=str(report_payload.get("dataset_version") or ""),
         eligible_examples=eligible_examples,
+        family_count=family_count,
+        intent_count=intent_count,
+        tool_graph_count=tool_graph_count,
         average_quality=average_quality,
         readiness_score=readiness_score,
+        largest_intent_share=largest_intent_share,
+        largest_tool_graph_share=largest_tool_graph_share,
         notes=list(notes),
     )
     return TrainingReadinessAssessment(
         ready=ready,
+        ready_for_prototype=ready,
         reason=reason,
         checked_at=_utcnow_iso(),
         dataset_version=str(report_payload.get("dataset_version") or ""),
         eligible_examples=eligible_examples,
+        family_count=family_count,
+        intent_count=intent_count,
+        tool_graph_count=tool_graph_count,
         rejected_examples=rejected_examples,
         minimum_quality=minimum_quality,
+        minimum_readiness_quality=minimum_readiness_quality,
+        minimum_eligible_examples=minimum_eligible_examples,
+        minimum_family_count=minimum_family_count,
+        minimum_intent_count=minimum_intent_count,
+        max_single_intent_share=max_single_intent_share,
+        max_single_tool_graph_share=max_single_tool_graph_share,
         all_required_gates_passed=all_required_gates_passed,
         privacy_gate_passed=privacy_gate_passed,
         dedupe_gate_passed=dedupe_gate_passed,
         split_integrity_passed=split_integrity_passed,
         average_quality=average_quality,
+        largest_intent_share=largest_intent_share,
+        largest_tool_graph_share=largest_tool_graph_share,
         benchmark=benchmark,
         notes=notes,
+        balance_warnings=balance_warnings,
     )
 
 
@@ -370,14 +464,6 @@ def build_training_dataset_manifest(
     dataset_version = _dataset_version(report_payload, policy_payload)
     report_payload.setdefault("dataset_version", dataset_version)
     readiness = evaluate_training_readiness(report_payload, policy=policy_payload, benchmark=benchmark)
-    if readiness.benchmark is None:
-        readiness.benchmark = TrainingBenchmarkResult(
-            dataset_version=dataset_version,
-            eligible_examples=readiness.eligible_examples,
-            average_quality=readiness.average_quality,
-            readiness_score=min(1.0, max(0.0, readiness.average_quality / readiness.minimum_quality if readiness.minimum_quality else readiness.average_quality)),
-            notes=list(readiness.notes),
-        )
     return TrainingDatasetManifest(
         manifest_version=1,
         corpus_version=CANONICAL_CORPUS_VERSION,
@@ -443,7 +529,12 @@ class PlannerTrainingBackend:
         return readiness.benchmark or TrainingBenchmarkResult(
             dataset_version=readiness.dataset_version,
             eligible_examples=readiness.eligible_examples,
+            family_count=readiness.family_count,
+            intent_count=readiness.intent_count,
+            tool_graph_count=readiness.tool_graph_count,
             average_quality=readiness.average_quality,
-            readiness_score=min(1.0, max(0.0, readiness.average_quality / readiness.minimum_quality if readiness.minimum_quality else readiness.average_quality)),
+            readiness_score=1.0 if readiness.ready_for_prototype else readiness.benchmark.readiness_score if readiness.benchmark else 0.0,
+            largest_intent_share=readiness.largest_intent_share,
+            largest_tool_graph_share=readiness.largest_tool_graph_share,
             notes=list(readiness.notes),
         )
