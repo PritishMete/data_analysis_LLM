@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+pandas
+python-multipart
+openpyxl
+pyarrow
+scikit-learn
+pydantic
+google-generativeai
+google-adk
+python-dotenv
+duckdb
+sqlalchemy>=2.0
+psycopg2-binary
+# Location enrichment uses the Python standard-library HTTP client; no extra geocoder dependency is required.
+google-genai
