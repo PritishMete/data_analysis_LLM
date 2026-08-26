@@ -158,6 +158,29 @@ Those files are ignored by Git and are not committed.
 - Invalidated source events or strategy families are excluded before export.
 - The manifest captures a versioned summary plus readiness status for the canonical corpus.
 
+### Curriculum harness
+
+The repository also includes a local curriculum runner that seeds safe training
+memory, validates the teacher/student bridge, and writes a report plus export
+artifacts:
+
+```bash
+python curriculum/analytics_curriculum.py
+```
+
+It writes the following local outputs by default:
+
+- `runtime/curriculum/report.json`
+- `docs/analytics_curriculum_report.md`
+- `runtime/training/train.jsonl`
+- `runtime/training/validation.jsonl`
+- `runtime/training/test.jsonl`
+- `runtime/training/dataset_report.json`
+- `runtime/training/dataset_manifest.json`
+
+The runner keeps all generated artifacts local and privacy-safe, and it does not
+perform model fine-tuning.
+
 ## Repository boundary audit
 
 Only generalized metadata crosses from the teacher app into this repository:
