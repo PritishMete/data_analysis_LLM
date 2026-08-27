@@ -39,6 +39,15 @@ from .canonical_training import (
     build_training_dataset_manifest,
     evaluate_training_readiness,
 )
+from .plan_schema import (
+    CANONICAL_PLAN_SCHEMA_VERSION,
+    CANONICAL_PLAN_TOOL_KEYS,
+    PlanSchema,
+    ToolDefinition,
+    canonical_plan_schema,
+    canonical_tool_definitions,
+    validate_plan_schema,
+)
 
 __all__ = [
     "bootstrap_skill_specs",
@@ -71,4 +80,11 @@ __all__ = [
     "TrainingReadinessAssessment",
     "build_training_dataset_manifest",
     "evaluate_training_readiness",
+    "CANONICAL_PLAN_SCHEMA_VERSION",
+    "CANONICAL_PLAN_TOOL_KEYS",
+    "PlanSchema",
+    "ToolDefinition",
+    "canonical_plan_schema",
+    "canonical_tool_definitions",
+    "validate_plan_schema",
 ]

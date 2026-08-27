@@ -1,109 +1,138 @@
 # GPU Training Runbook
 
-This repository prepares prototype planner fine-tuning pipelines for both the
-existing `Qwen/Qwen2.5-1.5B-Instruct` path and the new low-spec
-`Qwen/Qwen2.5-0.5B-Instruct` profile without running real training on CPU-only
-hardware.
+This runbook covers the external-GPU specialization workflow for
+`Qwen/Qwen2.5-0.5B-Instruct`.
 
-## Goals
+## Inputs
 
-- Verify the canonical training dataset is ready.
-- Verify SHA-256 dataset manifests before export.
-- Refuse real training when CUDA is unavailable.
-- Support dry-run validation of config and dataset without downloading the
-  model.
-- Support profile-aware hardware checks for both `standard` and `low_spec`
-  planner targets.
-- Keep all exported fine-tuning data privacy-safe and deduplicated.
+- `DATASET_DIR`
+- `MODEL_OUTPUT_DIR`
+- `HF_HOME`
+- `BASE_MODEL`
+- `RESUME_FROM_CHECKPOINT` optionally
 
-## Local checks
+## Before training
 
 ```bash
 export DATASET_DIR="$PWD/runtime/training"
 export MODEL_OUTPUT_DIR="$PWD/runtime/models"
 export HF_HOME="$HOME/.cache/huggingface"
-export BASE_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
-export PLANNER_PROFILE="standard"
-export PLANNER_BACKEND="auto"
+export BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
 
 python -m training.cli gpu-preflight \
   --dataset-dir "$DATASET_DIR" \
   --output-dir "$MODEL_OUTPUT_DIR" \
-  --planner-profile "$PLANNER_PROFILE"
+  --manifest-path "$DATASET_DIR/dataset_manifest.sha256.json" \
+  --planner-profile low_spec
 
 python -m training.cli manifest-verify \
-  --dataset-dir "$DATASET_DIR"
+  --dataset-dir "$DATASET_DIR" \
+  --manifest-path "$DATASET_DIR/dataset_manifest.sha256.json"
 
 python -m training.cli dry-run \
   --dataset-dir "$DATASET_DIR" \
   --base-model "$BASE_MODEL" \
-  --planner-profile "$PLANNER_PROFILE" \
-  --planner-backend "$PLANNER_BACKEND"
-
-bash scripts/run_qwen_qlora.sh
+  --planner-profile low_spec \
+  --planner-backend auto
 ```
 
-For the low-spec planner preparation path, set:
+## 0.5B training launch
+
+The first real specialization run should be launched on the CUDA machine after
+preflight passes.
 
 ```bash
-export BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
-export PLANNER_PROFILE="low_spec"
+python -m training.cli gpu-launch \
+  --dataset-dir "$DATASET_DIR" \
+  --output-dir "$MODEL_OUTPUT_DIR" \
+  --base-model "$BASE_MODEL" \
+  --planner-profile low_spec \
+  --planner-backend auto \
+  --hf-home "$HF_HOME"
 ```
 
-## GPU training gate
-
-Real training is blocked unless:
-
-- CUDA is available.
-- The dataset is ready for prototype promotion.
-- The manifest verification passes.
-- The QLoRA configuration matches the prototype model.
-- The selected planner profile's training VRAM requirement is satisfied.
-
-If CUDA is unavailable, use dry-run mode only:
+If the run is interrupted, restart from the latest checkpoint:
 
 ```bash
-python -m training.cli dry-run
+python -m training.cli gpu-launch \
+  --dataset-dir "$DATASET_DIR" \
+  --output-dir "$MODEL_OUTPUT_DIR" \
+  --base-model "$BASE_MODEL" \
+  --planner-profile low_spec \
+  --planner-backend auto \
+  --resume-from-checkpoint "$MODEL_OUTPUT_DIR/experiment-001/checkpoint-<step>" \
+  --hf-home "$HF_HOME"
 ```
 
-## Prototype model metadata
+## External training workflow
 
-- Base model: `Qwen/Qwen2.5-1.5B-Instruct`
-- QLoRA: 4-bit NF4, `q_proj/k_proj/v_proj/o_proj`
-- Recommended sequence length: `2048`
-- Recommended GPU class: `RTX 3060 12GB or better`
+1. Verify dataset hashes.
+2. Validate corpus schema and split integrity.
+3. Run the untouched baseline benchmark.
+4. Train QLoRA with the V2 0.5B config.
+5. Evaluate validation metrics using structural gates, not loss alone.
+6. Freeze checkpoint selection.
+7. Run a single holdout test evaluation.
+8. Export the adapter and optional merged model.
+9. Convert to GGUF and quantize to `Q4_K_M` if needed for local inference.
+10. Write SHA-256 manifests for every returned artifact.
 
-## Low-spec profile metadata
+## Return artifacts
 
-- Base model: `Qwen/Qwen2.5-0.5B-Instruct`
-- QLoRA: 4-bit NF4, LoRA rank `8`, alpha `16`, dropout `0.05`
-- Recommended sequence length: `1024`
-- Runtime targets: CPU-only or `GTX 1650 4GB` with safe offload-aware inference
-- Training remains conservative and may still require an external GPU
+Return the trained assets to the low-spec machine as files plus a manifest:
 
-## Promotion gates
+- LoRA adapter
+- merged model, if produced
+- GGUF model, if produced
+- artifact manifest with SHA-256
+- model-registry metadata
 
-Promotion is blocked unless the prototype dataset and metrics clear the
-configured gates for:
+## Post-training benchmark
 
-- JSON validity
-- plan validity
-- predicate coverage
-- logical structure accuracy
-- semantic-role coverage
-- tool-selection F1
-- tool-sequence accuracy
-- invalid-tool rate
+Benchmark the returned model on the GTX 1650 machine:
+
+```bash
+python -m training.cli inference-benchmark \
+  --profile low_spec \
+  --backend auto \
+  --device cuda \
+  --benchmark builtin \
+  --output-dir runtime/benchmark_gpu
+
+python -m training.cli inference-benchmark \
+  --profile low_spec \
+  --backend llama_cpp \
+  --device cpu \
+  --benchmark builtin \
+  --output-dir runtime/benchmark_cpu
+```
+
+Measure:
+
+- plan quality
+- median latency
+- p95 latency
+- tokens per second
+- peak RAM
+- peak VRAM
+- critic acceptance
+- Gemini fallback rate
+
+## Routing policy after success
+
+If the specialized 0.5B model passes the quality gates:
+
+1. trusted strategy
+2. 0.5B local planner
+3. Gemini
+
+If it fails:
+
+1. trusted strategy
+2. Gemini
 
 ## Shadow mode
 
-Future shadow-mode integration should compare live planner behavior against a
-frozen prototype model. That path should remain read-only to the training
-pipeline until it is explicitly enabled.
+If promotion gates pass, register the model only as `shadow`. Do not mark the
+model production-ready from this workflow.
 
-## Resume support
-
-If the run is interrupted, restart from the latest checkpoint by reusing the
-same `MODEL_OUTPUT_DIR` and passing `--resume-from-checkpoint` to the launcher
-or by exporting the checkpoint path into the shell wrapper before rerunning the
-script.

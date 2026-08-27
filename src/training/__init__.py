@@ -28,12 +28,15 @@ from .metrics import TrainingMetrics, evaluate_training_metrics
 from .benchmark import (
     HeuristicPlannerModel,
     LlamaCppPlannerAdapter,
+    PlannerFailureModeReport,
     PlannerBenchmarkSummary,
     PlannerInferenceResult,
     PlannerModel,
+    audit_failure_modes,
     run_planner_benchmark,
     write_benchmark_report,
 )
+from .config import LowSpecTrainingConfigV2
 from .model_loader import (
     DEFAULT_MODEL_REGISTRY_ENTRY,
     DEFAULT_PROTOTYPE_MODEL,
@@ -63,12 +66,14 @@ __all__ = [
     "PrototypeModelSpec",
     "PreflightResult",
     "TrainingConfig",
+    "LowSpecTrainingConfigV2",
     "TrainingMetrics",
     "PlannerBenchmarkSummary",
     "PlannerInferenceResult",
     "PlannerModel",
     "HeuristicPlannerModel",
     "LlamaCppPlannerAdapter",
+    "PlannerFailureModeReport",
     "SeedBundle",
     "build_manifest_fingerprint",
     "create_dataset_manifest",
@@ -92,6 +97,7 @@ __all__ = [
     "choose_backend",
     "select_model_profile",
     "select_runtime_profile",
+    "audit_failure_modes",
     "run_planner_benchmark",
     "write_benchmark_report",
     "preflight_gpu_training",

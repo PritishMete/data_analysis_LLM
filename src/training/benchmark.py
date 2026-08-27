@@ -149,6 +149,15 @@ class PlannerBenchmarkSummary:
         return payload
 
 
+@dataclass(slots=True)
+class PlannerFailureModeReport:
+    failure_counts: dict[str, int]
+    total_cases: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class HeuristicPlannerModel:
     def __init__(self, profile_name: str = "low_spec") -> None:
         self.profile = select_model_profile(profile_name)
@@ -354,6 +363,43 @@ def _score_plan(candidate: dict[str, Any], case: PlannerBenchmarkCase, critic_pa
     }
 
 
+def audit_failure_modes(summary: PlannerBenchmarkSummary) -> PlannerFailureModeReport:
+    counts: dict[str, int] = {
+        "wrong_tool": 0,
+        "missing_tool": 0,
+        "wrong_tool_order": 0,
+        "missing_predicate": 0,
+        "wrong_semantic_role_binding": 0,
+        "wrong_aggregation": 0,
+        "incomplete_multi_step_plan": 0,
+        "correct_intent_wrong_executable_plan": 0,
+        "unsupported_or_fallback": 0,
+    }
+    for case, result in zip(builtin_benchmark_cases(), summary.cases):
+        predicted = result.parsed_plan or {}
+        predicted_tools = _stringify_sequence(predicted.get("tool_sequence") or predicted.get("tool_graph") or [])
+        expected_tools = list(case.expected_tool_sequence)
+        if result.plan_source in {"fallback", "deterministic_fallback"}:
+            counts["unsupported_or_fallback"] += 1
+        if not predicted_tools:
+            counts["missing_tool"] += 1
+        elif predicted_tools != expected_tools:
+            counts["wrong_tool_order"] += 1
+        if set(predicted_tools) != set(expected_tools):
+            counts["wrong_tool"] += 1
+        if result.predicate_coverage < 1.0:
+            counts["missing_predicate"] += 1
+        if result.semantic_role_coverage < 1.0:
+            counts["wrong_semantic_role_binding"] += 1
+        if case.expected_tool_sequence and case.expected_tool_sequence[0] == "sql.group_by" and not predicted.get("group_by"):
+            counts["wrong_aggregation"] += 1
+        if len(case.expected_tool_sequence) > 1 and len(predicted_tools) < len(case.expected_tool_sequence):
+            counts["incomplete_multi_step_plan"] += 1
+        if result.intent_correct and not result.tool_valid:
+            counts["correct_intent_wrong_executable_plan"] += 1
+    return PlannerFailureModeReport(failure_counts=counts, total_cases=len(summary.cases))
+
+
 def run_planner_benchmark(
     *,
     profile_name: str = "low_spec",
@@ -533,5 +579,7 @@ def run_planner_benchmark(
 def write_benchmark_report(summary: PlannerBenchmarkSummary, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "low_spec_inference_benchmark.json"
-    path.write_text(json.dumps(summary.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    payload = summary.to_dict()
+    payload["failure_modes"] = audit_failure_modes(summary).to_dict()
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
