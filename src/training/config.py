@@ -10,6 +10,8 @@ DEFAULT_MAX_SEQ_LEN = 2048
 DEFAULT_TRAINING_DIR = Path("runtime") / "fine_tuning"
 DEFAULT_DATASET_DIR = Path("runtime") / "training"
 DEFAULT_OUTPUT_DIR = Path("runtime") / "fine_tuning" / "runs"
+DEFAULT_MANIFEST_NAME = "dataset_manifest.json"
+DEFAULT_MANIFEST_SHA256_NAME = "dataset_manifest.sha256"
 
 
 @dataclass(slots=True)
@@ -23,6 +25,14 @@ class TrainingConfig:
     python_target: str = "3.11-3.12"
     smoke_only: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def manifest_path(self) -> Path:
+        return self.dataset_dir / DEFAULT_MANIFEST_NAME
+
+    @property
+    def manifest_sha256_path(self) -> Path:
+        return self.dataset_dir / DEFAULT_MANIFEST_SHA256_NAME
 
 
 def load_default_config() -> TrainingConfig:

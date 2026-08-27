@@ -140,12 +140,20 @@ Useful commands:
 ```bash
 python -m training.cli hardware
 python -m training.cli validate-dataset
+python -m training.cli manifest-create
+python -m training.cli manifest-verify
+python -m training.cli dry-run
 python -m training.cli train --allow-smoke-only
 ```
 
 The `train` command refuses to run without CUDA unless
 `--allow-smoke-only` is passed explicitly. It never silently falls back to CPU
 fine-tuning.
+
+Future shadow-mode integration will compare live planner behavior against a
+frozen prototype model without sending raw user content into the training
+pipeline. That workflow is documented here so the current preparation path
+stays clearly separated from any future online evaluation loop.
 
 ### Training eligibility gate
 

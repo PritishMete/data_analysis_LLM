@@ -12,6 +12,19 @@ class PrototypeModelSpec:
     recommended_sequence_length: int
     estimated_qlora_vram_gb: str
     recommended_gpu_class: str
+    qlora_config: dict[str, object]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "model_id": self.model_id,
+            "parameter_count": self.parameter_count,
+            "license": self.license,
+            "context_length": self.context_length,
+            "recommended_sequence_length": self.recommended_sequence_length,
+            "estimated_qlora_vram_gb": self.estimated_qlora_vram_gb,
+            "recommended_gpu_class": self.recommended_gpu_class,
+            "qlora_config": dict(self.qlora_config),
+        }
 
 
 DEFAULT_PROTOTYPE_MODEL = PrototypeModelSpec(
@@ -22,4 +35,45 @@ DEFAULT_PROTOTYPE_MODEL = PrototypeModelSpec(
     recommended_sequence_length=2048,
     estimated_qlora_vram_gb="8-12",
     recommended_gpu_class="RTX 3060 12GB or better",
+    qlora_config={
+        "enabled": True,
+        "load_in_4bit": True,
+        "bnb_4bit_quant_type": "nf4",
+        "bnb_4bit_compute_dtype": "bfloat16",
+        "lora_r": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    },
+)
+
+
+@dataclass(slots=True)
+class PrototypeModelRegistryEntry:
+    model_id: str
+    license: str
+    context_length: int
+    recommended_sequence_length: int
+    qlora_enabled: bool
+    minimum_cuda: str = "12.1"
+    status: str = "prototype_ready"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "model_id": self.model_id,
+            "license": self.license,
+            "context_length": self.context_length,
+            "recommended_sequence_length": self.recommended_sequence_length,
+            "qlora_enabled": self.qlora_enabled,
+            "minimum_cuda": self.minimum_cuda,
+            "status": self.status,
+        }
+
+
+DEFAULT_MODEL_REGISTRY_ENTRY = PrototypeModelRegistryEntry(
+    model_id=DEFAULT_PROTOTYPE_MODEL.model_id,
+    license=DEFAULT_PROTOTYPE_MODEL.license,
+    context_length=DEFAULT_PROTOTYPE_MODEL.context_length,
+    recommended_sequence_length=DEFAULT_PROTOTYPE_MODEL.recommended_sequence_length,
+    qlora_enabled=True,
 )
