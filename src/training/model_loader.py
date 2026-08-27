@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .profiles import LOW_SPEC_MODEL_PROFILE, STANDARD_MODEL_PROFILE
 
 @dataclass(slots=True)
 class PrototypeModelSpec:
@@ -45,6 +46,28 @@ DEFAULT_PROTOTYPE_MODEL = PrototypeModelSpec(
         "lora_dropout": 0.05,
         "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
     },
+)
+
+LOW_SPEC_PLANNER_MODEL = PrototypeModelSpec(
+    model_id=LOW_SPEC_MODEL_PROFILE.model_id,
+    parameter_count=LOW_SPEC_MODEL_PROFILE.parameter_count,
+    license="Apache-2.0",
+    context_length=LOW_SPEC_MODEL_PROFILE.context_length,
+    recommended_sequence_length=LOW_SPEC_MODEL_PROFILE.recommended_sequence_length,
+    estimated_qlora_vram_gb="4-8",
+    recommended_gpu_class="CPU-only, 4GB GPU optional",
+    qlora_config=dict(LOW_SPEC_MODEL_PROFILE.qlora_config),
+)
+
+STANDARD_PLANNER_MODEL = PrototypeModelSpec(
+    model_id=STANDARD_MODEL_PROFILE.model_id,
+    parameter_count=STANDARD_MODEL_PROFILE.parameter_count,
+    license="Apache-2.0",
+    context_length=STANDARD_MODEL_PROFILE.context_length,
+    recommended_sequence_length=STANDARD_MODEL_PROFILE.recommended_sequence_length,
+    estimated_qlora_vram_gb="8-12",
+    recommended_gpu_class="RTX 3060 12GB or better",
+    qlora_config=dict(STANDARD_MODEL_PROFILE.qlora_config),
 )
 
 

@@ -15,6 +15,7 @@ from .execution import (
     recommended_oom_actions,
     update_shadow_registry_status,
     write_experiment_summary,
+    select_model_and_runtime_profile,
 )
 from .model_loader import DEFAULT_PROTOTYPE_MODEL, DEFAULT_MODEL_REGISTRY_ENTRY
 from .qlora import QLoRAConfig
@@ -47,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     dry_run.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
     dry_run.add_argument("--base-model", default=load_default_config().base_model)
     dry_run.add_argument("--max-seq-len", type=int, default=load_default_config().max_seq_len)
+    dry_run.add_argument("--planner-profile", default=load_default_config().planner_profile)
+    dry_run.add_argument("--planner-backend", default=load_default_config().planner_backend)
 
     preflight = sub.add_parser("gpu-preflight", help="Validate Linux CUDA training prerequisites")
     preflight.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
@@ -55,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--minimum-vram-gb", type=float, default=12.0)
     preflight.add_argument("--minimum-disk-gb", type=float, default=40.0)
     preflight.add_argument("--hf-home", default=None)
+    preflight.add_argument("--planner-profile", default=load_default_config().planner_profile)
 
     start = sub.add_parser("gpu-launch", help="Create a portable experiment directory for GPU training")
     start.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
@@ -65,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--minimum-vram-gb", type=float, default=12.0)
     start.add_argument("--minimum-disk-gb", type=float, default=40.0)
     start.add_argument("--hf-home", default=None)
+    start.add_argument("--planner-profile", default=load_default_config().planner_profile)
+    start.add_argument("--planner-backend", default=load_default_config().planner_backend)
 
     train = sub.add_parser("train", help="Prepare a reproducible GPU training run")
     train.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
@@ -73,6 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--method", choices=["qlora", "lora"], default=load_default_config().method)
     train.add_argument("--allow-smoke-only", action="store_true")
     train.add_argument("--max-seq-len", type=int, default=load_default_config().max_seq_len)
+    train.add_argument("--planner-profile", default=load_default_config().planner_profile)
+    train.add_argument("--planner-backend", default=load_default_config().planner_backend)
 
     return parser
 
@@ -104,6 +112,13 @@ def _dry_run_payload(dataset_dir: Path, base_model: str, max_seq_len: int) -> di
             "qlora": qlora.to_dict(),
             "prototype_model": DEFAULT_PROTOTYPE_MODEL.to_dict(),
             "model_registry_entry": DEFAULT_MODEL_REGISTRY_ENTRY.to_dict(),
+            "planner_profiles": select_model_and_runtime_profile(
+                planner_profile=config.planner_profile,
+                runtime_profile="cpu_low_spec",
+                backend=config.planner_backend,
+                cuda_available=hardware.cuda_available,
+                llama_cpp_available=False,
+            ),
         },
         "metrics_schema": evaluate_training_metrics(
             predicted=[{"plan_valid": True, "predicate_keys": ["a"], "logical_structure": "AND", "semantic_roles": ["x"], "tool_graph": ["tool.a"]}],
@@ -131,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if verification["verified"] else 2
     if args.command == "dry-run":
         payload = _dry_run_payload(args.dataset_dir, args.base_model, args.max_seq_len)
+        payload["config"]["planner_profile"] = args.planner_profile
+        payload["config"]["planner_backend"] = args.planner_backend
         _print_json(payload)
         return 0 if payload["dataset"]["ready_for_prototype"] else 2
     if args.command == "gpu-preflight":
@@ -140,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path=args.manifest_path,
             minimum_vram_gb=args.minimum_vram_gb,
             minimum_disk_gb=args.minimum_disk_gb,
+            planner_profile=args.planner_profile,
         )
         _print_json(result.to_dict())
         return 0 if result.ready else 2
@@ -149,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             minimum_vram_gb=args.minimum_vram_gb,
             minimum_disk_gb=args.minimum_disk_gb,
+            planner_profile=args.planner_profile,
         )
         if not preflight.ready:
             _print_json({"status": "blocked", "reason": "preflight_failed", "preflight": preflight.to_dict()})
@@ -183,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
             "shadow_registry_status": update_shadow_registry_status("TRAINING_FAILED"),
             "oom_guidance": recommended_oom_actions(),
             "hf_home": args.hf_home,
+            "planner_profile": args.planner_profile,
+            "planner_backend": args.planner_backend,
         })
         return 0
     if args.command == "train":
@@ -205,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
                 "max_seq_len": args.max_seq_len,
                 "output_dir": str(args.output_dir),
                 "python_target": "3.11-3.12",
+                "planner_profile": args.planner_profile,
+                "planner_backend": args.planner_backend,
             },
         })
         return 0

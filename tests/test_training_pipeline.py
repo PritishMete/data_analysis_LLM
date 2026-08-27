@@ -107,7 +107,25 @@ def test_cli_manifest_and_dry_run(capsys, tmp_path):
 
 
 def test_cli_refuses_real_training_without_cuda():
-    assert main(["train"]) == 3
+    from training import cli as cli_module
+
+    original_detect_hardware = cli_module.detect_hardware
+    cli_module.detect_hardware = lambda: HardwareReport(
+        python_version="3.12",
+        platform="Linux",
+        machine="x86_64",
+        processor="x86_64",
+        ram_gb=16.0,
+        torch_version="2.6.0+cu124",
+        cuda_available=False,
+        cuda_version=None,
+        gpu_name=None,
+        vram_gb=None,
+    )
+    try:
+        assert main(["train"]) == 3
+    finally:
+        cli_module.detect_hardware = original_detect_hardware
 
 
 def test_gpu_preflight_rejects_cuda_mismatch(tmp_path, monkeypatch):

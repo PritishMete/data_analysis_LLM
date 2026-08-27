@@ -18,6 +18,7 @@ from .metrics import TrainingMetrics
 from .model_loader import DEFAULT_PROTOTYPE_MODEL
 from .promotion import evaluate_promotion_gates
 from .qlora import QLoRAConfig
+from .profiles import select_model_profile, select_runtime_profile, choose_backend, PLANNER_BACKEND_AUTO, PLANNER_BACKEND_TRANSFORMERS, PLANNER_BACKEND_LLAMA_CPP
 
 
 def _utcnow() -> str:
@@ -102,15 +103,19 @@ def preflight_gpu_training(
     manifest_path: Path | None = None,
     minimum_vram_gb: float = 12.0,
     minimum_disk_gb: float = 40.0,
+    planner_profile: str | None = None,
 ) -> PreflightResult:
     hardware = detect_hardware().to_dict()
     dataset = validate_dataset(dataset_dir)
     warnings: list[str] = []
     blockers: list[str] = []
+    profile = select_model_profile(planner_profile)
 
     if not hardware.get("cuda_available"):
         blockers.append("cuda_unavailable")
-    if hardware.get("vram_gb") is None or float(hardware.get("vram_gb") or 0.0) < minimum_vram_gb:
+    profile_min_vram = float(profile.training_min_vram_gb)
+    required_vram = max(float(minimum_vram_gb), profile_min_vram)
+    if hardware.get("vram_gb") is None or float(hardware.get("vram_gb") or 0.0) < required_vram:
         blockers.append("vram_below_threshold")
 
     free_disk_gb = _disk_free_gb(output_dir if output_dir.exists() else output_dir.parent)
@@ -137,6 +142,12 @@ def preflight_gpu_training(
             **hardware,
             "free_disk_gb": free_disk_gb,
             "bf16_supported": bf16_supported,
+            "planner_profile": profile.profile_name,
+            "training_min_vram_gb": profile.training_min_vram_gb,
+            "training_recommended_vram_gb": profile.training_recommended_vram_gb,
+            "inference_min_ram_gb": profile.inference_min_ram_gb,
+            "inference_recommended_ram_gb": profile.inference_recommended_ram_gb,
+            "inference_gpu_vram_gb": profile.inference_gpu_vram_gb,
         },
         dataset=dataset.to_dict(),
     )
@@ -297,3 +308,31 @@ def update_shadow_registry_status(status: str) -> str:
     if status == "REJECT_MODEL":
         return "rejected"
     return "failed"
+
+
+def select_model_and_runtime_profile(
+    *,
+    planner_profile: str | None = None,
+    runtime_profile: str | None = None,
+    backend: str | None = None,
+    cuda_available: bool = False,
+    llama_cpp_available: bool = False,
+) -> dict[str, Any]:
+    model_profile = select_model_profile(planner_profile)
+    runtime = select_runtime_profile(runtime_profile)
+    selected_backend = choose_backend(
+        backend=backend,
+        runtime_profile=runtime,
+        cuda_available=cuda_available,
+        llama_cpp_available=llama_cpp_available,
+    )
+    return {
+        "planner_profile": model_profile.to_dict(),
+        "runtime_profile": runtime.to_dict(),
+        "backend": selected_backend,
+        "backend_policy": {
+            "requested": (backend or PLANNER_BACKEND_AUTO),
+            "auto_priority": list(runtime.backend_preference),
+            "supported_backends": [PLANNER_BACKEND_TRANSFORMERS, PLANNER_BACKEND_LLAMA_CPP],
+        },
+    }

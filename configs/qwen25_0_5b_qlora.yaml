@@ -1,0 +1,28 @@
+planner_profile: low_spec
+base_model: Qwen/Qwen2.5-0.5B-Instruct
+training:
+  method: qlora
+  max_seq_len: 1024
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+hardware:
+  training_min_vram_gb: 8.0
+  training_recommended_vram_gb: 12.0
+  inference_min_ram_gb: 4.0
+  inference_recommended_ram_gb: 8.0
+  inference_gpu_vram_gb: 4.0
+runtime:
+  planner_backend: auto
+  cpu_low_spec:
+    backend_preference: [llama_cpp, transformers]
+    quantized_runtime: gguf
+  gpu_4gb:
+    backend_preference: [transformers, llama_cpp]
+    quantized_runtime: transformers

@@ -115,6 +115,11 @@ for those examples, but no model fine-tuning happens yet.
 The repository also includes a separate `training` package for future
 GPU-based prototype training of a structured analytics planner model.
 
+The planner now supports two profiles:
+
+- `low_spec` for `Qwen/Qwen2.5-0.5B-Instruct`
+- `standard` for `Qwen/Qwen2.5-1.5B-Instruct`
+
 Default prototype model:
 
 - `Qwen/Qwen2.5-1.5B-Instruct`
@@ -138,6 +143,8 @@ stack is not guaranteed to be compatible with Python `3.13` on every platform.
 Useful commands:
 
 ```bash
+export PLANNER_PROFILE=low_spec
+export PLANNER_BACKEND=auto
 python -m training.cli hardware
 python -m training.cli validate-dataset
 python -m training.cli manifest-create
@@ -145,6 +152,10 @@ python -m training.cli manifest-verify
 python -m training.cli dry-run
 python -m training.cli train --allow-smoke-only
 ```
+
+The low-spec profile is intended for structured analytics planning only. It
+supports CPU-first inference and 4GB GPU inference, but conservative training
+still expects a larger external GPU.
 
 The `train` command refuses to run without CUDA unless
 `--allow-smoke-only` is passed explicitly. It never silently falls back to CPU

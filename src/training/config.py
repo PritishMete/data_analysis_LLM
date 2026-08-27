@@ -4,8 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .profiles import PLANNER_PROFILE_STANDARD
 
 DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_PLANNER_PROFILE = PLANNER_PROFILE_STANDARD
 DEFAULT_MAX_SEQ_LEN = 2048
 DEFAULT_TRAINING_DIR = Path("runtime") / "fine_tuning"
 DEFAULT_DATASET_DIR = Path("runtime") / "training"
@@ -23,6 +25,8 @@ class TrainingConfig:
     output_dir: Path = DEFAULT_OUTPUT_DIR
     training_dir: Path = DEFAULT_TRAINING_DIR
     python_target: str = "3.11-3.12"
+    planner_profile: str = DEFAULT_PLANNER_PROFILE
+    planner_backend: str = "auto"
     smoke_only: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 

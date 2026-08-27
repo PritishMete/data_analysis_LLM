@@ -28,8 +28,19 @@ from .metrics import TrainingMetrics, evaluate_training_metrics
 from .model_loader import (
     DEFAULT_MODEL_REGISTRY_ENTRY,
     DEFAULT_PROTOTYPE_MODEL,
+    LOW_SPEC_PLANNER_MODEL,
+    STANDARD_PLANNER_MODEL,
     PrototypeModelRegistryEntry,
     PrototypeModelSpec,
+)
+from .profiles import (
+    CPU_LOW_SPEC_RUNTIME,
+    GPU_4GB_RUNTIME,
+    LOW_SPEC_MODEL_PROFILE,
+    STANDARD_MODEL_PROFILE,
+    choose_backend,
+    select_model_profile,
+    select_runtime_profile,
 )
 from .promotion import PromotionGateResult, evaluate_promotion_gates
 
@@ -58,6 +69,15 @@ __all__ = [
     "main",
     "DEFAULT_MODEL_REGISTRY_ENTRY",
     "DEFAULT_PROTOTYPE_MODEL",
+    "LOW_SPEC_PLANNER_MODEL",
+    "STANDARD_PLANNER_MODEL",
+    "LOW_SPEC_MODEL_PROFILE",
+    "STANDARD_MODEL_PROFILE",
+    "CPU_LOW_SPEC_RUNTIME",
+    "GPU_4GB_RUNTIME",
+    "choose_backend",
+    "select_model_profile",
+    "select_runtime_profile",
     "preflight_gpu_training",
     "recommended_oom_actions",
     "record_safe_metrics",
