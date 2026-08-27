@@ -16,11 +16,23 @@ hardware.
 ## Local checks
 
 ```bash
-python -m training.cli hardware
-python -m training.cli validate-dataset
-python -m training.cli manifest-create
-python -m training.cli manifest-verify
-python -m training.cli dry-run
+export DATASET_DIR="$PWD/runtime/training"
+export MODEL_OUTPUT_DIR="$PWD/runtime/models"
+export HF_HOME="$HOME/.cache/huggingface"
+export BASE_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
+
+python -m training.cli gpu-preflight \
+  --dataset-dir "$DATASET_DIR" \
+  --output-dir "$MODEL_OUTPUT_DIR"
+
+python -m training.cli manifest-verify \
+  --dataset-dir "$DATASET_DIR"
+
+python -m training.cli dry-run \
+  --dataset-dir "$DATASET_DIR" \
+  --base-model "$BASE_MODEL"
+
+bash scripts/run_qwen_qlora.sh
 ```
 
 ## GPU training gate
@@ -64,3 +76,10 @@ configured gates for:
 Future shadow-mode integration should compare live planner behavior against a
 frozen prototype model. That path should remain read-only to the training
 pipeline until it is explicitly enabled.
+
+## Resume support
+
+If the run is interrupted, restart from the latest checkpoint by reusing the
+same `MODEL_OUTPUT_DIR` and passing `--resume-from-checkpoint` to the launcher
+or by exporting the checkpoint path into the shell wrapper before rerunning the
+script.

@@ -5,6 +5,16 @@ from pathlib import Path
 
 from training.cli import main
 from training.dataset import create_dataset_manifest, validate_dataset, verify_dataset_manifest, write_dataset_manifest
+from training.execution import (
+    decide_final_promotion,
+    derive_seed_bundle,
+    init_experiment,
+    preflight_gpu_training,
+    recommended_oom_actions,
+    record_safe_metrics,
+    update_shadow_registry_status,
+    write_experiment_summary,
+)
 from training.hardware import HardwareReport
 from training.metrics import evaluate_training_metrics
 from training.model_loader import DEFAULT_PROTOTYPE_MODEL, DEFAULT_MODEL_REGISTRY_ENTRY
@@ -98,3 +108,130 @@ def test_cli_manifest_and_dry_run(capsys, tmp_path):
 
 def test_cli_refuses_real_training_without_cuda():
     assert main(["train"]) == 3
+
+
+def test_gpu_preflight_rejects_cuda_mismatch(tmp_path, monkeypatch):
+    from training import execution as execution_module
+
+    monkeypatch.setattr(execution_module, "detect_hardware", lambda: HardwareReport(
+        python_version="3.12",
+        platform="Linux",
+        machine="x86_64",
+        processor="x86_64",
+        ram_gb=64.0,
+        torch_version="2.4.0",
+        cuda_available=False,
+        cuda_version=None,
+        gpu_name=None,
+        vram_gb=None,
+    ))
+    result = preflight_gpu_training(
+        dataset_dir=Path("runtime") / "training",
+        output_dir=tmp_path / "models",
+    )
+    assert result.ready is False
+    assert "cuda_unavailable" in result.blockers
+
+
+def test_dataset_hash_mismatch_rejection(tmp_path, monkeypatch):
+    from training import execution as execution_module
+
+    monkeypatch.setattr(execution_module, "verify_dataset_manifest", lambda *args, **kwargs: {"verified": False, "mismatches": ["sha256:train"], "manifest_path": "x", "dataset_version": "v1"})
+    monkeypatch.setattr(execution_module, "detect_hardware", lambda: HardwareReport(
+        python_version="3.12",
+        platform="Linux",
+        machine="x86_64",
+        processor="x86_64",
+        ram_gb=64.0,
+        torch_version="2.4.0",
+        cuda_available=True,
+        cuda_version="12.1",
+        gpu_name="NVIDIA A10",
+        vram_gb=24.0,
+    ))
+    result = preflight_gpu_training(
+        dataset_dir=Path("runtime") / "training",
+        output_dir=tmp_path / "models",
+        manifest_path=tmp_path / "manifest.json",
+    )
+    assert result.ready is False
+    assert "dataset_hash_mismatch" in result.blockers
+
+
+def test_experiment_id_and_resume_metadata(tmp_path, monkeypatch):
+    from training import execution as execution_module
+
+    monkeypatch.setattr(execution_module, "create_experiment_id", lambda: "experiment-001")
+    monkeypatch.setattr(execution_module, "detect_hardware", lambda: HardwareReport(
+        python_version="3.12",
+        platform="Linux",
+        machine="x86_64",
+        processor="x86_64",
+        ram_gb=64.0,
+        torch_version="2.4.0",
+        cuda_available=True,
+        cuda_version="12.1",
+        gpu_name="NVIDIA A10",
+        vram_gb=24.0,
+    ))
+    metadata = init_experiment(
+        dataset_dir=Path("runtime") / "training",
+        model_output_dir=tmp_path / "models",
+        base_model="Qwen/Qwen2.5-1.5B-Instruct",
+        seed=123,
+        resume_from_checkpoint="checkpoint-42",
+        hf_home="/tmp/hf",
+    )
+    assert metadata.experiment_id == "experiment-001"
+    assert metadata.resume_from_checkpoint == "checkpoint-42"
+    assert metadata.hf_home == "/tmp/hf"
+    assert metadata.seeds.python_seed == 123
+
+
+def test_experiment_summary_and_promotion_logic(tmp_path):
+    experiment_dir = tmp_path / "models" / "experiment-001"
+    experiment_dir.mkdir(parents=True)
+    summary = write_experiment_summary(
+        experiment_dir=experiment_dir,
+        base_model="Qwen/Qwen2.5-1.5B-Instruct",
+        dataset_manifest_hash="abc123",
+        qlora_config=DEFAULT_PROTOTYPE_MODEL.to_dict()["qlora_config"],
+        hardware={"cuda_available": True, "gpu_name": "NVIDIA A10"},
+        duration_seconds=12.3,
+        best_checkpoint="checkpoint-12",
+        validation_metrics={"json_validity": 1.0},
+        test_metrics={"json_validity": 1.0},
+        promotion_result="PROMOTE_TO_SHADOW",
+        status="prepared",
+    )
+    assert summary.promotion_result == "PROMOTE_TO_SHADOW"
+    assert (experiment_dir / "summary.json").exists()
+    result = decide_final_promotion(
+        readiness={"ready_for_prototype": True},
+        metrics={"json_validity": 1.0, "plan_validity": 1.0, "tool_selection_f1": 1.0, "invalid_tool_rate": 0.0},
+    )
+    assert result == "PROMOTE_TO_SHADOW"
+    assert update_shadow_registry_status(result) == "shadow"
+    assert update_shadow_registry_status("REJECT_MODEL") == "rejected"
+
+
+def test_safe_metrics_and_oom_guidance_are_redaction_only(tmp_path):
+    experiment_dir = tmp_path / "models" / "experiment-001"
+    experiment_dir.mkdir(parents=True)
+    path = record_safe_metrics(
+        experiment_dir,
+        step=1,
+        epoch=0.1,
+        training_loss=0.25,
+        validation_loss=0.30,
+        learning_rate=1e-4,
+        vram_usage_gb=10.5,
+        elapsed_seconds=5.0,
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "John Smith" not in content
+    assert "john@example.com" not in content
+    assert "ACC-9988" not in content
+    assert "SecretCompanyXYZ" not in content
+    assert recommended_oom_actions()[0] == "reduce max sequence length"
+    assert derive_seed_bundle(7).trainer_seed == 10

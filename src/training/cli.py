@@ -8,6 +8,14 @@ from typing import Any
 from .config import load_default_config
 from .dataset import validate_dataset, verify_dataset_manifest, write_dataset_manifest
 from .hardware import detect_hardware
+from .execution import (
+    init_experiment,
+    preflight_gpu_training,
+    record_safe_metrics,
+    recommended_oom_actions,
+    update_shadow_registry_status,
+    write_experiment_summary,
+)
 from .model_loader import DEFAULT_PROTOTYPE_MODEL, DEFAULT_MODEL_REGISTRY_ENTRY
 from .qlora import QLoRAConfig
 from .promotion import evaluate_promotion_gates
@@ -39,6 +47,24 @@ def build_parser() -> argparse.ArgumentParser:
     dry_run.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
     dry_run.add_argument("--base-model", default=load_default_config().base_model)
     dry_run.add_argument("--max-seq-len", type=int, default=load_default_config().max_seq_len)
+
+    preflight = sub.add_parser("gpu-preflight", help="Validate Linux CUDA training prerequisites")
+    preflight.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
+    preflight.add_argument("--output-dir", type=Path, default=load_default_config().output_dir)
+    preflight.add_argument("--manifest-path", type=Path, default=None)
+    preflight.add_argument("--minimum-vram-gb", type=float, default=12.0)
+    preflight.add_argument("--minimum-disk-gb", type=float, default=40.0)
+    preflight.add_argument("--hf-home", default=None)
+
+    start = sub.add_parser("gpu-launch", help="Create a portable experiment directory for GPU training")
+    start.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
+    start.add_argument("--output-dir", type=Path, default=load_default_config().output_dir)
+    start.add_argument("--base-model", default=load_default_config().base_model)
+    start.add_argument("--resume-from-checkpoint", default=None)
+    start.add_argument("--seed", type=int, default=None)
+    start.add_argument("--minimum-vram-gb", type=float, default=12.0)
+    start.add_argument("--minimum-disk-gb", type=float, default=40.0)
+    start.add_argument("--hf-home", default=None)
 
     train = sub.add_parser("train", help="Prepare a reproducible GPU training run")
     train.add_argument("--dataset-dir", type=Path, default=load_default_config().dataset_dir)
@@ -107,6 +133,58 @@ def main(argv: list[str] | None = None) -> int:
         payload = _dry_run_payload(args.dataset_dir, args.base_model, args.max_seq_len)
         _print_json(payload)
         return 0 if payload["dataset"]["ready_for_prototype"] else 2
+    if args.command == "gpu-preflight":
+        result = preflight_gpu_training(
+            dataset_dir=args.dataset_dir,
+            output_dir=args.output_dir,
+            manifest_path=args.manifest_path,
+            minimum_vram_gb=args.minimum_vram_gb,
+            minimum_disk_gb=args.minimum_disk_gb,
+        )
+        _print_json(result.to_dict())
+        return 0 if result.ready else 2
+    if args.command == "gpu-launch":
+        preflight = preflight_gpu_training(
+            dataset_dir=args.dataset_dir,
+            output_dir=args.output_dir,
+            minimum_vram_gb=args.minimum_vram_gb,
+            minimum_disk_gb=args.minimum_disk_gb,
+        )
+        if not preflight.ready:
+            _print_json({"status": "blocked", "reason": "preflight_failed", "preflight": preflight.to_dict()})
+            return 2
+        metadata = init_experiment(
+            dataset_dir=args.dataset_dir,
+            model_output_dir=args.output_dir,
+            base_model=args.base_model,
+            seed=args.seed,
+            resume_from_checkpoint=args.resume_from_checkpoint,
+            hf_home=args.hf_home,
+        )
+        record_safe_metrics(metadata.experiment_dir, step=0, epoch=0.0, training_loss=0.0, validation_loss=None, learning_rate=0.0, vram_usage_gb=preflight.hardware.get("vram_gb"), elapsed_seconds=0.0)
+        summary = write_experiment_summary(
+            experiment_dir=metadata.experiment_dir,
+            base_model=metadata.base_model,
+            dataset_manifest_hash=metadata.dataset_manifest_hash,
+            qlora_config=metadata.qlora,
+            hardware=metadata.hardware,
+            duration_seconds=None,
+            best_checkpoint=None,
+            validation_metrics={},
+            test_metrics={},
+            promotion_result="TRAINING_FAILED",
+            status="prepared",
+            warnings=preflight.warnings,
+        )
+        _print_json({
+            "status": "prepared",
+            "experiment": metadata.to_dict(),
+            "summary": summary.to_dict(),
+            "shadow_registry_status": update_shadow_registry_status("TRAINING_FAILED"),
+            "oom_guidance": recommended_oom_actions(),
+            "hf_home": args.hf_home,
+        })
+        return 0
     if args.command == "train":
         hw = detect_hardware()
         validation = validate_dataset(args.dataset_dir)
