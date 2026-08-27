@@ -191,3 +191,20 @@ def test_metrics_endpoint(tmp_path, monkeypatch):
     metrics = client.get("/v1/metrics")
     assert metrics.status_code == 200
     assert "metrics" in metrics.json()
+
+
+def test_learning_status_endpoint_reports_safe_aggregates(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.get("/v1/learning/status")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["status"] == "ok"
+    learning = payload["learning"]
+    assert "experience_count" in learning
+    assert "eligible_experience_count" in learning
+    assert "rejected_experience_count" in learning
+    assert "privacy_gate_passed" in learning
+    assert "readiness" in learning
+    assert "ready" in learning["readiness"]

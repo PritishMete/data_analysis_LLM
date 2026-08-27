@@ -90,11 +90,18 @@ class InsightLearningService:
         self.orchestrator = AgenticLearningOrchestrator(registry=self.registry, store=self.store)
         self.training_export_policy = TrainingExportPolicy.from_env()
         self.training_backend = PlannerTrainingBackend()
+        self.learner_plan_requests = 0
+        self.learner_plan_accepts = 0
+        self.learner_plan_rejections = 0
+        self.learner_experience_requests = 0
+        self.learner_experience_accepts = 0
+        self.last_safe_plan_source: str | None = None
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "service": "insight-learning"}
 
     def plan(self, request: PlanRequest) -> dict[str, Any]:
+        self.learner_plan_requests += 1
         features = _query_features_payload(request)
         dataset_profile = _dataset_profile_payload(request.dataset_profile.model_dump())
         planner_text = request.text or _synthetic_user_text(request.intent, request.query_features.model_dump(), request.dataset_profile.model_dump())
@@ -111,6 +118,12 @@ class InsightLearningService:
             planner_context=context,
         )
         critic_ok, critic_notes = self.orchestrator.critic.review(decision, context=context)
+        accepted = bool(critic_ok and decision.plan and decision.plan_source != "deterministic_fallback" and decision.confidence >= 0.82)
+        if accepted:
+            self.learner_plan_accepts += 1
+        else:
+            self.learner_plan_rejections += 1
+        self.last_safe_plan_source = decision.plan_source
         return {
             "plan_source": decision.plan_source,
             "confidence": decision.confidence,
@@ -122,6 +135,7 @@ class InsightLearningService:
         }
 
     def experience(self, request: ExperienceRequest) -> dict[str, Any]:
+        self.learner_experience_requests += 1
         features = _query_features_payload(request)
         dataset_profile_payload = request.dataset_profile.model_dump() if request.dataset_profile is not None else {"fields": []}
         dataset_profile = _dataset_profile_payload(dataset_profile_payload)
@@ -167,6 +181,9 @@ class InsightLearningService:
             correction_state=request.correction_state,
             planner_context=context,
         )
+        if stored.success:
+            self.learner_experience_accepts += 1
+        self.last_safe_plan_source = stored.plan_source
         return {
             "stored": True,
             "learning_outcome": {
@@ -282,6 +299,41 @@ class InsightLearningService:
             "skills": len(self.registry.all()),
         }
 
+    def learning_status(self) -> dict[str, Any]:
+        exporter = TrainingDatasetExporter(self.store, self.training_export_policy)
+        bundle, _ = exporter.build_bundle(include_candidate_strategies=True)
+        report = bundle.report()
+        recent = self.store.load_recent(limit=1)
+        recent_plan_source = None
+        if recent:
+            recent_plan_source = str(recent[0].get("plan_source") or "")
+        strategies = self.store.load_candidate_strategies(limit=10_000)
+        trusted_strategies = sum(1 for item in strategies if str(item.get("state") or "") == "trusted")
+        readiness = exporter.evaluate_readiness(bundle)
+        return {
+            "experience_count": len(self.store.load_recent(limit=10_000)),
+            "eligible_experience_count": report.get("eligible_examples", 0),
+            "rejected_experience_count": report.get("rejected_examples", 0),
+            "rejected_by_reason": report.get("rejection_reasons", {}),
+            "plan_template_count": len(self.store.load_plan_templates(limit=10_000)),
+            "candidate_strategy_count": len(strategies),
+            "trusted_strategy_count": trusted_strategies,
+            "failure_lesson_count": len(self.store.load_failure_lessons(limit=10_000)),
+            "correction_count": len(self.store.load_corrections(limit=10_000)),
+            "last_safe_plan_source": recent_plan_source or self.last_safe_plan_source,
+            "learner_plan_requests": self.learner_plan_requests,
+            "learner_plan_accepts": self.learner_plan_accepts,
+            "learner_plan_rejections": self.learner_plan_rejections,
+            "learner_experience_requests": self.learner_experience_requests,
+            "learner_experience_accepts": self.learner_experience_accepts,
+            "privacy_gate_passed": bool(report.get("privacy_rejections", 0) == 0 and report.get("eligible_examples", 0) > 0),
+            "readiness": {
+                "ready": readiness.ready,
+                "ready_for_prototype": readiness.ready_for_prototype,
+                "reason": readiness.reason,
+            },
+        }
+
 
 _SERVICE: InsightLearningService | None = None
 
@@ -300,6 +352,7 @@ def create_app() -> FastAPI:
     from .routes_experience import router as experience_routes
     from .routes_feedback import router as feedback_routes
     from .routes_export import router as export_routes
+    from .routes_status import router as status_routes
     from .routes_skills import router as skills_routes
 
     @app.get("/v1/health")
@@ -314,6 +367,7 @@ def create_app() -> FastAPI:
     app.include_router(experience_routes)
     app.include_router(feedback_routes)
     app.include_router(export_routes)
+    app.include_router(status_routes)
     app.include_router(skills_routes)
     return app
 
