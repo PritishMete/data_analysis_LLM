@@ -14,6 +14,7 @@ import torch
 
 from agent.critic import PlanCritic
 from agent.orchestrator import get_agentic_orchestrator
+from agent.planner import _compose_executable_plan
 from learning.feature_extractor import build_planner_context
 from learning.models import LearningDecision
 from agent.planner import LearningPlanner
@@ -272,6 +273,126 @@ class SemanticPlannerModel:
         return {"model_id": self.profile.model_id, "backend": "semantic"}
 
 
+class TransformersSemanticExtractionModel:
+    def __init__(self, *, profile_name: str, device: str = "auto", cache_dir: Path | None = None) -> None:
+        self.profile = select_model_profile(profile_name)
+        self.device = device
+        self.cache_dir = cache_dir
+        self.model = None
+        self.tokenizer = None
+        self.load_error: str | None = None
+        self.model_load_ms: float | None = None
+
+    def load(self) -> None:
+        AutoModelForCausalLM, AutoTokenizer = _try_import_transformers()
+        if AutoModelForCausalLM is None or AutoTokenizer is None:
+            self.load_error = "transformers_unavailable"
+            return
+        kwargs: dict[str, Any] = {"trust_remote_code": True}
+        if self.cache_dir is not None:
+            kwargs["cache_dir"] = str(self.cache_dir)
+        try:
+            started = time.perf_counter()
+            load_kwargs: dict[str, Any] = dict(kwargs)
+            load_kwargs["torch_dtype"] = torch.float16 if self.device == "cuda" else torch.float32
+            if self.device == "cuda" and torch.cuda.is_available():
+                load_kwargs["device_map"] = "auto"
+            self.tokenizer = AutoTokenizer.from_pretrained(self.profile.model_id, **kwargs)
+            self.model = AutoModelForCausalLM.from_pretrained(self.profile.model_id, **load_kwargs)
+            self.model_load_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        except Exception as exc:
+            self.load_error = str(exc)
+
+    def _extract_semantics(self, request: dict[str, Any], raw_text: str) -> dict[str, Any]:
+        features = request.get("query_features") or {}
+        semantic_bindings = {
+            "dataset_signature": (request.get("dataset_profile") or {}).get("dataset_semantic_signature"),
+            "intent_hint": request.get("intent"),
+            "query_shape": features.get("query_shape"),
+            "entity_reference_count": features.get("entity_reference_count"),
+            "null_strategy": None,
+        }
+        parsed = _extract_json_object(raw_text) or {}
+        semantic_plan = {
+            "intent": str(parsed.get("intent") or request.get("intent") or "analytics"),
+            "semantic_bindings": dict(parsed.get("semantic_bindings") or semantic_bindings),
+            "predicate_graph": dict(parsed.get("predicate_graph") or {
+                "logical_structure": features.get("logical_structure"),
+                "predicate_count": int(features.get("predicate_count") or 0),
+                "operators": list(features.get("operators") or []),
+                "roles": list(features.get("semantic_roles") or []),
+                "validated": bool(features.get("predicate_count")),
+            }),
+            "aggregation": dict(parsed.get("aggregation") or {}),
+            "ranking": dict(parsed.get("ranking") or {}),
+            "limit": parsed.get("limit"),
+            "confidence": float(parsed.get("confidence") or 0.0),
+            "requires_fallback": bool(parsed.get("requires_fallback") or False),
+            "semantic_roles": list(parsed.get("semantic_roles") or features.get("semantic_roles") or []),
+            "tool_graph": list(parsed.get("tool_graph") or []),
+        }
+        return semantic_plan
+
+    def plan(self, request: dict[str, Any]) -> dict[str, Any]:
+        if self.model is None or self.tokenizer is None:
+            self.load()
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError(self.load_error or "model_load_failed")
+        prompt = str(request.get("text") or request.get("prompt") or "")
+        chat_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a semantic planner that outputs strict JSON only. "
+                    "Return intent, semantic_bindings, predicate_graph, aggregation, ranking, limit, requires_fallback, and confidence. "
+                    "Do not output tool IDs, SQL, markdown, or raw values."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        model_prompt = self.tokenizer.apply_chat_template(chat_messages, tokenize=False, add_generation_prompt=True) if hasattr(self.tokenizer, "apply_chat_template") else f"{chat_messages[0]['content']}\n{chat_messages[1]['content']}\nJSON:"
+        inputs = self.tokenizer(model_prompt, return_tensors="pt")
+        if self.device == "cuda" and torch.cuda.is_available():
+            inputs = {key: value.to("cuda") for key, value in inputs.items()}
+        with torch.no_grad():
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+            started = time.perf_counter()
+            generated = self.model.generate(**inputs, max_new_tokens=160, do_sample=False, temperature=0.0, top_p=1.0, pad_token_id=getattr(self.tokenizer, "eos_token_id", None))
+            inference_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        peak_vram_mb = None
+        if self.device == "cuda" and torch.cuda.is_available():
+            try:
+                peak_vram_mb = round(torch.cuda.max_memory_allocated() / 1024**2, 3)
+            except Exception:
+                peak_vram_mb = None
+        decoded = self.tokenizer.decode(generated[0], skip_special_tokens=True)
+        raw_text = decoded[len(model_prompt):] if decoded.startswith(model_prompt) else decoded
+        semantic_plan = self._extract_semantics(request, raw_text)
+        return {
+            "raw_text": raw_text.strip(),
+            "plan_source": "semantic_extraction",
+            "semantic_bindings": semantic_plan.get("semantic_bindings") or {},
+            "predicate_graph": semantic_plan.get("predicate_graph") or {},
+            "aggregation": semantic_plan.get("aggregation") or {},
+            "ranking": semantic_plan.get("ranking") or {},
+            "limit": semantic_plan.get("limit"),
+            "requires_fallback": semantic_plan.get("requires_fallback", False),
+            "confidence": semantic_plan.get("confidence", 0.0),
+            "semantic_roles": semantic_plan.get("semantic_roles") or [],
+            "plan": semantic_plan,
+            "model_load_ms": self.model_load_ms,
+            "inference_ms": inference_ms,
+            "peak_vram_mb": peak_vram_mb,
+        }
+
+    def health(self) -> dict[str, Any]:
+        return {"available": self.model is not None and self.tokenizer is not None, "backend": "semantic_extraction", "model_id": self.profile.model_id, "load_error": self.load_error}
+
+    def metadata(self) -> dict[str, Any]:
+        return {"model_id": self.profile.model_id, "backend": "semantic_extraction"}
+
+
 def _try_import_transformers():
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -445,6 +566,35 @@ def _score_plan(candidate: dict[str, Any], case: PlannerBenchmarkCase, critic_pa
     }
 
 
+def _score_semantic_plan(candidate: dict[str, Any], case: PlannerBenchmarkCase) -> dict[str, Any]:
+    semantic_bindings = candidate.get("semantic_bindings") if isinstance(candidate.get("semantic_bindings"), dict) else {}
+    predicate_graph = candidate.get("predicate_graph") if isinstance(candidate.get("predicate_graph"), dict) else {}
+    aggregation = candidate.get("aggregation") if isinstance(candidate.get("aggregation"), dict) else {}
+    ranking = candidate.get("ranking") if isinstance(candidate.get("ranking"), dict) else {}
+    semantic_roles = set(_stringify_sequence(candidate.get("semantic_roles") or predicate_graph.get("roles") or []))
+    expected_roles = set(case.expected_semantic_roles)
+    binding_accuracy = 1.0 if semantic_bindings.get("intent_hint") == case.intent else 0.0
+    predicate_coverage = 1.0 if case.expected_predicate_count == 0 else min(1.0, float(predicate_graph.get("predicate_count") or 0) / case.expected_predicate_count)
+    logical_structure_accuracy = 1.0 if str(predicate_graph.get("logical_structure") or "SINGLE") == case.expected_logical_structure else 0.0
+    semantic_role_coverage = 1.0 if not expected_roles else len(semantic_roles & expected_roles) / len(expected_roles)
+    plan_validity = bool(candidate.get("requires_fallback") is False and semantic_bindings)
+    fallback_accuracy = 1.0 if bool(candidate.get("requires_fallback")) else 0.0
+    confidence = float(candidate.get("confidence") or 0.0)
+    critic_passed = confidence >= 0.6 and not bool(candidate.get("requires_fallback"))
+    return {
+        "binding_accuracy": binding_accuracy,
+        "predicate_coverage": predicate_coverage,
+        "logical_structure_accuracy": logical_structure_accuracy,
+        "semantic_role_coverage": semantic_role_coverage,
+        "composed_plan_validity": plan_validity,
+        "critic_passed": critic_passed,
+        "fallback_accuracy": fallback_accuracy,
+        "confidence": confidence,
+        "aggregation_valid": bool(aggregation),
+        "ranking_valid": bool(ranking),
+    }
+
+
 def _best_effort_vram_mb() -> float | None:
     if not torch.cuda.is_available():
         return None
@@ -536,7 +686,7 @@ def run_planner_benchmark(
     profile = select_model_profile(profile_name)
     runtime = select_runtime_profile("cpu_low_spec" if device == "cpu" else "gpu_4gb")
     hw = detect_hardware()
-    allowed_backend = backend if backend == "semantic" else choose_backend(
+    allowed_backend = backend if backend in {"semantic", "semantic_extraction", "semantic_composed"} else choose_backend(
         backend=backend,
         runtime_profile=runtime,
         cuda_available=bool(hw.cuda_available),
@@ -564,6 +714,22 @@ def run_planner_benchmark(
     elif allowed_backend == "semantic":
         model = SemanticPlannerModel(profile_name=profile_name)
         model_health = model.health()
+    elif allowed_backend == "semantic_extraction":
+        candidate = TransformersSemanticExtractionModel(profile_name=profile_name, device=device, cache_dir=cache_dir)
+        candidate.load()
+        if candidate.model is not None and candidate.tokenizer is not None:
+            model = candidate
+            model_health = candidate.health()
+        else:
+            notes.append(f"semantic_extraction_load_failed:{candidate.load_error or 'unknown'}")
+    elif allowed_backend == "semantic_composed":
+        candidate = TransformersSemanticExtractionModel(profile_name=profile_name, device=device, cache_dir=cache_dir)
+        candidate.load()
+        if candidate.model is not None and candidate.tokenizer is not None:
+            model = candidate
+            model_health = candidate.health()
+        else:
+            notes.append(f"semantic_composed_load_failed:{candidate.load_error or 'unknown'}")
 
     cases = builtin_benchmark_cases() if benchmark == "builtin" else builtin_benchmark_cases()
     if case_limit is not None:
@@ -620,6 +786,8 @@ def run_planner_benchmark(
             },
             "dataframe": synthetic_df,
         }
+        request_columns = [str(field["id"]) for field in request["dataset_profile"]["fields"]]
+        request_roles = {str(field["id"]): str(field["semantic_role"]) for field in request["dataset_profile"]["fields"]}
         started = time.perf_counter()
         raw_output = ""
         parsed_plan: dict[str, Any] | None = None
@@ -644,6 +812,8 @@ def run_planner_benchmark(
             plan_source = "timeout" if timeout_error == "INFERENCE_TIMEOUT" else "fallback"
 
         critic = False
+        composed_plan: dict[str, Any] | None = None
+        semantic_scores: dict[str, Any] | None = None
         if parsed_plan is not None:
             candidate_tool_graph = _stringify_sequence(candidate.get("tool_graph") if isinstance(candidate, dict) else [])
             plan_tool_sequence = _stringify_sequence(parsed_plan.get("tool_sequence") or candidate_tool_graph)
@@ -656,12 +826,39 @@ def run_planner_benchmark(
                 features=request["query_features"],
             )
             critic, _ = PlanCritic().review(decision, context=build_planner_context(case.text, None, []))
+            if allowed_backend in {"semantic_extraction", "semantic_composed"}:
+                semantic_scores = _score_semantic_plan(candidate if isinstance(candidate, dict) else {}, case)
+                if allowed_backend == "semantic_composed":
+                    composed_plan, semantic_notes, ambiguous = _compose_executable_plan(
+                        candidate if isinstance(candidate, dict) else {},
+                        roles=request_roles,
+                        columns=request_columns,
+                        requested_predicates=int(case.expected_predicate_count),
+                    )
+                    if composed_plan is not None:
+                        parsed_plan = composed_plan
+                        plan_source = "semantic_composed"
+                        if semantic_notes:
+                            notes.extend([f"compose:{note}" for note in semantic_notes])
+                        critic, _ = PlanCritic().review(
+                            LearningDecision(
+                                route="sql" if case.intent in {"filter", "analytics"} else "operation",
+                                confidence=float(candidate.get("confidence") or 0.0),
+                                message="semantic composition benchmark",
+                                plan=parsed_plan,
+                                tool_sequence=list(parsed_plan.get("tool_sequence") or []),
+                                features=request["query_features"],
+                            ),
+                            context=build_planner_context(case.text, None, []),
+                        )
         critic_passed = bool(critic and parsed_plan is not None and candidate is not None and candidate.get("tool_graph") is not None)
         scores = _score_plan(
             candidate if isinstance(candidate, dict) else {"plan": parsed_plan, "tool_graph": []},
             case,
             critic_passed=critic and critic_passed,
         )
+        if semantic_scores is not None:
+            scores.update(semantic_scores)
         latency_ms = (time.perf_counter() - started) * 1000.0
         if peak_vram_mb is None:
             peak_vram_mb = _best_effort_vram_mb()

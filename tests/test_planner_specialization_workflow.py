@@ -163,3 +163,19 @@ def test_semantic_plan_schema_and_shadow_mode_non_execution():
     assert summary.metrics["peak_vram_mb"] is None or summary.metrics["peak_vram_mb"] >= 0.0
     for case in summary.cases:
         assert "semantic" in case.plan_source or case.plan_source in {"semantic_planner", "deterministic_fallback", "validated_template", "experience_transfer", "bootstrap_skill", "trusted_strategy"}
+
+
+def test_semantic_extraction_and_composition_modes_are_reported():
+    extract_summary = run_planner_benchmark(profile_name="low_spec", backend="semantic_extraction", device="cpu", benchmark="builtin", case_limit=1)
+    compose_summary = run_planner_benchmark(profile_name="low_spec", backend="semantic_composed", device="cpu", benchmark="builtin", case_limit=1)
+
+    assert extract_summary.backend == "semantic_extraction"
+    assert compose_summary.backend == "semantic_composed"
+    assert extract_summary.metrics["valid_json_rate"] == 1.0
+    assert extract_summary.metrics["schema_valid_rate"] == 1.0
+    assert compose_summary.metrics["valid_json_rate"] == 1.0
+    assert compose_summary.metrics["schema_valid_rate"] == 1.0
+    assert all(case.plan_source == "semantic_extraction" for case in extract_summary.cases)
+    assert all(case.plan_source == "semantic_composed" for case in compose_summary.cases)
+    assert all(not (case.parsed_plan or {}).get("tool_sequence") for case in extract_summary.cases)
+    assert any((case.parsed_plan or {}).get("tool_sequence") for case in compose_summary.cases)
