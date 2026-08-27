@@ -1,0 +1,68 @@
+profile_name: semantic_extractor
+base_model: Qwen/Qwen2.5-0.5B-Instruct
+task: semantic_extraction_only
+training:
+  method: qlora
+  semantic_only: true
+  max_seq_len: 768
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: auto
+  output_fields:
+    - intent
+    - semantic_bindings
+    - predicate_graph
+    - aggregation
+    - ranking
+    - limit
+    - requires_fallback
+    - confidence
+  success_gates:
+    intent_accuracy: 0.95
+    binding_accuracy: 0.90
+    predicate_coverage: 0.90
+    logical_structure_accuracy: 0.90
+    semantic_schema_valid_rate: 0.99
+    fallback_accuracy: 0.95
+data:
+  input_candidates:
+    - intent
+    - safe_field_aliases
+    - semantic_roles
+    - dtypes
+    - logical_hints
+  semantic_dataset_dir: runtime/semantic_training
+  split_strategy: family_hash
+  leakage_protection: true
+evaluation:
+  metrics:
+    - intent_accuracy
+    - binding_accuracy
+    - predicate_coverage
+    - logical_structure_accuracy
+    - aggregation_accuracy
+    - ranking_accuracy
+    - fallback_accuracy
+    - semantic_schema_valid_rate
+  post_training_gates:
+    intent_accuracy: 0.95
+    binding_accuracy: 0.90
+    predicate_coverage: 0.90
+    logical_structure_accuracy: 0.90
+    semantic_schema_valid_rate: 0.99
+    fallback_accuracy: 0.95
+runtime:
+  precision: bf16_if_supported_else_fp16
+  local_mode: shadow_only
+  routing:
+    - trusted_strategy
+    - semantic_extractor
+    - deterministic_composer
+    - critic
+    - gemini_fallback

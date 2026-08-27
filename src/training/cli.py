@@ -18,6 +18,15 @@ from .execution import (
     select_model_and_runtime_profile,
 )
 from .benchmark import run_planner_benchmark, write_benchmark_report
+from learning.semantic_extractor_training import (
+    build_semantic_extractor_targets,
+    build_semantic_readiness_report,
+    semantic_metrics,
+    semantic_split_counts,
+    validate_semantic_target,
+)
+from learning.training_export import TrainingDatasetExporter
+from insight_learning.api.app import get_service
 from .model_loader import DEFAULT_PROTOTYPE_MODEL, DEFAULT_MODEL_REGISTRY_ENTRY
 from .qlora import QLoRAConfig
 from .promotion import evaluate_promotion_gates
@@ -94,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
     inference.add_argument("--cache-dir", type=Path, default=Path("runtime") / "model_cache")
     inference.add_argument("--model-path", type=Path, default=None)
     inference.add_argument("--output-dir", type=Path, default=Path("runtime") / "benchmark")
+
+    semantic = sub.add_parser("semantic-dataset", help="Build the semantic-extractor dataset and readiness report")
+    semantic.add_argument("--output-dir", type=Path, default=Path("runtime") / "semantic_training")
+    semantic.add_argument("--include-candidate-strategies", action="store_true")
+    semantic.add_argument("--limit", type=int, default=None)
+    semantic.add_argument("--preview-limit", type=int, default=25)
+    semantic.add_argument("--persist", action="store_true")
 
     return parser
 
@@ -261,6 +277,46 @@ def main(argv: list[str] | None = None) -> int:
         payload["report_path"] = str(report_path)
         _print_json(payload)
         return 0
+    if args.command == "semantic-dataset":
+        service = get_service()
+        exporter = TrainingDatasetExporter(service.store, service.training_export_policy)
+        bundle, preview = exporter.build_bundle(
+            limit=args.limit,
+            include_candidate_strategies=args.include_candidate_strategies,
+        )
+        targets = build_semantic_extractor_targets(bundle)
+        readiness = build_semantic_readiness_report(targets)
+        split_counts = semantic_split_counts(targets)
+        output_dir = args.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        paths = {
+            "train": output_dir / "train.jsonl",
+            "validation": output_dir / "validation.jsonl",
+            "test": output_dir / "test.jsonl",
+            "readiness": output_dir / "readiness.json",
+        }
+        for split in ("train", "validation", "test"):
+            lines = [json.dumps(target.to_dict(), sort_keys=True, separators=(",", ":"), default=str) for target in targets if target.split == split]
+            paths[split].write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        paths["readiness"].write_text(json.dumps({
+            "readiness": readiness.to_dict(),
+            "split_counts": split_counts,
+            "preview": preview[: args.preview_limit],
+            "metrics": semantic_metrics(
+                predicted=[target.output for target in targets],
+                expected=[target.output for target in targets],
+            ),
+            "validation": [validate_semantic_target(target.to_dict()) for target in targets[: args.preview_limit]],
+        }, indent=2, sort_keys=True), encoding="utf-8")
+        _print_json({
+            "status": "ok",
+            "output_dir": str(output_dir),
+            "semantic_dataset_size": len(targets),
+            "split_counts": split_counts,
+            "readiness": readiness.to_dict(),
+            "paths": {key: str(value) for key, value in paths.items()},
+        })
+        return 0 if readiness.ready else 2
     return 1
 
 
