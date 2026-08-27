@@ -13,9 +13,11 @@ from .bootstrap import (
     discover_semantic_dataset,
     ensure_kaggle_paths,
     inspect_kaggle_environment,
+    resolve_canonical_dataset_root,
     load_semantic_config,
     semantic_verdict,
     verify_attached_dataset,
+    build_semantic_dataset_from_canonical,
 )
 
 
@@ -77,33 +79,63 @@ def build_training_plan(*, dataset_dir: Path, output_root: Path = KAGGLE_WORKING
 
 def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: str | None = None) -> dict[str, Any]:
     paths = ensure_kaggle_paths(output_root)
-    dataset_dir = discover_semantic_dataset()
+    resolved = resolve_canonical_dataset_root()
+    dataset_dir = Path(resolved["root"]) if resolved.get("root") else None
     if dataset_dir is None:
         return {
             "verdict": "KAGGLE_GPU_NOT_AVAILABLE",
-            "reason": "no_attached_dataset_found",
+            "reason": resolved.get("reason") or "no_attached_dataset_found",
+            "canonical_dataset_root": None,
             "paths": paths.to_dict(),
         }
+    canonical_verification = verify_attached_dataset(dataset_dir)
+    if not canonical_verification.get("verified"):
+        return {
+            "verdict": "TRAINING_FAILED",
+            "reason": "canonical_dataset_verification_failed",
+            "canonical_dataset_root": str(dataset_dir),
+            "dataset_verification": canonical_verification,
+            "paths": paths.to_dict(),
+        }
+    semantic_data = build_semantic_dataset_from_canonical(dataset_dir, output_root / "semantic_training")
     resume_checkpoint = detect_resume_checkpoint(paths.checkpoints, resume_from=resume_from)
     runtime = _safe_runtime_report(dataset_dir=dataset_dir, output_root=output_root)
-    training_plan = build_training_plan(dataset_dir=dataset_dir, output_root=output_root)
+    training_plan = build_training_plan(dataset_dir=Path(semantic_data["semantic_output_root"]), output_root=output_root)
     safe_report_path = paths.reports / "final_report.json"
     safe_metrics_path = paths.metrics / "semantic_metrics.json"
     artifact_manifest_path = paths.manifests / "artifact_manifest.json"
-    _write_json(safe_report_path, {"runtime": runtime, "training_plan": training_plan})
-    _write_json(safe_metrics_path, runtime["semantic_report"]["semantic_readiness"])
+    _write_json(
+        safe_report_path,
+        {
+            "runtime": runtime,
+            "training_plan": training_plan,
+            "canonical_dataset_root": str(dataset_dir),
+            "semantic_dataset_root": semantic_data["semantic_output_root"],
+            "canonical_row_counts": semantic_data["bundle_report"].get("train_count", 0) + semantic_data["bundle_report"].get("validation_count", 0) + semantic_data["bundle_report"].get("test_count", 0),
+            "semantic_row_count": semantic_data["semantic_row_count"],
+        },
+    )
+    _write_json(safe_metrics_path, semantic_data["readiness"])
     artifact_manifest = build_artifact_manifest([safe_report_path, safe_metrics_path])
     _write_json(artifact_manifest_path, artifact_manifest)
     final_zip = create_final_zip(paths.root, [safe_report_path, safe_metrics_path, artifact_manifest_path], zip_name="semantic_extractor_artifacts.zip")
     result = {
         "environment": runtime["environment"],
         "paths": paths.to_dict(),
-        "dataset_dir": str(dataset_dir),
+        "canonical_dataset_root": str(dataset_dir),
+        "semantic_dataset_root": semantic_data["semantic_output_root"],
+        "canonical_row_counts": {
+            "train": int(semantic_data["bundle_report"].get("train_count", 0)),
+            "validation": int(semantic_data["bundle_report"].get("validation_count", 0)),
+            "test": int(semantic_data["bundle_report"].get("test_count", 0)),
+        },
+        "semantic_row_counts": semantic_data["split_counts"],
         "resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
-        "dataset_verification": runtime["dataset_verification"],
-        "semantic_readiness": runtime["semantic_report"]["semantic_readiness"],
+        "dataset_verification": canonical_verification,
+        "semantic_readiness": semantic_data["readiness"],
         "training_plan": training_plan,
         "artifact_manifest": artifact_manifest,
+        "sha_manifest_path": semantic_data["sha_manifest_path"],
         "final_zip": str(final_zip),
         "verdict": semantic_verdict(
             gate_results={
@@ -114,7 +146,7 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
                 "semantic_schema_valid_rate": 0.0,
                 "fallback_accuracy": 0.0,
             },
-            readiness=bool(runtime["semantic_report"]["semantic_readiness"].get("ready")),
+            readiness=bool(semantic_data["readiness"].get("ready")),
             fallback_rate=1.0,
         ),
     }

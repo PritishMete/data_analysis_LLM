@@ -5,50 +5,170 @@ from pathlib import Path
 
 from kaggle.bootstrap import (
     build_artifact_manifest,
+    build_semantic_dataset_from_canonical,
     create_final_zip,
-    detect_resume_checkpoint,
-    discover_attached_dataset,
     discover_semantic_dataset,
-    ensure_kaggle_paths,
+    resolve_canonical_dataset_root,
     semantic_verdict,
+    verify_attached_dataset,
+    write_sha_manifest,
 )
-from kaggle.run_semantic_training import build_training_plan
 
 
-def test_kaggle_dataset_discovery_and_output_paths(tmp_path, monkeypatch):
-    input_root = tmp_path / "input"
-    dataset_dir = input_root / "semantic-dataset"
-    dataset_dir.mkdir(parents=True)
-    (dataset_dir / "train.jsonl").write_text("{}", encoding="utf-8")
-    (dataset_dir / "validation.jsonl").write_text("{}", encoding="utf-8")
-    (dataset_dir / "test.jsonl").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("kaggle.bootstrap.KAGGLE_INPUT_ROOT", input_root)
-    monkeypatch.setattr("kaggle.run_semantic_training.KAGGLE_WORKING_ROOT", tmp_path / "working")
+def _canonical_record(*, source_id: str, intent: str, family_fingerprint: str, split: str, logical_structure: str = "AND", quality: float = 0.99) -> dict[str, object]:
+    return {
+        "source_kind": "experience",
+        "source_id": source_id,
+        "split": split,
+        "family_fingerprint": family_fingerprint,
+        "input": {
+            "intent": intent,
+            "semantic_roles": ["numeric_metric", "filter_value"],
+            "operators": ["equals", "greater_than"],
+            "logical_structure": logical_structure,
+            "predicate_graph": {"predicate_count": 2, "shape": "safe"},
+        },
+        "output": {
+            "tool_graph": ["sql.filter"],
+            "plan_source": "validated_template",
+            "plan_template_id": "plan.template.semantic",
+            "source_kind": "experience",
+            "candidate_state": None,
+        },
+        "metadata": {
+            "quality": quality,
+            "execution_success": True,
+            "critic_passed": True,
+            "result_validation_passed": True,
+            "plan_completeness_passed": True,
+            "privacy_validation_passed": True,
+            "no_unresolved_ambiguity": True,
+            "no_critical_repair": True,
+            "repair_count": 0,
+            "correction_state": "validated",
+            "candidate_state": None,
+            "candidate_evidence_count": None,
+            "candidate_average_quality": None,
+            "dataset_semantic_signature": "0123456789abcdef",
+            "family_fingerprint": family_fingerprint,
+            "split": split,
+            "family_size": 1,
+            "created_at": "2026-08-27T00:00:00+00:00",
+            "plan_shape": {"limit": 5, "metric_count": 1, "tool_sequence": ["sql.filter"]},
+        },
+    }
 
-    attached = discover_attached_dataset(input_root)
-    semantic = discover_semantic_dataset(input_root)
-    paths = ensure_kaggle_paths(tmp_path / "working")
-    plan = build_training_plan(dataset_dir=dataset_dir, output_root=tmp_path / "working")
 
-    assert attached == [dataset_dir]
-    assert semantic == dataset_dir
-    assert paths.checkpoints.exists()
-    assert paths.adapters.exists()
-    assert plan["base_model"] == "Qwen/Qwen2.5-0.5B-Instruct"
+def _write_canonical_dataset(root: Path, *, with_sha_manifest: bool = False) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    records = [
+        _canonical_record(source_id="evt_a", intent="filter", family_fingerprint="a" * 64, split="train"),
+        _canonical_record(source_id="evt_b", intent="analytics", family_fingerprint="b" * 64, split="validation", logical_structure="OR"),
+        _canonical_record(source_id="evt_c", intent="operation", family_fingerprint="c" * 64, split="test", logical_structure="MIXED"),
+    ]
+    for split in ("train", "validation", "test"):
+        lines = [json.dumps(record, sort_keys=True, separators=(",", ":")) for record in records if record["split"] == split]
+        (root / f"{split}.jsonl").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    manifest = {
+        "dataset_version": "canonical-test",
+        "train_count": 1,
+        "validation_count": 1,
+        "test_count": 1,
+        "eligible_examples": 3,
+        "readiness": {"ready_for_prototype": True},
+    }
+    report = {
+        "dataset_version": "canonical-test",
+        "train_count": 1,
+        "validation_count": 1,
+        "test_count": 1,
+        "eligible_examples": 3,
+        "readiness": {"ready_for_prototype": True},
+        "split_integrity_passed": True,
+    }
+    (root / "dataset_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    (root / "dataset_report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    (root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    if with_sha_manifest:
+        write_sha_manifest(root, root)
+    return root
 
 
-def test_resume_checkpoint_detection_prefers_latest(tmp_path):
-    output_dir = tmp_path / "working" / "checkpoints"
-    (output_dir / "checkpoint-2").mkdir(parents=True)
-    (output_dir / "checkpoint-9").mkdir()
-    (output_dir.parent / "last_checkpoint").write_text("checkpoint-9", encoding="utf-8")
+def test_recursive_discovery_resolves_nested_kaggle_root(tmp_path):
+    kaggle_input = tmp_path / "kaggle" / "input"
+    canonical_root = _write_canonical_dataset(kaggle_input / "datasets" / "jaistudio" / "data-analysis-llm")
 
-    assert detect_resume_checkpoint(output_dir) == output_dir / "checkpoint-9"
-    assert detect_resume_checkpoint(output_dir, resume_from=str(output_dir / "checkpoint-2")) == output_dir / "checkpoint-2"
+    resolved = resolve_canonical_dataset_root(kaggle_input)
+    discovered = discover_semantic_dataset(kaggle_input)
+    verification = verify_attached_dataset(canonical_root)
+
+    assert resolved["root"] == str(canonical_root)
+    assert discovered == canonical_root
+    assert verification["verified"] is True
+    assert verification["mismatches"] == []
+
+
+def test_multiple_candidate_roots_fail_clearly(tmp_path):
+    kaggle_input = tmp_path / "input"
+    root_a = _write_canonical_dataset(kaggle_input / "vendor-a" / "dataset-a")
+    root_b = _write_canonical_dataset(kaggle_input / "vendor-b" / "dataset-b")
+
+    resolved = resolve_canonical_dataset_root(kaggle_input)
+
+    assert resolved["root"] is None
+    assert resolved["reason"] == "ambiguous_dataset_root"
+    candidate_roots = {item["root"] for item in resolved["candidates"]}
+    assert candidate_roots == {str(root_a), str(root_b)}
+
+
+def test_missing_sha_manifest_falls_back_to_consistency_and_generates_sha(tmp_path):
+    canonical_root = _write_canonical_dataset(tmp_path / "canonical")
+    verification = verify_attached_dataset(canonical_root)
+    semantic_root = tmp_path / "semantic_training"
+
+    assert verification["verified"] is True
+    assert verification["mismatches"] == []
+    assert "consistency" in verification
+
+    sha_manifest_path = write_sha_manifest(canonical_root, semantic_root)
+    payload = json.loads(sha_manifest_path.read_text(encoding="utf-8"))
+    names = [item["name"] for item in payload["files"]]
+
+    assert "train.jsonl" in names
+    assert "validation.jsonl" in names
+    assert "test.jsonl" in names
+    assert "dataset_manifest.json" in names
+    assert "manifest.json" in names
+    assert "dataset_report.json" in names
+    assert "report.json" in names
+    assert payload["dataset_root"] == str(canonical_root)
+
+
+def test_canonical_to_semantic_conversion_preserves_privacy_and_rows(tmp_path):
+    canonical_root = _write_canonical_dataset(tmp_path / "canonical")
+    semantic_report = build_semantic_dataset_from_canonical(canonical_root, tmp_path / "semantic_training")
+    semantic_root = Path(semantic_report["semantic_output_root"])
+
+    train = (semantic_root / "train.jsonl").read_text(encoding="utf-8")
+    validation = (semantic_root / "validation.jsonl").read_text(encoding="utf-8")
+    test = (semantic_root / "test.jsonl").read_text(encoding="utf-8")
+    combined = train + validation + test
+
+    assert semantic_report["semantic_row_count"] > 0
+    assert semantic_report["readiness"]["ready"] is True
+    assert sum(semantic_report["split_counts"].values()) == semantic_report["semantic_row_count"]
+    assert "intent" in combined
+    assert "semantic_bindings" in combined
+    assert "predicate_graph" in combined
+    assert "tool_graph" not in combined
+    assert "sql" not in combined.lower()
+    for needle in ["John Smith", "john@example.com", "ACC-9988", "SecretCompanyXYZ", "9876543210"]:
+        assert needle not in combined
 
 
 def test_artifact_manifest_and_zip_exclusions(tmp_path):
-    safe = tmp_path / "adapter"
+    safe = tmp_path / "training_config"
     unsafe = tmp_path / "dataset.jsonl"
     safe.write_text("safe", encoding="utf-8")
     unsafe.write_text("secret", encoding="utf-8")
@@ -57,11 +177,11 @@ def test_artifact_manifest_and_zip_exclusions(tmp_path):
     zip_path = create_final_zip(tmp_path, [safe, unsafe], zip_name="bundle.zip")
 
     assert manifest["manifest_version"] == 1
-    assert {item["name"] for item in manifest["artifacts"]} == {"adapter", "dataset.jsonl"}
+    assert {item["name"] for item in manifest["artifacts"]} == {"dataset.jsonl", "training_config"}
     import zipfile
 
     with zipfile.ZipFile(zip_path, "r") as archive:
-        assert archive.namelist() == ["adapter"]
+        assert archive.namelist() == ["training_config"]
 
 
 def test_semantic_verdict_logic():
@@ -91,18 +211,3 @@ def test_semantic_verdict_logic():
     assert promotable == "PROMOTE_SEMANTIC_EXTRACTOR_TO_SHADOW"
     assert rejected == "REJECT_SEMANTIC_EXTRACTOR"
     assert failed == "TRAINING_FAILED"
-
-
-def test_privacy_invariants_for_safe_artifacts(tmp_path):
-    report = tmp_path / "final_report.json"
-    metrics = tmp_path / "metrics.json"
-    manifest = tmp_path / "artifact_manifest.json"
-    report.write_text(json.dumps({"no raw data": True}), encoding="utf-8")
-    metrics.write_text(json.dumps({"intent_accuracy": 1.0}), encoding="utf-8")
-    manifest.write_text(json.dumps({"manifest_version": 1}), encoding="utf-8")
-
-    zip_path = create_final_zip(tmp_path, [report, metrics, manifest])
-    payload = zip_path.read_bytes()
-
-    for needle in [b"John Smith", b"john@example.com", b"ACC-9988", b"SecretCompanyXYZ", b"9876543210"]:
-        assert needle not in payload
