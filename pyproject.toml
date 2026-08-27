@@ -21,6 +21,13 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
+training = [
+  "accelerate>=0.31",
+  "bitsandbytes>=0.43",
+  "peft>=0.11",
+  "transformers>=4.43",
+  "trl>=0.9",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -32,4 +39,3 @@ where = ["src"]
 testpaths = ["tests"]
 norecursedirs = ["ref_data_analysis", ".git", "__pycache__", ".pytest_cache"]
 addopts = "-q"
-

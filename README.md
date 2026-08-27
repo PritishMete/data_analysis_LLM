@@ -110,6 +110,43 @@ Only high-quality, validator-approved, privacy-safe, deduplicated examples
 qualify for future fine-tuning. The repository includes a strict export path
 for those examples, but no model fine-tuning happens yet.
 
+## Prototype planner fine-tuning pipeline
+
+The repository also includes a separate `training` package for future
+GPU-based prototype training of a structured analytics planner model.
+
+Default prototype model:
+
+- `Qwen/Qwen2.5-1.5B-Instruct`
+- approximately `1.54B` parameters
+- `Apache-2.0`
+- `32,768` token context
+- recommended training sequence length: `2048`
+- estimated QLoRA VRAM: `8-12 GB`
+- recommended GPU class: `RTX 3060 12GB` or better
+
+Training defaults to 4-bit QLoRA, with plain LoRA also supported by config.
+The training extras are isolated from the runtime service:
+
+```bash
+python -m pip install -e .[training]
+```
+
+Recommended training Python targets are `3.11` or `3.12`, since the training
+stack is not guaranteed to be compatible with Python `3.13` on every platform.
+
+Useful commands:
+
+```bash
+python -m training.cli hardware
+python -m training.cli validate-dataset
+python -m training.cli train --allow-smoke-only
+```
+
+The `train` command refuses to run without CUDA unless
+`--allow-smoke-only` is passed explicitly. It never silently falls back to CPU
+fine-tuning.
+
 ### Training eligibility gate
 
 An example must satisfy the full gate before export:

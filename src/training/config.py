@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_MAX_SEQ_LEN = 2048
+DEFAULT_TRAINING_DIR = Path("runtime") / "fine_tuning"
+DEFAULT_DATASET_DIR = Path("runtime") / "training"
+DEFAULT_OUTPUT_DIR = Path("runtime") / "fine_tuning" / "runs"
+
+
+@dataclass(slots=True)
+class TrainingConfig:
+    base_model: str = DEFAULT_BASE_MODEL
+    method: str = "qlora"
+    max_seq_len: int = DEFAULT_MAX_SEQ_LEN
+    dataset_dir: Path = DEFAULT_DATASET_DIR
+    output_dir: Path = DEFAULT_OUTPUT_DIR
+    training_dir: Path = DEFAULT_TRAINING_DIR
+    python_target: str = "3.11-3.12"
+    smoke_only: bool = False
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+def load_default_config() -> TrainingConfig:
+    return TrainingConfig()
