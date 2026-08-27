@@ -330,6 +330,13 @@ class AgenticLearningOrchestrator:
         plan = decision.plan or {}
         requested_predicates = int(decision.features.get("predicate_count") or 0)
         planned_predicates = len(plan.get("filters") or [])
+        predicate_graph = plan.get("predicate_graph")
+        if isinstance(predicate_graph, dict):
+            graph_predicates = predicate_graph.get("predicate_count")
+            if isinstance(graph_predicates, int) and graph_predicates >= 0:
+                planned_predicates = max(planned_predicates, graph_predicates)
+        elif isinstance(plan.get("tool_graph"), list) and plan.get("tool_graph"):
+            planned_predicates = max(planned_predicates, len(plan.get("tool_graph") or []))
         plan_completeness = 1.0
         if requested_predicates:
             plan_completeness = max(0.0, min(1.0, planned_predicates / requested_predicates))

@@ -164,6 +164,73 @@ def test_experience_and_feedback_endpoints(tmp_path, monkeypatch):
     assert feedback.json()["accepted"] is True
 
 
+def test_experience_accepts_safe_abstract_plan_metadata(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    experience = client.post(
+        "/v1/experience",
+        json={
+            "schema_version": 1,
+            "event_id": "evt_abstract_001",
+            "intent": "filter",
+            "query_features": {
+                "predicate_count": 3,
+                "logical_structure": "AND",
+                "semantic_roles": ["boolean_capability", "boolean_capability", "numeric_measure"],
+                "operators": ["equals_true", "equals_true", "greater_than"],
+            },
+            "dataset_profile": {
+                "fields": [
+                    {"id": "field_001", "semantic_role": "boolean_capability", "dtype": "boolean"},
+                    {"id": "field_002", "semantic_role": "boolean_capability", "dtype": "boolean"},
+                    {"id": "field_003", "semantic_role": "numeric_measure", "dtype": "float"},
+                ]
+            },
+            "tool_graph": ["sql.filter"],
+            "plan": {
+                "predicate_graph": {
+                    "logical_structure": "AND",
+                    "predicate_count": 3,
+                    "operators": ["equals_true", "equals_true", "greater_than"],
+                },
+                "tool_graph": ["sql.filter"],
+                "route": "sql",
+                "plan_source": "bootstrap_skill",
+                "skill_id": "filter.multi_condition.v1",
+                "quality_score": 0.96,
+            },
+            "execution": {
+                "success": True,
+                "route": "sql",
+                "result_kind": "table",
+                "row_count": 1,
+                "column_count": 3,
+                "sql_present": True,
+            },
+            "validation": {"success": True, "warnings": [], "errors": []},
+            "quality_score": 0.96,
+            "route": "sql",
+            "plan_source": "bootstrap_skill",
+            "skill_id": "filter.multi_condition.v1",
+            "dataset_semantic_signature": "0123456789abcdef",
+            "critic_passed": True,
+            "result_validation_passed": True,
+            "plan_completeness_passed": True,
+            "privacy_validation_passed": True,
+            "no_unresolved_ambiguity": True,
+            "no_critical_repair": True,
+            "correction_state": "validated",
+            "safe_query_abstraction": {"available_columns": ["field_001", "field_002", "field_003"]},
+        },
+    )
+    assert experience.status_code == 200
+    assert experience.json()["stored"] is True
+
+    status = client.get("/v1/learning/status")
+    assert status.status_code == 200
+    learning = status.json()["learning"]
+    assert learning["eligible_experience_count"] >= 1
+
+
 def test_training_dataset_export_includes_records(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     service = app_module.get_service()

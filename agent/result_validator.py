@@ -14,6 +14,22 @@ class ValidationResult:
 
 
 class ResultValidator:
+    @staticmethod
+    def _plan_predicate_count(plan: dict[str, Any] | None) -> int:
+        plan = plan or {}
+        filters = plan.get("filters")
+        if isinstance(filters, list) and filters:
+            return len(filters)
+        predicate_graph = plan.get("predicate_graph")
+        if isinstance(predicate_graph, dict):
+            value = predicate_graph.get("predicate_count")
+            if isinstance(value, int) and value >= 0:
+                return value
+        tool_graph = plan.get("tool_graph")
+        if isinstance(tool_graph, list) and tool_graph:
+            return len(tool_graph)
+        return 0
+
     def validate(
         self,
         decision: LearningDecision,
@@ -25,15 +41,17 @@ class ResultValidator:
         payload = result_payload or {}
         route = decision.route
         if route == "sql":
-            filters = (decision.plan or {}).get("filters") or []
+            plan = decision.plan or {}
+            filters = plan.get("filters") or []
+            planned_predicates = self._plan_predicate_count(plan)
             row_count = summary.get("row_count")
             if filters and row_count is None:
                 notes.append("sql result is missing a row count")
             if filters and isinstance(row_count, int) and row_count < 0:
                 notes.append("sql result row count cannot be negative")
-            if decision.features.get("logical_structure") in {"AND", "MIXED"} and len(filters) < 2:
+            if decision.features.get("logical_structure") in {"AND", "MIXED"} and planned_predicates < 2:
                 notes.append("sql result may have dropped an explicit condition")
-            expected_columns = (decision.plan or {}).get("group_by") or []
+            expected_columns = plan.get("group_by") or []
             if expected_columns and isinstance(summary.get("columns"), list):
                 missing = [column for column in expected_columns if column not in summary.get("columns", [])]
                 if missing:
