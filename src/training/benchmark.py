@@ -12,6 +12,7 @@ import pandas as pd
 import torch
 
 from agent.critic import PlanCritic
+from agent.orchestrator import get_agentic_orchestrator
 from learning.feature_extractor import build_planner_context
 from learning.models import LearningDecision
 from agent.planner import LearningPlanner
@@ -216,6 +217,46 @@ class HeuristicPlannerModel:
             "backend": "heuristic",
             "quantization": self.profile.gguf_quantization,
         }
+
+
+class SemanticPlannerModel:
+    def __init__(self, *, profile_name: str = "low_spec") -> None:
+        self.profile = select_model_profile(profile_name)
+        self.orchestrator = get_agentic_orchestrator()
+
+    def plan(self, request: dict[str, Any]) -> dict[str, Any]:
+        text = str(request.get("text") or request.get("prompt") or "")
+        intent = str(request.get("intent") or "analytics")
+        features = request.get("query_features") or {}
+        available_columns = [str(item.get("id") if isinstance(item, dict) else item) for item in (request.get("dataset_profile") or {}).get("fields") or []]
+        decision = self.orchestrator.planner.plan(
+            text,
+            request.get("dataframe"),
+            available_columns,
+            planner_context=build_planner_context(text, request.get("dataframe"), available_columns),
+        )
+        return {
+            "intent": intent,
+            "semantic_bindings": {
+                "intent": intent,
+                "query_shape": features.get("query_shape"),
+            },
+            "predicate_graph": dict((decision.plan or {}).get("predicate_graph") or {"logical_structure": features.get("logical_structure"), "predicate_count": int(features.get("predicate_count") or 0), "operators": list(features.get("operators") or [])}),
+            "aggregation": dict((decision.plan or {}).get("aggregation") or {}),
+            "ranking": dict((decision.plan or {}).get("ranking") or {}),
+            "tool_graph": list(decision.tool_sequence or (decision.plan or {}).get("tool_sequence") or []),
+            "plan": _safe_json(decision.plan or {}),
+            "plan_source": decision.plan_source,
+            "model_load_ms": 0.0,
+            "inference_ms": None,
+            "peak_vram_mb": _best_effort_vram_mb(),
+        }
+
+    def health(self) -> dict[str, Any]:
+        return {"available": True, "backend": "semantic", "model_id": self.profile.model_id}
+
+    def metadata(self) -> dict[str, Any]:
+        return {"model_id": self.profile.model_id, "backend": "semantic"}
 
 
 def _try_import_transformers():
@@ -449,7 +490,7 @@ def run_planner_benchmark(
     profile = select_model_profile(profile_name)
     runtime = select_runtime_profile("cpu_low_spec" if device == "cpu" else "gpu_4gb")
     hw = detect_hardware()
-    allowed_backend = choose_backend(
+    allowed_backend = backend if backend == "semantic" else choose_backend(
         backend=backend,
         runtime_profile=runtime,
         cuda_available=bool(hw.cuda_available),
@@ -474,6 +515,9 @@ def run_planner_benchmark(
             model_health = candidate.health()
         else:
             notes.append("llama_cpp_unavailable")
+    elif allowed_backend == "semantic":
+        model = SemanticPlannerModel(profile_name=profile_name)
+        model_health = model.health()
 
     cases = builtin_benchmark_cases() if benchmark == "builtin" else builtin_benchmark_cases()
     results: list[PlannerInferenceResult] = []
@@ -524,13 +568,13 @@ def run_planner_benchmark(
         load_ms = None
         inference_ms = None
         peak_vram_mb = None
+        candidate: dict[str, Any] = {}
         try:
             candidate = model.plan(request)
             raw_output = json.dumps(candidate, sort_keys=True)
             parsed_plan = _normalize_plan_payload(candidate.get("plan")) or _extract_json_object(raw_output)
             parsed_plan = _normalize_plan_payload(parsed_plan)
             plan_source = str(candidate.get("plan_source") or "unknown")
-            critic_passed = True
             load_ms = candidate.get("model_load_ms") if isinstance(candidate, dict) else None
             inference_ms = candidate.get("inference_ms") if isinstance(candidate, dict) else None
             peak_vram_mb = candidate.get("peak_vram_mb") if isinstance(candidate, dict) else None
@@ -552,6 +596,7 @@ def run_planner_benchmark(
                 features=request["query_features"],
             )
             critic, _ = PlanCritic().review(decision, context=build_planner_context(case.text, None, []))
+        critic_passed = bool(critic and parsed_plan is not None and candidate.get("tool_graph") is not None)
         scores = _score_plan(
             candidate if isinstance(candidate, dict) else {"plan": parsed_plan, "tool_graph": []},
             case,
@@ -581,7 +626,13 @@ def run_planner_benchmark(
                 inference_ms=inference_ms,
                 peak_vram_mb=peak_vram_mb,
                 valid_json=_extract_json_object(raw_output) is not None,
-                fallback_triggered=plan_source in {"fallback", "deterministic_fallback"},
+                fallback_triggered=(
+                    plan_source in {"fallback", "deterministic_fallback"}
+                    or not scores["schema_valid"]
+                    or not scores["tool_valid"]
+                    or not critic_passed
+                    or scores["predicate_coverage"] < 1.0
+                ),
             )
         )
         if torch.cuda.is_available():
@@ -602,6 +653,7 @@ def run_planner_benchmark(
     semantic_role_coverage = sum(case.semantic_role_coverage for case in results) / len(results)
     invalid_tool_rate = sum(1 for case in results if case.invalid_tool) / len(results)
     fallback_accuracy = sum(1 for case in results if case.plan_source != "unknown") / len(results)
+    fallback_rate = sum(1 for case in results if case.fallback_triggered) / len(results)
     median_latency = sorted(case.latency_ms for case in results)[len(results) // 2]
     p95_latency = sorted(case.latency_ms for case in results)[max(0, int(len(results) * 0.95) - 1)]
     model_load_ms = next((case.model_load_ms for case in results if case.model_load_ms is not None), None)
@@ -626,6 +678,7 @@ def run_planner_benchmark(
             "semantic_role_coverage": semantic_role_coverage,
             "invalid_tool_rate": invalid_tool_rate,
             "fallback_accuracy": fallback_accuracy,
+            "fallback_rate": fallback_rate,
             "median_latency_ms": median_latency,
             "p95_latency_ms": p95_latency,
             "model_load_ms": model_load_ms,

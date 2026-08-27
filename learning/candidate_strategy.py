@@ -11,7 +11,13 @@ def _strategy_key(record: ExperienceRecord) -> tuple[str, str, str, tuple[str, .
     return (
         record.intent,
         record.logical_structure,
-        record.plan_template_id or record.semantic_signature,
+        stable_hash(
+            {
+                "intent": record.intent,
+                "logical_structure": record.logical_structure,
+                "tool_sequence": list(record.tool_sequence),
+            }
+        ),
         tuple(str(item) for item in record.tool_sequence),
     )
 

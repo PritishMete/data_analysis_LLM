@@ -11,6 +11,7 @@ from training.formatting import fine_tuning_candidate_to_example
 from training.profiles import PLANNER_BACKEND_LLAMA_CPP
 from learning.training_export import TrainingDatasetExporter, TrainingExportPolicy
 from learning.experience_store import LearningExperienceStore
+from agent.planner import LearningPlanner
 from tests.test_training_export_hardening import _experience_record
 
 
@@ -122,6 +123,7 @@ def test_failure_mode_audit_and_success_gates_recorded():
     assert audit.failure_counts["missing_predicate"] >= 0
     assert summary.metrics["valid_json_rate"] >= 0.99
     assert summary.metrics["schema_valid_rate"] >= 0.99
+    assert "fallback_rate" in summary.metrics
 
 
 def test_low_spec_v2_config_and_return_artifact_manifest():
@@ -137,3 +139,27 @@ def test_low_spec_v2_config_and_return_artifact_manifest():
         "sha256": "a" * 64,
     }
     assert len(manifest["sha256"]) == 64
+
+
+def test_semantic_planner_uses_intent_specific_tool_subsets():
+    planner = LearningPlanner()
+    decision = planner.plan(
+        "Show restaurants with delivery and booking",
+        None,
+        ["delivery", "booking", "rating"],
+    )
+    assert decision.plan_source in {"semantic_planner", "validated_template", "experience_transfer", "deterministic_fallback", "trusted_strategy", "bootstrap_skill"}
+    assert decision.plan is not None
+    tool_sequence = decision.plan.get("tool_sequence") or []
+    assert tool_sequence
+    assert all(tool in {"sql.filter", "sql.group_by", "analytics.summary", "categorization_agent._deterministic_special_mapping", "data_cleaning_utils.fill_nulls", "common.transformations.range_binning", "secure_excel.executor"} for tool in tool_sequence)
+    assert (decision.plan.get("predicate_graph") or {}).get("predicate_count", 0) >= 2
+
+
+def test_semantic_plan_schema_and_shadow_mode_non_execution():
+    summary = run_planner_benchmark(profile_name="low_spec", backend="semantic", device="cpu")
+    assert summary.shadow_mode is True
+    assert summary.metrics["fallback_rate"] >= 0.0
+    assert summary.metrics["peak_vram_mb"] is None or summary.metrics["peak_vram_mb"] >= 0.0
+    for case in summary.cases:
+        assert "semantic" in case.plan_source or case.plan_source in {"semantic_planner", "deterministic_fallback", "validated_template", "experience_transfer", "bootstrap_skill", "trusted_strategy"}

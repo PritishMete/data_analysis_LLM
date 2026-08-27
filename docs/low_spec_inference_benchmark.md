@@ -76,3 +76,21 @@ The benchmark is intended to answer two questions:
 
 If a real model backend cannot load safely, the command should still complete and
 report the fallback path rather than crashing.
+
+## Shadow planner update
+
+The recommended low-spec architecture now treats the 0.5B model as a semantic
+planner in shadow mode:
+
+1. trusted strategies route first
+2. the local model emits semantic bindings, predicate structure, aggregation,
+   and ranking hints
+3. the executable tool graph is composed deterministically from the detected
+   intent and allowlisted tools
+4. critic and validators gate acceptance
+5. Gemini remains the fallback when JSON, schema, predicate parity, tool
+   allowlisting, ambiguity checks, or critic checks fail
+
+This path is benchmarked against the older full-plan generation path so the
+quality/latency tradeoff can be compared without executing shadow plans on user
+data.

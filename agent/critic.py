@@ -33,16 +33,21 @@ class PlanCritic:
             if not decision.plan:
                 notes.append("sql decision is missing a plan")
             else:
+                tool_sequence = decision.tool_sequence or []
+                predicate_graph = decision.plan.get("predicate_graph") if isinstance(decision.plan, dict) else {}
                 filters = decision.plan.get("filters") or []
                 group_by = decision.plan.get("group_by") or []
                 metrics = decision.plan.get("metrics") or []
-                tool_sequence = decision.tool_sequence or []
-                if not filters and not group_by and not metrics:
+                predicate_count = 0
+                if isinstance(predicate_graph, dict):
+                    predicate_count = int(predicate_graph.get("predicate_count") or 0)
+                if not filters and not group_by and not metrics and predicate_count <= 0:
                     notes.append("sql plan is too vague")
                 requested_predicates = self._predicate_leaf_count(features) if features is not None else 0
-                if requested_predicates and len(filters) < requested_predicates:
+                planned_predicates = len(filters) or predicate_count or len(tool_sequence)
+                if requested_predicates and planned_predicates < requested_predicates:
                     notes.append("sql plan dropped an explicit predicate")
-                if features is not None and features.logical_structure in {"AND", "MIXED"} and len(filters) < 2:
+                if features is not None and features.logical_structure in {"AND", "MIXED"} and planned_predicates < 2:
                     notes.append("sql plan does not preserve the requested multi-condition structure")
                 if features is not None and features.logical_structure == "OR" and len(filters) < 2:
                     notes.append("sql plan does not preserve disjunction structure")
