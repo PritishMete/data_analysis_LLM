@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import gc
 from pathlib import Path
 import json
 import os
@@ -126,6 +127,11 @@ class PlannerInferenceResult:
     tool_sequence_accuracy: float
     invalid_tool: bool
     latency_ms: float
+    model_load_ms: float | None = None
+    inference_ms: float | None = None
+    peak_vram_mb: float | None = None
+    valid_json: bool = False
+    fallback_triggered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -142,6 +148,7 @@ class PlannerBenchmarkSummary:
     hardware: dict[str, Any]
     model_health: dict[str, Any]
     notes: list[str] = field(default_factory=list)
+    shadow_mode: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -227,6 +234,7 @@ class TransformersPlannerModel:
         self.model = None
         self.tokenizer = None
         self.load_error: str | None = None
+        self.model_load_ms: float | None = None
 
     def load(self) -> None:
         AutoModelForCausalLM, AutoTokenizer = _try_import_transformers()
@@ -237,12 +245,14 @@ class TransformersPlannerModel:
         if self.cache_dir is not None:
             kwargs["cache_dir"] = str(self.cache_dir)
         try:
+            started = time.perf_counter()
             load_kwargs: dict[str, Any] = dict(kwargs)
             load_kwargs["torch_dtype"] = torch.float16 if self.device == "cuda" else torch.float32
             if self.device == "cuda" and torch.cuda.is_available():
                 load_kwargs["device_map"] = "auto"
             self.tokenizer = AutoTokenizer.from_pretrained(self.profile.model_id, **kwargs)
             self.model = AutoModelForCausalLM.from_pretrained(self.profile.model_id, **load_kwargs)
+            self.model_load_ms = round((time.perf_counter() - started) * 1000.0, 3)
             if self.device == "cuda" and torch.cuda.is_available() and hasattr(self.model, "to"):
                 try:
                     self.model.to("cuda")
@@ -276,6 +286,9 @@ class TransformersPlannerModel:
         if self.device == "cuda" and torch.cuda.is_available():
             inputs = {key: value.to("cuda") for key, value in inputs.items()}
         with torch.no_grad():
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+            started = time.perf_counter()
             generated = self.model.generate(
                 **inputs,
                 max_new_tokens=192,
@@ -284,12 +297,27 @@ class TransformersPlannerModel:
                 top_p=1.0,
                 pad_token_id=getattr(self.tokenizer, "eos_token_id", None),
             )
+            inference_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        peak_vram_mb = None
+        if self.device == "cuda" and torch.cuda.is_available():
+            try:
+                peak_vram_mb = round(torch.cuda.max_memory_allocated() / 1024**2, 3)
+            except Exception:
+                peak_vram_mb = None
         decoded = self.tokenizer.decode(generated[0], skip_special_tokens=True)
         raw_text = decoded[len(model_prompt):] if decoded.startswith(model_prompt) else decoded
         parsed = _extract_json_object(raw_text)
         if parsed is None:
             parsed = {"plan": {}, "tool_graph": [], "raw_text": raw_text.strip()}
-        return {"raw_text": raw_text.strip(), "plan_source": "transformers", "tool_graph": parsed.get("tool_graph") or [], "plan": parsed}
+        return {
+            "raw_text": raw_text.strip(),
+            "plan_source": "transformers",
+            "tool_graph": parsed.get("tool_graph") or [],
+            "plan": parsed,
+            "model_load_ms": self.model_load_ms,
+            "inference_ms": inference_ms,
+            "peak_vram_mb": peak_vram_mb,
+        }
 
     def health(self) -> dict[str, Any]:
         return {
@@ -361,6 +389,15 @@ def _score_plan(candidate: dict[str, Any], case: PlannerBenchmarkCase, critic_pa
         "tool_sequence_accuracy": tool_sequence_accuracy,
         "invalid_tool": invalid_tool,
     }
+
+
+def _best_effort_vram_mb() -> float | None:
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return round(torch.cuda.max_memory_allocated() / 1024**2, 3)
+    except Exception:
+        return None
 
 
 def audit_failure_modes(summary: PlannerBenchmarkSummary) -> PlannerFailureModeReport:
@@ -484,6 +521,9 @@ def run_planner_benchmark(
         parsed_plan: dict[str, Any] | None = None
         plan_source = "unknown"
         critic_passed = False
+        load_ms = None
+        inference_ms = None
+        peak_vram_mb = None
         try:
             candidate = model.plan(request)
             raw_output = json.dumps(candidate, sort_keys=True)
@@ -491,6 +531,9 @@ def run_planner_benchmark(
             parsed_plan = _normalize_plan_payload(parsed_plan)
             plan_source = str(candidate.get("plan_source") or "unknown")
             critic_passed = True
+            load_ms = candidate.get("model_load_ms") if isinstance(candidate, dict) else None
+            inference_ms = candidate.get("inference_ms") if isinstance(candidate, dict) else None
+            peak_vram_mb = candidate.get("peak_vram_mb") if isinstance(candidate, dict) else None
         except Exception as exc:
             raw_output = json.dumps({"error": str(exc)}, sort_keys=True)
             parsed_plan = None
@@ -515,6 +558,8 @@ def run_planner_benchmark(
             critic_passed=critic and critic_passed,
         )
         latency_ms = (time.perf_counter() - started) * 1000.0
+        if peak_vram_mb is None:
+            peak_vram_mb = _best_effort_vram_mb()
         results.append(
             PlannerInferenceResult(
                 case_name=case.name,
@@ -532,8 +577,19 @@ def run_planner_benchmark(
                 tool_sequence_accuracy=scores["tool_sequence_accuracy"],
                 invalid_tool=scores["invalid_tool"],
                 latency_ms=round(latency_ms, 3),
+                model_load_ms=load_ms,
+                inference_ms=inference_ms,
+                peak_vram_mb=peak_vram_mb,
+                valid_json=_extract_json_object(raw_output) is not None,
+                fallback_triggered=plan_source in {"fallback", "deterministic_fallback"},
             )
         )
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            gc.collect()
 
     valid_json_rate = sum(1 for case in results if case.raw_output and _extract_json_object(case.raw_output) is not None) / len(results)
     schema_valid_rate = sum(1 for case in results if case.schema_valid) / len(results)
@@ -548,6 +604,9 @@ def run_planner_benchmark(
     fallback_accuracy = sum(1 for case in results if case.plan_source != "unknown") / len(results)
     median_latency = sorted(case.latency_ms for case in results)[len(results) // 2]
     p95_latency = sorted(case.latency_ms for case in results)[max(0, int(len(results) * 0.95) - 1)]
+    model_load_ms = next((case.model_load_ms for case in results if case.model_load_ms is not None), None)
+    inference_ms = sorted(case.inference_ms for case in results if case.inference_ms is not None)
+    peak_vram_mb = max((case.peak_vram_mb or 0.0) for case in results) if results else None
 
     return PlannerBenchmarkSummary(
         profile=profile.to_dict(),
@@ -569,6 +628,10 @@ def run_planner_benchmark(
             "fallback_accuracy": fallback_accuracy,
             "median_latency_ms": median_latency,
             "p95_latency_ms": p95_latency,
+            "model_load_ms": model_load_ms,
+            "peak_vram_mb": peak_vram_mb,
+            "shadow_captured": True,
+            "inference_ms_median": inference_ms[len(inference_ms) // 2] if inference_ms else None,
         },
         hardware=hw.to_dict(),
         model_health=model_health,

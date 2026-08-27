@@ -44,4 +44,7 @@ def test_shadow_mode_and_critic_metrics_are_recorded():
     assert summary.model_health["backend"] in {"heuristic", "transformers", "llama_cpp"}
     assert "tool_selection_f1" in summary.metrics
     assert "fallback_accuracy" in summary.metrics
+    assert "model_load_ms" in summary.metrics
+    assert "peak_vram_mb" in summary.metrics
+    assert summary.shadow_mode is True
     assert summary.cases
