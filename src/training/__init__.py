@@ -25,6 +25,15 @@ from .execution import (
 )
 from .hardware import HardwareReport, detect_hardware
 from .metrics import TrainingMetrics, evaluate_training_metrics
+from .benchmark import (
+    HeuristicPlannerModel,
+    LlamaCppPlannerAdapter,
+    PlannerBenchmarkSummary,
+    PlannerInferenceResult,
+    PlannerModel,
+    run_planner_benchmark,
+    write_benchmark_report,
+)
 from .model_loader import (
     DEFAULT_MODEL_REGISTRY_ENTRY,
     DEFAULT_PROTOTYPE_MODEL,
@@ -55,6 +64,11 @@ __all__ = [
     "PreflightResult",
     "TrainingConfig",
     "TrainingMetrics",
+    "PlannerBenchmarkSummary",
+    "PlannerInferenceResult",
+    "PlannerModel",
+    "HeuristicPlannerModel",
+    "LlamaCppPlannerAdapter",
     "SeedBundle",
     "build_manifest_fingerprint",
     "create_dataset_manifest",
@@ -78,6 +92,8 @@ __all__ = [
     "choose_backend",
     "select_model_profile",
     "select_runtime_profile",
+    "run_planner_benchmark",
+    "write_benchmark_report",
     "preflight_gpu_training",
     "recommended_oom_actions",
     "record_safe_metrics",

@@ -17,6 +17,7 @@ from .execution import (
     write_experiment_summary,
     select_model_and_runtime_profile,
 )
+from .benchmark import run_planner_benchmark, write_benchmark_report
 from .model_loader import DEFAULT_PROTOTYPE_MODEL, DEFAULT_MODEL_REGISTRY_ENTRY
 from .qlora import QLoRAConfig
 from .promotion import evaluate_promotion_gates
@@ -81,6 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--max-seq-len", type=int, default=load_default_config().max_seq_len)
     train.add_argument("--planner-profile", default=load_default_config().planner_profile)
     train.add_argument("--planner-backend", default=load_default_config().planner_backend)
+
+    inference = sub.add_parser("inference-benchmark", help="Benchmark low-spec planner inference without training")
+    inference.add_argument("--profile", default=load_default_config().planner_profile)
+    inference.add_argument("--backend", default=load_default_config().planner_backend)
+    inference.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    inference.add_argument("--benchmark", default="builtin")
+    inference.add_argument("--cache-dir", type=Path, default=Path("runtime") / "model_cache")
+    inference.add_argument("--model-path", type=Path, default=None)
+    inference.add_argument("--output-dir", type=Path, default=Path("runtime") / "benchmark")
 
     return parser
 
@@ -230,6 +240,20 @@ def main(argv: list[str] | None = None) -> int:
                 "planner_backend": args.planner_backend,
             },
         })
+        return 0
+    if args.command == "inference-benchmark":
+        summary = run_planner_benchmark(
+            profile_name=args.profile,
+            backend=args.backend,
+            device=args.device,
+            benchmark=args.benchmark,
+            cache_dir=args.cache_dir,
+            model_path=args.model_path,
+        )
+        report_path = write_benchmark_report(summary, args.output_dir)
+        payload = summary.to_dict()
+        payload["report_path"] = str(report_path)
+        _print_json(payload)
         return 0
     return 1
 
