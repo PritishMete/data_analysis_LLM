@@ -275,3 +275,20 @@ def test_learning_status_endpoint_reports_safe_aggregates(tmp_path, monkeypatch)
     assert "privacy_gate_passed" in learning
     assert "readiness" in learning
     assert "ready" in learning["readiness"]
+    assert "strategy_status" in learning
+    assert "promotion_thresholds" in learning["strategy_status"]
+
+
+def test_strategy_status_endpoint_reports_safe_learned_metadata(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.get("/v1/strategies/status")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["status"] == "ok"
+    strategies = payload["strategies"]
+    assert "strategy_count" in strategies
+    assert "promotion_thresholds" in strategies
+    assert "strategies" in strategies
+    assert isinstance(strategies["strategies"], list)

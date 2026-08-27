@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -36,6 +37,7 @@ from learning.retriever import (
 )
 from learning.template_learning import ExperienceTemplateExtractor
 from learning.skill_registry import SkillRegistry, get_skill_registry
+from learning.promotion import lifecycle_rank, strategy_next_requirements, strategy_promotion_blockers
 
 
 def _utcnow_iso() -> str:
@@ -436,6 +438,96 @@ class AgenticLearningOrchestrator:
             preferred_semantic_candidate=preferred_semantic_candidate,
         )
         return self.store.append_correction(correction)
+
+    def strategy_status(self) -> dict[str, Any]:
+        candidate_strategies = self.store.load_candidate_strategies(limit=10_000)
+        registry_states = self.registry.snapshot().states
+        statuses: list[dict[str, Any]] = []
+        lifecycle_counts: Counter[str] = Counter()
+        trusted_count = 0
+        validated_count = 0
+        candidate_count = 0
+        total_evidence = 0
+        total_quality = 0.0
+
+        for item in candidate_strategies:
+            strategy_id = str(item.get("strategy_id") or "")
+            learned_skill_id = strategy_id.replace("strategy.", "learned.", 1) if strategy_id.startswith("strategy.") else strategy_id
+            registry_state = registry_states.get(learned_skill_id)
+            lifecycle = str(item.get("lifecycle_state") or item.get("state") or "observed")
+            evidence_count = int(item.get("evidence_count") or 0)
+            success_count = evidence_count
+            failure_count = 0
+            average_quality = float(item.get("average_quality") or 0.0)
+            registry_lifecycle = None
+            if registry_state is not None:
+                registry_lifecycle = registry_state.state
+                evidence_count = max(evidence_count, registry_state.success_count + registry_state.failure_count)
+                success_count = registry_state.success_count
+                failure_count = registry_state.failure_count
+                average_quality = registry_state.average_quality_score or average_quality
+                if lifecycle_rank(registry_state.state) > lifecycle_rank(lifecycle):
+                    lifecycle = registry_state.state
+
+            next_requirements = strategy_next_requirements(lifecycle)
+            blockers = strategy_promotion_blockers(
+                label=lifecycle,
+                evidence_count=evidence_count,
+                average_quality=average_quality,
+                failure_count=failure_count,
+                success_count=success_count,
+            )
+            status = {
+                "strategy_id": strategy_id,
+                "learned_skill_id": learned_skill_id,
+                "intent": str(item.get("intent") or "unknown"),
+                "lifecycle": lifecycle,
+                "registry_lifecycle": registry_lifecycle,
+                "candidate_state": str(item.get("state") or "candidate"),
+                "evidence_count": evidence_count,
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "average_quality": round(average_quality, 4),
+                "required_evidence_for_next_stage": next_requirements["required_evidence"],
+                "required_quality_for_next_stage": next_requirements["required_quality"],
+                "failure_tolerance": next_requirements["failure_tolerance"],
+                "promotion_blockers": blockers,
+                "tool_graph_signature": stable_hash({"tool_sequence": list(item.get("tool_sequence") or [])})[:16],
+                "semantic_role_signature": stable_hash({"semantic_roles": list(item.get("semantic_roles") or [])})[:16],
+                "plan_template_id": item.get("plan_template_id"),
+            }
+            statuses.append(status)
+            lifecycle_counts[lifecycle] += 1
+            total_evidence += evidence_count
+            total_quality += average_quality
+            if lifecycle == "trusted":
+                trusted_count += 1
+            elif lifecycle == "validated":
+                validated_count += 1
+            elif lifecycle in {"candidate", "promoted"}:
+                candidate_count += 1
+
+        statuses.sort(key=lambda item: (lifecycle_rank(item["lifecycle"]), item["evidence_count"], item["average_quality"], item["strategy_id"]), reverse=True)
+        average_quality = round((total_quality / len(statuses)) if statuses else 0.0, 4)
+        average_evidence = round((total_evidence / len(statuses)) if statuses else 0.0, 4)
+        return {
+            "strategy_count": len(statuses),
+            "candidate_strategy_count": candidate_count,
+            "validated_strategy_count": validated_count,
+            "trusted_strategy_count": trusted_count,
+            "average_evidence_count": average_evidence,
+            "average_quality": average_quality,
+            "lifecycle_counts": dict(sorted(lifecycle_counts.items())),
+            "promotion_thresholds": {
+                "candidate_successes": PROMOTION_THRESHOLDS["candidate_successes"],
+                "validated_successes": PROMOTION_THRESHOLDS["validated_successes"],
+                "validated_quality": PROMOTION_THRESHOLDS["validated_quality"],
+                "trusted_successes": PROMOTION_THRESHOLDS["trusted_successes"],
+                "trusted_quality": PROMOTION_THRESHOLDS["trusted_quality"],
+                "demotion_failures": 3,
+            },
+            "strategies": statuses,
+        }
 
     def result_summary_for_dataframe(self, df: pd.DataFrame | None) -> dict[str, Any]:
         if df is None:

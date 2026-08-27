@@ -9,6 +9,7 @@ from typing import Any
 from learning.bootstrap.skills import bootstrap_skill_specs
 from learning.config import PROMOTION_THRESHOLDS
 from learning.models import QueryFeatures, SkillMatch, SkillSpec, SkillState
+from learning.promotion import lifecycle_rank, promotion_label
 
 
 def _default_state_dir() -> Path:
@@ -107,20 +108,42 @@ class SkillRegistry:
         from learning.retriever import score_skill
 
         matches: list[SkillMatch] = []
-        for spec in self._specs.values():
+        for spec in self.all():
             score, reasons = score_skill(spec, features)
             if score <= 0:
                 continue
             matches.append(SkillMatch(spec=spec, score=score, reasons=reasons))
-        matches.sort(key=lambda item: (item.score, self.effective_confidence(item.spec.id)), reverse=True)
+        matches.sort(
+            key=lambda item: (
+                lifecycle_rank(self.state_for(item.spec.id).state or item.spec.lifecycle),
+                item.score,
+                self.effective_confidence(item.spec.id),
+            ),
+            reverse=True,
+        )
         return matches
 
     def register_dynamic_skill(self, spec: SkillSpec) -> None:
         self._dynamic_specs[spec.id] = spec
-        self._states.setdefault(
-            spec.id,
-            SkillState(skill_id=spec.id, confidence=spec.confidence, state=spec.lifecycle or "candidate"),
-        )
+        existing = self._states.get(spec.id)
+        if existing is None:
+            self._states[spec.id] = SkillState(
+                skill_id=spec.id,
+                confidence=spec.confidence,
+                success_count=spec.success_count,
+                failure_count=spec.failure_count,
+                average_quality_score=spec.quality,
+                state=spec.lifecycle or "candidate",
+            )
+        else:
+            existing.confidence = max(existing.confidence, spec.confidence)
+            existing.success_count = max(existing.success_count, spec.success_count)
+            existing.failure_count = max(existing.failure_count, spec.failure_count)
+            existing.average_quality_score = max(existing.average_quality_score, spec.quality)
+            if lifecycle_rank(spec.lifecycle or "candidate") >= lifecycle_rank(existing.state):
+                existing.state = spec.lifecycle or existing.state
+            if existing.state == "trusted" and existing.promoted_at is None:
+                existing.promoted_at = None
         self.save()
 
     def update_from_experience(self, skill_id: str | None, *, success: bool, score: float, now_iso: str | None = None) -> tuple[SkillState | None, SkillState | None]:
@@ -162,15 +185,7 @@ class SkillRegistry:
 
     @staticmethod
     def _state_label(state: SkillState) -> str:
-        if state.failure_count >= 3 and state.failure_count > state.success_count:
-            return "demoted"
-        if state.success_count >= PROMOTION_THRESHOLDS["trusted_successes"] and state.average_quality_score >= PROMOTION_THRESHOLDS["trusted_quality"]:
-            return "trusted"
-        if state.success_count >= PROMOTION_THRESHOLDS["validated_successes"] and state.average_quality_score >= PROMOTION_THRESHOLDS["validated_quality"]:
-            return "validated"
-        if state.success_count >= PROMOTION_THRESHOLDS["candidate_successes"]:
-            return "candidate"
-        return "bootstrap"
+        return promotion_label(state)
 
 
 _REGISTRY: SkillRegistry | None = None

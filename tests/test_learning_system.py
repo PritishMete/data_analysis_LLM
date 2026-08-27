@@ -199,7 +199,7 @@ def test_privacy_safe_migration_and_candidate_promotion(tmp_path):
     decision = orchestrator.plan("show Pizza Hut", df=df, available_columns=list(df.columns))
     assert isinstance(decision, LearningDecision)
 
-    for _ in range(3):
+    for _ in range(4):
         orchestrator.record_result(
             user_text="show Pizza Hut",
             decision=decision,
@@ -219,6 +219,130 @@ def test_privacy_safe_migration_and_candidate_promotion(tmp_path):
 
     registry = SkillRegistry(state_path=tmp_path / "skills_state.json")
     assert any(spec.id.startswith("learned.") for spec in registry.all())
+
+
+def test_trusted_learned_strategy_outranks_bootstrap_after_repeated_validated_experiences(tmp_path):
+    orchestrator = _orchestrator(tmp_path)
+
+    families = [
+        (
+            "show customers with active and verified and score above 80",
+            pd.DataFrame(
+                {
+                    "Customer": ["A", "B", "C"],
+                    "Active": [True, True, False],
+                    "Verified": [True, False, True],
+                    "Score": [91, 84, 72],
+                }
+            ),
+        ),
+        (
+            "show suppliers with enabled and eligible and score above 0.7",
+            pd.DataFrame(
+                {
+                    "Supplier": ["X", "Y", "Z"],
+                    "Enabled": [True, False, True],
+                    "Eligible": [True, True, False],
+                    "Score": [0.72, 0.31, 0.88],
+                }
+            ),
+        ),
+        (
+            "show systems with available and validated and score above 0.8",
+            pd.DataFrame(
+                {
+                    "System": ["S1", "S2", "S3"],
+                    "Available": [True, True, False],
+                    "Validated": [True, False, True],
+                    "Score": [0.82, 0.51, 0.33],
+                }
+            ),
+        ),
+        (
+            "show vendors with certified and active and score above 90",
+            pd.DataFrame(
+                {
+                    "Vendor": ["V1", "V2", "V3"],
+                    "Certified": [True, True, False],
+                    "Active": [True, False, True],
+                    "Score": [94, 87, 79],
+                }
+            ),
+        ),
+        (
+            "show channels with approved and active and score above 0.8",
+            pd.DataFrame(
+                {
+                    "Channel": ["C1", "C2", "C3"],
+                    "Approved": [True, False, True],
+                    "Active": [True, True, False],
+                    "Score": [0.88, 0.75, 0.62],
+                }
+            ),
+        ),
+        (
+            "show assets with active and verified and score above 88",
+            pd.DataFrame(
+                {
+                    "Asset": ["A1", "A2", "A3"],
+                    "Active": [True, True, False],
+                    "Verified": [True, False, True],
+                    "Score": [95, 89, 77],
+                }
+            ),
+        ),
+        (
+            "show accounts with active and eligible and score above 0.9",
+            pd.DataFrame(
+                {
+                    "Account": ["AC1", "AC2", "AC3"],
+                    "Active": [True, False, True],
+                    "Eligible": [True, True, False],
+                    "Score": [0.97, 0.84, 0.75],
+                }
+            ),
+        ),
+    ]
+
+    learned_skill_id = None
+    for query, frame in families:
+        decision = orchestrator.plan(query, df=frame, available_columns=list(frame.columns))
+        assert decision.route == "sql"
+        orchestrator.record_result(
+            user_text=query,
+            decision=decision,
+            df=frame,
+            available_columns=list(frame.columns),
+            result_summary={"result_kind": "table", "row_count": 1, "column_count": len(frame.columns), "columns": list(frame.columns)},
+            success=True,
+        )
+
+    strategy_status = orchestrator.strategy_status()
+    assert strategy_status["trusted_strategy_count"] >= 1
+    learned_entries = [item for item in strategy_status["strategies"] if item["lifecycle"] == "trusted"]
+    assert learned_entries
+    learned_skill_id = learned_entries[0]["learned_skill_id"]
+    assert learned_skill_id.startswith("learned.")
+
+    unseen_df = pd.DataFrame(
+        {
+            "Partner": ["P1", "P2", "P3"],
+            "Active": [True, False, True],
+            "Verified": [True, True, False],
+            "Score": [0.99, 0.81, 0.74],
+        }
+    )
+    unseen_decision = orchestrator.plan(
+        "show partners with active and verified and score above 0.9",
+        df=unseen_df,
+        available_columns=list(unseen_df.columns),
+    )
+
+    assert unseen_decision.plan_source == "trusted_strategy"
+    assert unseen_decision.message == "Reused a trusted learned strategy."
+    assert unseen_decision.plan is not None
+    assert unseen_decision.route == "sql"
+    assert unseen_decision.retrieval_trace.get("selected_skill_lifecycle") == "trusted"
 
 
 def test_failure_learning_creates_safe_lesson_and_guides_next_plan(tmp_path):

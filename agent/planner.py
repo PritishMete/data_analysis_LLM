@@ -326,6 +326,23 @@ class LearningPlanner:
         self.registry = registry or get_skill_registry()
         self.template_binder = TemplateBinder()
 
+    def _plan_source_for_skill(self, skill_id: str | None) -> str | None:
+        if not skill_id:
+            return None
+        spec = self.registry.get(skill_id)
+        state = self.registry.state_for(skill_id).state if spec is not None else "bootstrap"
+        if skill_id.startswith("learned.") or (spec is not None and state in {"candidate", "validated", "trusted", "promoted"}):
+            if state == "trusted":
+                return "trusted_strategy"
+            if state == "validated":
+                return "validated_strategy"
+            if state in {"candidate", "promoted"}:
+                return "candidate_strategy"
+            return "learned_strategy"
+        if skill_id.startswith("bootstrap.") or state == "bootstrap":
+            return "bootstrap_skill"
+        return None
+
     def _bind_template(
         self,
         context: PlannerContext,
@@ -415,17 +432,20 @@ class LearningPlanner:
             message = "Reused a learned plan template."
             if route == "sql":
                 if plan.get("filters"):
-                    if len(plan.get("filters") or []) == 1:
-                        skill_id = "filter.entity_search.v1"
-                        skill_name = "Entity search"
-                    else:
-                        skill_id = "filter.multi_condition.v1"
-                        skill_name = "Multi-condition filtering"
+                    if not skill_id or not skill_id.startswith("learned."):
+                        if len(plan.get("filters") or []) == 1:
+                            skill_id = "filter.entity_search.v1"
+                            skill_name = "Entity search"
+                        else:
+                            skill_id = "filter.multi_condition.v1"
+                            skill_name = "Multi-condition filtering"
                 elif plan.get("group_by") or plan.get("metrics"):
-                    skill_id = "analytics.group_by.v1"
-                    skill_name = "Grouped aggregation"
+                    if not skill_id or not skill_id.startswith("learned."):
+                        skill_id = "analytics.group_by.v1"
+                        skill_name = "Grouped aggregation"
             elif route == "operation":
-                skill_id = skill_id or "clean.boolean_normalization.v1"
+                if not skill_id or not skill_id.startswith("learned."):
+                    skill_id = skill_id or "clean.boolean_normalization.v1"
                 skill_name = skill_name or "Categorization / normalization"
             retrieval_trace["selected_template_id"] = plan_template_id
 
@@ -438,17 +458,19 @@ class LearningPlanner:
                 route = "sql"
                 if plan.get("group_by") or plan.get("metrics"):
                     confidence = 0.88
-                    skill_id = "analytics.group_by.v1"
-                    skill_name = "Grouped aggregation"
+                    if not skill_id or not skill_id.startswith("learned."):
+                        skill_id = "analytics.group_by.v1"
+                        skill_name = "Grouped aggregation"
                     message = "Matched a learned aggregation skill and built a local plan."
                 else:
                     confidence = 0.9 if len(plan.get("filters") or []) > 1 else 0.84
-                    if len(plan.get("filters") or []) > 1:
-                        skill_id = "filter.multi_condition.v1"
-                        skill_name = "Multi-condition filtering"
-                    else:
-                        skill_id = "filter.entity_search.v1"
-                        skill_name = "Entity search"
+                    if not skill_id or not skill_id.startswith("learned."):
+                        if len(plan.get("filters") or []) > 1:
+                            skill_id = "filter.multi_condition.v1"
+                            skill_name = "Multi-condition filtering"
+                        else:
+                            skill_id = "filter.entity_search.v1"
+                            skill_name = "Entity search"
                     message = "Matched a learned filter skill and built a local plan."
                 plan_source = "bootstrap_skill" if skill_id and retrieval_trace.get("experience_count", 0) == 0 else "experience_transfer"
 
@@ -458,7 +480,8 @@ class LearningPlanner:
                 route = "operation"
                 confidence = 0.82
                 plan_source = "bootstrap_skill" if skill_id else "deterministic_fallback"
-                skill_id = skill_id or "clean.boolean_normalization.v1"
+                if not skill_id or not skill_id.startswith("learned."):
+                    skill_id = skill_id or "clean.boolean_normalization.v1"
                 skill_name = skill_name or "Categorization / normalization"
                 message = "Matched a learned operation skill and built a local command."
 
@@ -473,7 +496,8 @@ class LearningPlanner:
                 route = "sql"
                 confidence = 0.74
                 plan_source = "deterministic_fallback" if retrieval_trace.get("experience_count", 0) == 0 else "experience_transfer"
-                skill_id = skill_id or "analytics.group_by.v1"
+                if not skill_id or not skill_id.startswith("learned."):
+                    skill_id = skill_id or "analytics.group_by.v1"
                 skill_name = skill_name or "Grouped aggregation"
                 message = "Matched an analytical query shape and built a local aggregation plan."
             else:
@@ -481,6 +505,23 @@ class LearningPlanner:
                 confidence = 0.62
                 plan_source = "deterministic_fallback"
                 message = "Matched an analytical query shape but no confident local plan."
+
+        learned_plan_source = self._plan_source_for_skill(skill_id)
+        if learned_plan_source and learned_plan_source != "bootstrap_skill":
+            plan_source = learned_plan_source
+            if plan_provenance is not None:
+                plan_provenance = dict(plan_provenance)
+                plan_provenance["selected_skill_id"] = skill_id
+                plan_provenance["selected_skill_state"] = self.registry.state_for(skill_id).state
+            retrieval_trace["selected_skill_lifecycle"] = self.registry.state_for(skill_id).state
+            if plan_source == "trusted_strategy":
+                message = "Reused a trusted learned strategy."
+            elif plan_source == "validated_strategy":
+                message = "Reused a validated learned strategy."
+            elif plan_source == "candidate_strategy":
+                message = "Reused a candidate learned strategy."
+            else:
+                message = "Reused a learned strategy."
 
         validation_notes: list[str] = []
         if route == "sql" and plan is not None:

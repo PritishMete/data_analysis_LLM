@@ -65,7 +65,7 @@ def discover_candidate_strategy(records: list[ExperienceRecord]) -> CandidateStr
 
 
 def promote_candidate_strategy(strategy: CandidateStrategy) -> tuple[bool, SkillSpec | None]:
-    if strategy.evidence_count < 3 or strategy.average_quality < 0.85:
+    if strategy.evidence_count < PROMOTION_THRESHOLDS["validated_successes"] or strategy.average_quality < PROMOTION_THRESHOLDS["validated_quality"]:
         return False, None
 
     tool_sequence = list(strategy.tool_sequence)
