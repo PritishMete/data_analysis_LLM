@@ -39,6 +39,9 @@ python -m training.cli inference-benchmark \
   --backend auto \
   --device cuda \
   --benchmark builtin \
+  --case-limit 3 \
+  --case-timeout-seconds 120 \
+  --progress \
   --output-dir runtime/benchmark
 ```
 
@@ -59,6 +62,37 @@ The benchmark report captures:
 - fallback accuracy
 - median latency
 - p95 latency
+
+## Real GTX 1650 subset result
+
+The first real CUDA benchmark completed successfully on the local NVIDIA GTX 1650
+using the untouched `Qwen/Qwen2.5-0.5B-Instruct` model.
+
+Observed subset metrics from 3 representative queries:
+
+- model load time: `6811.802 ms`
+- median inference latency: `13991.405 ms`
+- p95 inference latency: `14196.066 ms`
+- median end-to-end latency: `27013.227 ms`
+- peak VRAM: `15.201 MB`
+- valid JSON rate: `1.0`
+- schema validity rate: `1.0`
+- plan validity rate: `0.0`
+- tool-selection F1: `0.0`
+- tool-sequence accuracy: `0.0`
+- predicate coverage: `0.0`
+- logical-structure accuracy: `0.3333333333333333`
+- semantic-role coverage: `0.0`
+- invalid-tool rate: `0.6666666666666666`
+- critic pass rate: `0.0`
+- fallback rate: `1.0`
+
+Interpretation:
+
+- The GTX 1650 path is usable enough to run and measure.
+- Planner quality is not acceptable for direct use because the model emitted
+  unrelated tool plans and failed the structural quality gates.
+- Latency is high enough that interactive planner use would feel slow.
 
 ## Safety
 

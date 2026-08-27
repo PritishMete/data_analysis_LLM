@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import gc
+from multiprocessing import Process, Queue
 from pathlib import Path
 import json
 import os
@@ -161,6 +162,18 @@ class PlannerBenchmarkSummary:
 class PlannerFailureModeReport:
     failure_counts: dict[str, int]
     total_cases: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class BenchmarkProgress:
+    completed: int
+    total: int
+    current_case: str
+    status: str
+    elapsed_seconds: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -441,6 +454,36 @@ def _best_effort_vram_mb() -> float | None:
         return None
 
 
+def _case_worker(model_obj: PlannerModel, request_obj: dict[str, Any], queue_obj: Queue) -> None:
+    try:
+        queue_obj.put({"ok": True, "value": model_obj.plan(request_obj)})
+    except Exception as exc:  # pragma: no cover - process boundary
+        queue_obj.put({"ok": False, "error": str(exc)})
+
+
+def _run_case_with_timeout(model: PlannerModel, request: dict[str, Any], timeout_seconds: float | None) -> tuple[dict[str, Any] | None, str | None]:
+    if timeout_seconds is None:
+        try:
+            return model.plan(request), None
+        except Exception as exc:
+            return None, str(exc)
+
+    queue: Queue = Queue()
+    proc = Process(target=_case_worker, args=(model, request, queue))
+    proc.start()
+    proc.join(timeout_seconds)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=1.0)
+        return None, "INFERENCE_TIMEOUT"
+    if queue.empty():
+        return None, "INFERENCE_TIMEOUT"
+    payload = queue.get()
+    if payload.get("ok"):
+        return payload.get("value"), None
+    return None, str(payload.get("error") or "inference_failed")
+
+
 def audit_failure_modes(summary: PlannerBenchmarkSummary) -> PlannerFailureModeReport:
     counts: dict[str, int] = {
         "wrong_tool": 0,
@@ -484,6 +527,9 @@ def run_planner_benchmark(
     backend: str = PLANNER_BACKEND_AUTO,
     device: str = "auto",
     benchmark: str = "builtin",
+    case_limit: int | None = None,
+    case_timeout_seconds: float | None = None,
+    progress: bool = False,
     cache_dir: Path | None = None,
     model_path: Path | None = None,
 ) -> PlannerBenchmarkSummary:
@@ -520,6 +566,8 @@ def run_planner_benchmark(
         model_health = model.health()
 
     cases = builtin_benchmark_cases() if benchmark == "builtin" else builtin_benchmark_cases()
+    if case_limit is not None:
+        cases = cases[: max(0, case_limit)]
     results: list[PlannerInferenceResult] = []
     synthetic_df = pd.DataFrame(
         {
@@ -535,7 +583,19 @@ def run_planner_benchmark(
         }
     )
 
-    for case in cases:
+    benchmark_started = time.perf_counter()
+    for index, case in enumerate(cases, start=1):
+        if progress:
+            print(
+                BenchmarkProgress(
+                    completed=index - 1,
+                    total=len(cases),
+                    current_case=case.name,
+                    status="starting",
+                    elapsed_seconds=round(time.perf_counter() - benchmark_started, 3),
+                ).to_dict(),
+                flush=True,
+            )
         request = {
             "text": case.text,
             "intent": case.intent,
@@ -569,8 +629,8 @@ def run_planner_benchmark(
         inference_ms = None
         peak_vram_mb = None
         candidate: dict[str, Any] = {}
-        try:
-            candidate = model.plan(request)
+        candidate, timeout_error = _run_case_with_timeout(model, request, case_timeout_seconds)
+        if candidate is not None:
             raw_output = json.dumps(candidate, sort_keys=True)
             parsed_plan = _normalize_plan_payload(candidate.get("plan")) or _extract_json_object(raw_output)
             parsed_plan = _normalize_plan_payload(parsed_plan)
@@ -578,10 +638,10 @@ def run_planner_benchmark(
             load_ms = candidate.get("model_load_ms") if isinstance(candidate, dict) else None
             inference_ms = candidate.get("inference_ms") if isinstance(candidate, dict) else None
             peak_vram_mb = candidate.get("peak_vram_mb") if isinstance(candidate, dict) else None
-        except Exception as exc:
-            raw_output = json.dumps({"error": str(exc)}, sort_keys=True)
+        else:
+            raw_output = json.dumps({"error": timeout_error or "inference_failed"}, sort_keys=True)
             parsed_plan = None
-            plan_source = "fallback"
+            plan_source = "timeout" if timeout_error == "INFERENCE_TIMEOUT" else "fallback"
 
         critic = False
         if parsed_plan is not None:
@@ -596,7 +656,7 @@ def run_planner_benchmark(
                 features=request["query_features"],
             )
             critic, _ = PlanCritic().review(decision, context=build_planner_context(case.text, None, []))
-        critic_passed = bool(critic and parsed_plan is not None and candidate.get("tool_graph") is not None)
+        critic_passed = bool(critic and parsed_plan is not None and candidate is not None and candidate.get("tool_graph") is not None)
         scores = _score_plan(
             candidate if isinstance(candidate, dict) else {"plan": parsed_plan, "tool_graph": []},
             case,
@@ -605,36 +665,47 @@ def run_planner_benchmark(
         latency_ms = (time.perf_counter() - started) * 1000.0
         if peak_vram_mb is None:
             peak_vram_mb = _best_effort_vram_mb()
-        results.append(
-            PlannerInferenceResult(
-                case_name=case.name,
-                raw_output=raw_output,
-                parsed_plan=parsed_plan,
-                plan_source=plan_source,
-                schema_valid=scores["schema_valid"],
-                critic_passed=bool(critic and critic_passed),
-                tool_valid=scores["tool_valid"],
-                predicate_coverage=scores["predicate_coverage"],
-                logical_structure_accuracy=scores["logical_structure_accuracy"],
-                semantic_role_coverage=scores["semantic_role_coverage"],
-                intent_correct=True,
-                tool_selection_f1=scores["tool_selection_f1"],
-                tool_sequence_accuracy=scores["tool_sequence_accuracy"],
-                invalid_tool=scores["invalid_tool"],
-                latency_ms=round(latency_ms, 3),
-                model_load_ms=load_ms,
-                inference_ms=inference_ms,
-                peak_vram_mb=peak_vram_mb,
-                valid_json=_extract_json_object(raw_output) is not None,
-                fallback_triggered=(
-                    plan_source in {"fallback", "deterministic_fallback"}
-                    or not scores["schema_valid"]
-                    or not scores["tool_valid"]
-                    or not critic_passed
-                    or scores["predicate_coverage"] < 1.0
-                ),
-            )
+        result = PlannerInferenceResult(
+            case_name=case.name,
+            raw_output=raw_output,
+            parsed_plan=parsed_plan,
+            plan_source=plan_source,
+            schema_valid=scores["schema_valid"],
+            critic_passed=bool(critic and critic_passed),
+            tool_valid=scores["tool_valid"],
+            predicate_coverage=scores["predicate_coverage"],
+            logical_structure_accuracy=scores["logical_structure_accuracy"],
+            semantic_role_coverage=scores["semantic_role_coverage"],
+            intent_correct=True,
+            tool_selection_f1=scores["tool_selection_f1"],
+            tool_sequence_accuracy=scores["tool_sequence_accuracy"],
+            invalid_tool=scores["invalid_tool"],
+            latency_ms=round(latency_ms, 3),
+            model_load_ms=load_ms,
+            inference_ms=inference_ms,
+            peak_vram_mb=peak_vram_mb,
+            valid_json=_extract_json_object(raw_output) is not None,
+            fallback_triggered=(
+                plan_source in {"fallback", "deterministic_fallback", "timeout"}
+                or not scores["schema_valid"]
+                or not scores["tool_valid"]
+                or not critic_passed
+                or scores["predicate_coverage"] < 1.0
+                or timeout_error == "INFERENCE_TIMEOUT"
+            ),
         )
+        results.append(result)
+        if progress:
+            print(
+                BenchmarkProgress(
+                    completed=index,
+                    total=len(cases),
+                    current_case=case.name,
+                    status="done" if timeout_error is None else timeout_error,
+                    elapsed_seconds=round(time.perf_counter() - benchmark_started, 3),
+                ).to_dict(),
+                flush=True,
+            )
         if torch.cuda.is_available():
             try:
                 torch.cuda.empty_cache()

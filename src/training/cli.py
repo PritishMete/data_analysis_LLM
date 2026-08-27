@@ -88,6 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
     inference.add_argument("--backend", default=load_default_config().planner_backend)
     inference.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     inference.add_argument("--benchmark", default="builtin")
+    inference.add_argument("--case-limit", type=int, default=None)
+    inference.add_argument("--case-timeout-seconds", type=float, default=None)
+    inference.add_argument("--progress", action="store_true")
     inference.add_argument("--cache-dir", type=Path, default=Path("runtime") / "model_cache")
     inference.add_argument("--model-path", type=Path, default=None)
     inference.add_argument("--output-dir", type=Path, default=Path("runtime") / "benchmark")
@@ -247,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
             backend=args.backend,
             device=args.device,
             benchmark=args.benchmark,
+            case_limit=args.case_limit,
+            case_timeout_seconds=args.case_timeout_seconds,
+            progress=args.progress,
             cache_dir=args.cache_dir,
             model_path=args.model_path,
         )
