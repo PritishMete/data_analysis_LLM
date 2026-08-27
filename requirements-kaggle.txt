@@ -1,0 +1,8 @@
+accelerate>=0.31
+bitsandbytes>=0.43
+peft>=0.11
+pyyaml>=6.0
+safetensors>=0.4
+sentencepiece>=0.2.0
+transformers>=4.43
+trl>=0.9
