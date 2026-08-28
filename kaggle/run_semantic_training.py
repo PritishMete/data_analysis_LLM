@@ -115,6 +115,28 @@ def _safe_commit_hash() -> str | None:
         return None
 
 
+def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
+    if torch_module is None:
+        return False
+    try:
+        dynamo_eval_frame = getattr(getattr(torch_module, "_C", None), "_dynamo", None)
+        if dynamo_eval_frame is None:
+            return False
+        eval_frame = getattr(dynamo_eval_frame, "eval_frame", None)
+        if eval_frame is None:
+            return False
+        if hasattr(eval_frame, "skip_code"):
+            return False
+
+        def _skip_code(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        setattr(eval_frame, "skip_code", _skip_code)
+        return True
+    except Exception:
+        return False
+
+
 def _expected_commit_hash() -> str | None:
     return os.environ.get("KAGGLE_EXPECTED_GIT_COMMIT") or os.environ.get("EXPECTED_GIT_COMMIT")
 
@@ -281,6 +303,7 @@ def _run_real_smoke_training(
         import torch as torch_module
 
         torch = torch_module
+        _patch_torch_dynamo_compatibility(torch)
         _stage_guard(stage="gpu_check_started", report_root=report_root, breadcrumbs_path=breadcrumbs_path, torch_module=torch, safe_message="gpu check start")
         if torch.cuda.is_available():
             _stage_guard(stage="gpu_check_complete", report_root=report_root, breadcrumbs_path=breadcrumbs_path, torch_module=torch, safe_message=torch.cuda.get_device_name(0))
@@ -292,6 +315,7 @@ def _run_real_smoke_training(
 
     try:
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        _patch_torch_dynamo_compatibility(torch)
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,

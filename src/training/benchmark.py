@@ -45,6 +45,24 @@ def _safe_json(value: Any) -> Any:
         return {"error": "non_serializable"}
 
 
+def _patch_torch_dynamo_compatibility() -> bool:
+    try:
+        dynamo_eval_frame = getattr(getattr(torch, "_C", None), "_dynamo", None)
+        if dynamo_eval_frame is None:
+            return False
+        eval_frame = getattr(dynamo_eval_frame, "eval_frame", None)
+        if eval_frame is None or hasattr(eval_frame, "skip_code"):
+            return False
+
+        def _skip_code(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        setattr(eval_frame, "skip_code", _skip_code)
+        return True
+    except Exception:
+        return False
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     text = text.strip()
     if not text:
@@ -395,6 +413,7 @@ class TransformersSemanticExtractionModel:
 
 def _try_import_transformers():
     try:
+        _patch_torch_dynamo_compatibility()
         from transformers import AutoModelForCausalLM, AutoTokenizer
         return AutoModelForCausalLM, AutoTokenizer
     except Exception:

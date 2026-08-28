@@ -14,7 +14,7 @@ from kaggle.bootstrap import (
     verify_attached_dataset,
     write_sha_manifest,
 )
-from kaggle.run_semantic_training import _build_smoke_corpus, _smoke_split_targets
+from kaggle.run_semantic_training import _build_smoke_corpus, _patch_torch_dynamo_compatibility, _smoke_split_targets
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
 
 
@@ -300,3 +300,22 @@ def test_stale_kaggle_checkout_fails_fast(tmp_path, monkeypatch):
         assert str(exc) == "stale_kaggle_checkout"
     else:
         raise AssertionError("stale checkout should fail fast")
+
+
+def test_torch_dynamo_compatibility_patch_adds_missing_skip_code():
+    class DummyEvalFrame:
+        pass
+
+    class DummyDynamo:
+        eval_frame = DummyEvalFrame()
+
+    class DummyC:
+        _dynamo = DummyDynamo()
+
+    class DummyTorch:
+        _C = DummyC()
+
+    patched = _patch_torch_dynamo_compatibility(DummyTorch())
+
+    assert patched is True
+    assert callable(DummyTorch._C._dynamo.eval_frame.skip_code)
