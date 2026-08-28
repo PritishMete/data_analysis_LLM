@@ -87,13 +87,14 @@ def _emit_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def _run_command(args: list[str], *, check: bool = True, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+def _run_command(args: list[str], *, check: bool = True, timeout: int | None = None, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
         capture_output=True,
         text=True,
         check=check,
         timeout=timeout,
+        cwd=cwd,
     )
 
 
@@ -103,7 +104,16 @@ def _safe_cli_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def kaggle_cli_available() -> bool:
-    return shutil.which("kaggle") is not None
+    return shutil.which("kaggle") is not None or _kaggle_python_available()
+
+
+def _kaggle_python_available() -> bool:
+    try:
+        import importlib.metadata as metadata
+
+        return metadata.version("kaggle") is not None
+    except Exception:
+        return False
 
 
 def discover_kaggle_auth() -> KaggleAuthState:
@@ -111,20 +121,53 @@ def discover_kaggle_auth() -> KaggleAuthState:
     candidates = []
     if config_dir:
         candidates.append(Path(config_dir) / "kaggle.json")
+        candidates.append(Path(config_dir) / "access_token")
+        candidates.append(Path(config_dir) / "access_token.txt")
     candidates.append(Path.home() / ".kaggle" / "kaggle.json")
+    candidates.append(Path.home() / ".kaggle" / "access_token")
+    candidates.append(Path.home() / ".kaggle" / "access_token.txt")
     for path in candidates:
         if path.exists():
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                username = data.get("username") or os.environ.get("KAGGLE_USERNAME")
-                return KaggleAuthState(True, username=username, config_path=str(path), source="kaggle.json")
+                if path.name == "kaggle.json":
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    username = data.get("username") or os.environ.get("KAGGLE_USERNAME")
+                    return KaggleAuthState(True, username=username, config_path=str(path), source="kaggle.json")
+                if path.name.startswith("access_token"):
+                    username = os.environ.get("KAGGLE_USERNAME") or _discover_username_from_cli()
+                    return KaggleAuthState(True, username=username, config_path=str(path), source="access_token")
+                token = path.read_text(encoding="utf-8").strip()
+                if token:
+                    username = os.environ.get("KAGGLE_USERNAME") or _discover_username_from_cli()
+                    return KaggleAuthState(True, username=username, config_path=str(path), source=path.name)
+                return KaggleAuthState(False, username=os.environ.get("KAGGLE_USERNAME"), config_path=str(path), source=path.name, reason="empty_access_token")
             except Exception:
-                return KaggleAuthState(False, username=os.environ.get("KAGGLE_USERNAME"), config_path=str(path), source="kaggle.json", reason="invalid_kaggle_json")
+                return KaggleAuthState(False, username=os.environ.get("KAGGLE_USERNAME"), config_path=str(path), source=path.name, reason="invalid_kaggle_credentials")
     username = os.environ.get("KAGGLE_USERNAME")
     key = os.environ.get("KAGGLE_KEY")
+    api_token = os.environ.get("KAGGLE_API_TOKEN")
     if username and key:
         return KaggleAuthState(True, username=username, config_path=None, source="environment")
+    if api_token:
+        return KaggleAuthState(True, username=username or _discover_username_from_cli(), config_path=None, source="environment_api_token")
     return KaggleAuthState(False, username=username, config_path=None, source=None, reason="missing_kaggle_credentials")
+
+
+def _discover_username_from_cli() -> str | None:
+    if not _kaggle_python_available() and shutil.which("kaggle") is None:
+        return None
+    try:
+        result = _kaggle("config", "view", timeout=30)
+        text = result.stdout or ""
+        for line in text.splitlines():
+            lower = line.lower()
+            if "username" in lower and ":" in line:
+                value = line.split(":", 1)[1].strip()
+                if value and "token" not in lower:
+                    return value
+    except Exception:
+        return None
+    return None
 
 
 def get_repo_state() -> KaggleRepoState:
@@ -171,6 +214,12 @@ def sync_notebook_to_stage(stage: KagglePaths, spec: KaggleNotebookSpec, auth: K
     notebook_dir = stage.notebook_dir
     notebook_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(NOTEBOOK_SOURCE, notebook_dir / spec.code_file)
+    scripts_dir = notebook_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    for relative in (Path("scripts") / "__init__.py", Path("scripts") / "kaggle_runner.py"):
+        source = REPO_ROOT / relative
+        if source.exists():
+            shutil.copy2(source, scripts_dir / source.name)
     metadata = build_kernel_metadata(auth=auth, spec=spec)
     (notebook_dir / "kernel-metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     return notebook_dir
@@ -181,9 +230,11 @@ def kaggle_kernel_ref(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str:
 
 
 def _kaggle(*args: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    if not kaggle_cli_available():
-        raise KaggleAutomationError("kaggle_cli_missing")
-    return _run_command(["kaggle", *args], timeout=timeout)
+    if shutil.which("kaggle") is not None:
+        return _run_command(["kaggle", *args], timeout=timeout)
+    if _kaggle_python_available():
+        return _run_command([sys.executable, "-m", "kaggle", *args], timeout=timeout, cwd=str(Path.home()))
+    raise KaggleAutomationError("kaggle_cli_missing")
 
 
 def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
@@ -233,7 +284,7 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
             "enable_internet": spec.enable_internet,
         },
         "internet_required": spec.enable_internet,
-        "available_commands": ["preflight", "push", "run", "status", "outputs", "full-cycle"],
+        "available_commands": ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle"],
         "ready": bool(kaggle_cli_available() and auth.available and dataset_ok and repo.head),
         "one_time_action": None if auth.available else "configure Kaggle CLI credentials in ~/.kaggle/kaggle.json or KAGGLE_CONFIG_DIR",
     }
@@ -332,6 +383,20 @@ def full_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, tests_command: list[str
     }
 
 
+def smoke_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None) -> dict[str, Any]:
+    spec = spec or KaggleNotebookSpec()
+    preflight_result = preflight(spec, stage_root=stage_root)
+    if not preflight_result["ready"]:
+        raise KaggleAutomationError(preflight_result.get("one_time_action") or "preflight_failed")
+    run_result = run(spec, stage_root=stage_root)
+    output_result = outputs(spec, stage_root=stage_root)
+    return {
+        "preflight": preflight_result,
+        "run": run_result,
+        "outputs": output_result,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Kaggle notebook deployment and execution workflow")
     parser.add_argument("--dataset-ref", default=DEFAULT_DATASET_REF)
@@ -345,6 +410,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     sub.add_parser("outputs")
     sub.add_parser("full-cycle")
+    sub.add_parser("smoke-cycle")
     return parser
 
 
@@ -372,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json(outputs(spec, stage_root=args.stage_root))
         elif args.command == "full-cycle":
             _emit_json(full_cycle(stage_root=args.stage_root, spec=spec))
+        elif args.command == "smoke-cycle":
+            _emit_json(smoke_cycle(stage_root=args.stage_root, spec=spec))
         else:
             raise KaggleAutomationError(f"unsupported_command:{args.command}")
         return 0

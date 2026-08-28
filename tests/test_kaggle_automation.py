@@ -84,6 +84,37 @@ def test_full_cycle_refuses_when_local_tests_fail(monkeypatch, tmp_path):
         raise AssertionError("full_cycle should refuse when tests fail")
 
 
+def test_smoke_cycle_skips_local_tests_and_runs_kaggle(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_kaggle(*args, **kwargs):
+        calls.append(args)
+        if args[:2] == ("kernels", "status"):
+            return _completed("complete")
+        if args[:2] == ("kernels", "output"):
+            download_dir = Path(args[args.index("-p") + 1])
+            download_dir.mkdir(parents=True, exist_ok=True)
+            (download_dir / "final_report.json").write_text("{}", encoding="utf-8")
+            (download_dir / "semantic_metrics.json").write_text("{}", encoding="utf-8")
+            (download_dir / "artifact_manifest.json").write_text("{}", encoding="utf-8")
+            (download_dir / "semantic_extractor_artifacts.zip").write_bytes(b"zip")
+            return _completed("downloaded")
+        return _completed("pushed")
+
+    monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
+    monkeypatch.setattr(kaggle_runner, "_kaggle", fake_kaggle)
+    monkeypatch.setattr(kaggle_runner, "_run_command", lambda *args, **kwargs: _completed("should not run tests"))
+
+    result = kaggle_runner.smoke_cycle(stage_root=tmp_path / "stage")
+
+    assert "preflight" in result
+    assert result["run"]["status"] == "complete"
+    assert any(call[:2] == ("kernels", "push") for call in calls)
+    assert any(call[:2] == ("kernels", "output") for call in calls)
+
+
 def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
     auth = kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json")
     spec = kaggle_runner.KaggleNotebookSpec()
