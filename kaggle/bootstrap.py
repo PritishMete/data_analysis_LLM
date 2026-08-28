@@ -420,7 +420,13 @@ def build_semantic_dataset_from_canonical(dataset_root: Path, semantic_output_ro
 def load_semantic_config(config_path: Path = DEFAULT_SEMANTIC_CONFIG) -> dict[str, Any]:
     import yaml
 
-    return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    resolved_path = config_path
+    if not resolved_path.exists() and not resolved_path.is_absolute():
+        repo_root = Path(__file__).resolve().parents[1]
+        candidate = repo_root / resolved_path
+        if candidate.exists():
+            resolved_path = candidate
+    return yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
 
 
 def detect_resume_checkpoint(output_root: Path, resume_from: str | None = None) -> Path | None:

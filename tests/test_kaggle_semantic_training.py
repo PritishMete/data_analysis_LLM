@@ -8,6 +8,7 @@ from kaggle.bootstrap import (
     build_semantic_dataset_from_canonical,
     create_final_zip,
     discover_semantic_dataset,
+    load_semantic_config,
     resolve_canonical_dataset_root,
     semantic_verdict,
     verify_attached_dataset,
@@ -239,3 +240,11 @@ def test_semantic_verdict_logic():
     assert promotable == "PROMOTE_SEMANTIC_EXTRACTOR_TO_SHADOW"
     assert rejected == "REJECT_SEMANTIC_EXTRACTOR"
     assert failed == "TRAINING_FAILED"
+
+
+def test_semantic_config_loader_resolves_repo_relative_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = load_semantic_config()
+
+    assert config["base_model"] == "Qwen/Qwen2.5-0.5B-Instruct"
+    assert config["training"]["max_seq_len"] == 768
