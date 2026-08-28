@@ -64,7 +64,7 @@ def create_dataset_manifest(dataset_dir: Path) -> dict[str, Any]:
         path = dataset_dir / (f"{name}.jsonl" if name in SPLITS else "dataset_report.json")
         if path.exists():
             manifest["files"][name] = {
-                "path": str(path),
+                "path": path.name,
                 "sha256": sha256_file(path),
                 "bytes": path.stat().st_size,
             }
@@ -83,8 +83,21 @@ def verify_dataset_manifest(dataset_dir: Path, manifest_path: Path | None = None
     manifest = _load_json(manifest_path)
     mismatches: list[str] = []
     files = manifest.get("files") or {}
-    for name, meta in files.items():
-        path = Path(meta.get("path") or dataset_dir / f"{name}.jsonl")
+    if isinstance(files, list):
+        file_items = {str(item.get("name") or ""): item for item in files if isinstance(item, dict)}
+    elif isinstance(files, dict):
+        file_items = dict(files)
+    else:
+        file_items = {}
+    for name, meta in file_items.items():
+        raw_path = str(meta.get("path") or "").strip()
+        path = Path(raw_path) if raw_path else dataset_dir / f"{name}.jsonl"
+        if not path.exists():
+            path = dataset_dir / str(meta.get("name") or name)
+        if not path.exists():
+            path = dataset_dir / f"{name}.jsonl"
+        if not path.exists() and name == "dataset_report":
+            path = dataset_dir / "dataset_report.json"
         if not path.exists():
             mismatches.append(f"missing:{name}")
             continue

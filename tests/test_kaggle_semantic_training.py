@@ -145,6 +145,17 @@ def test_missing_sha_manifest_falls_back_to_consistency_and_generates_sha(tmp_pa
     assert payload["dataset_root"] == str(canonical_root)
 
 
+def test_sha_manifest_verifier_accepts_list_format(tmp_path):
+    canonical_root = _write_canonical_dataset(tmp_path / "canonical")
+    sha_manifest_path = write_sha_manifest(canonical_root, canonical_root)
+
+    verification = verify_attached_dataset(canonical_root)
+
+    assert sha_manifest_path.exists()
+    assert verification["verified"] is True
+    assert verification["mismatches"] == []
+
+
 def test_canonical_to_semantic_conversion_preserves_privacy_and_rows(tmp_path):
     canonical_root = _write_canonical_dataset(tmp_path / "canonical")
     semantic_report = build_semantic_dataset_from_canonical(canonical_root, tmp_path / "semantic_training")

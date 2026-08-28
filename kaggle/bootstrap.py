@@ -316,7 +316,7 @@ def _sha_manifest_entries(dataset_root: Path) -> list[Path]:
         dataset_root / "validation.jsonl",
         dataset_root / "test.jsonl",
     ]
-    for name in ("dataset_manifest.json", "manifest.json", "dataset_report.json", "report.json", "dataset_manifest.sha256.json"):
+    for name in ("dataset_manifest.json", "manifest.json", "dataset_report.json", "report.json"):
         path = dataset_root / name
         if path.exists():
             paths.append(path)
