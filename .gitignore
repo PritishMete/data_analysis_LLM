@@ -23,3 +23,13 @@ learning.db
 *state.json
 *.swp
 .DS_Store
+kaggle.json
+*.token
+*.tokens
+*.credential
+credentials/
+tokens/
+runtime/kaggle_runner/
+scripts/kaggle_runner_work/
+*.kaggle.log
+*.kaggle.tmp
