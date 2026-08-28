@@ -14,6 +14,7 @@ from kaggle.bootstrap import (
     verify_attached_dataset,
     write_sha_manifest,
 )
+from kaggle.run_semantic_training import _build_smoke_corpus, _smoke_split_targets
 
 
 def _canonical_record(
@@ -248,3 +249,16 @@ def test_semantic_config_loader_resolves_repo_relative_path(tmp_path, monkeypatc
 
     assert config["base_model"] == "Qwen/Qwen2.5-0.5B-Instruct"
     assert config["training"]["max_seq_len"] == 768
+
+
+def test_smoke_split_targets_and_report_require_validation(tmp_path):
+    canonical_root = _write_canonical_dataset(tmp_path / "canonical")
+    semantic_root = tmp_path / "semantic_training"
+    semantic_report = build_semantic_dataset_from_canonical(canonical_root, semantic_root)
+    smoke = _build_smoke_corpus(Path(semantic_report["semantic_output_root"]), tmp_path / "smoke")
+
+    assert smoke["report"]["train_count"] >= 1
+    assert smoke["report"]["validation_count"] >= 5
+    assert smoke["report"]["test_count"] == 0
+    assert len(smoke["splits"]["validation"]) >= 5
+    assert len(smoke["splits"]["train"]) <= 100

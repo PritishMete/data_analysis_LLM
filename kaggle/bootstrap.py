@@ -29,6 +29,7 @@ SAFE_ZIP_NAMES = {
     "final_report",
     "metrics",
     "model_registry",
+    "smoke_training_report",
     "training_config",
 }
 
