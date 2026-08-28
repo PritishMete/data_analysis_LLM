@@ -18,6 +18,8 @@ DEFAULT_DATASET_REF = "jaistudio/data-analysis-llm"
 DEFAULT_NOTEBOOK_SLUG = "data-analysis-llm-semantic-extractor"
 DEFAULT_NOTEBOOK_TITLE = "Data Analysis LLM Semantic Extractor"
 DEFAULT_STAGE_ROOT = REPO_ROOT / "runtime" / "kaggle_runner"
+RUNNER_HEARTBEAT_PATH = DEFAULT_STAGE_ROOT / "runner_heartbeat.json"
+RUNNER_FAILURE_PATH = DEFAULT_STAGE_ROOT / "runner_failure.json"
 SAFE_OUTPUT_NAMES = {
     "final_report.json",
     "semantic_metrics.json",
@@ -102,6 +104,13 @@ def _run_command(args: list[str], *, check: bool = True, timeout: int | None = N
         cwd=cwd,
         env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
     )
+
+
+def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
+    if not text:
+        return None
+    parts = text.splitlines()
+    return "\n".join(parts[-lines:])
 
 
 def _safe_cli_output(result: subprocess.CompletedProcess[str]) -> str:
@@ -199,6 +208,64 @@ def ensure_stage_paths(stage_root: Path = DEFAULT_STAGE_ROOT) -> KagglePaths:
     return KagglePaths(stage_root=stage_root, notebook_dir=notebook_dir, download_dir=download_dir, logs_dir=logs_dir)
 
 
+def _write_runner_heartbeat(
+    *,
+    phase: str,
+    kernel_ref: str | None,
+    expected_commit: str | None,
+    elapsed_seconds: float | None,
+    last_status: str | None,
+    safe_message: str,
+    stage_root: Path = DEFAULT_STAGE_ROOT,
+) -> Path:
+    stage = ensure_stage_paths(stage_root)
+    payload = {
+        "phase": phase,
+        "timestamp": time.time(),
+        "kernel_ref": kernel_ref,
+        "expected_commit": expected_commit,
+        "elapsed_seconds": elapsed_seconds,
+        "last_status": last_status,
+        "safe_message": safe_message,
+    }
+    path = stage.stage_root / "runner_heartbeat.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _write_runner_failure(
+    *,
+    phase: str,
+    command: str | None,
+    exc: BaseException,
+    timeout_seconds: int | None,
+    kernel_ref: str | None,
+    expected_commit: str | None,
+    elapsed_seconds: float | None,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    last_status: str | None = None,
+    stage_root: Path = DEFAULT_STAGE_ROOT,
+) -> Path:
+    stage = ensure_stage_paths(stage_root)
+    payload = {
+        "phase": phase,
+        "command": command,
+        "exception_type": type(exc).__name__,
+        "sanitized_message": str(exc).replace("\n", " ").strip()[:1000],
+        "timeout_seconds": timeout_seconds,
+        "kernel_ref": kernel_ref,
+        "expected_commit": expected_commit,
+        "elapsed_seconds": elapsed_seconds,
+        "last_known_kernel_status": last_status,
+        "safe_stdout_tail": _safe_tail(stdout),
+        "safe_stderr_tail": _safe_tail(stderr),
+    }
+    path = stage.stage_root / "runner_failure.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def build_kernel_metadata(*, auth: KaggleAuthState, spec: KaggleNotebookSpec) -> dict[str, Any]:
     return {
         "id": spec.notebook_ref(auth.username),
@@ -243,6 +310,48 @@ def _kaggle(*args: str, timeout: int | None = None) -> subprocess.CompletedProce
     raise KaggleAutomationError("kaggle_cli_missing")
 
 
+def _kaggle_checked(
+    *args: str,
+    timeout: int | None,
+    phase: str,
+    kernel_ref: str | None = None,
+    expected_commit: str | None = None,
+    start_time: float | None = None,
+    last_status: str | None = None,
+    stage_root: Path = DEFAULT_STAGE_ROOT,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return _kaggle(*args, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _write_runner_failure(
+            phase=phase,
+            command="kaggle " + " ".join(args),
+            exc=exc,
+            timeout_seconds=timeout,
+            kernel_ref=kernel_ref,
+            expected_commit=expected_commit,
+            elapsed_seconds=(time.perf_counter() - start_time) if start_time is not None else None,
+            stdout=getattr(exc, "stdout", None),
+            stderr=getattr(exc, "stderr", None),
+            last_status=last_status,
+            stage_root=stage_root,
+        )
+        raise KaggleAutomationError(f"{phase}_timeout") from exc
+    except Exception as exc:
+        _write_runner_failure(
+            phase=phase,
+            command="kaggle " + " ".join(args),
+            exc=exc,
+            timeout_seconds=timeout,
+            kernel_ref=kernel_ref,
+            expected_commit=expected_commit,
+            elapsed_seconds=(time.perf_counter() - start_time) if start_time is not None else None,
+            last_status=last_status,
+            stage_root=stage_root,
+        )
+        raise
+
+
 def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
     spec = spec or KaggleNotebookSpec()
     auth = discover_kaggle_auth()
@@ -253,7 +362,7 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
     notebook_error = None
     if auth.available and auth.username:
         try:
-            result = _kaggle("kernels", "status", notebook_ref)
+            result = _kaggle_checked("kernels", "status", notebook_ref, timeout=45, phase="auth_check_complete", kernel_ref=notebook_ref, stage_root=stage_root)
             notebook_exists = result.returncode == 0
         except subprocess.CalledProcessError as exc:
             notebook_error = _safe_cli_output(exc)
@@ -267,7 +376,7 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
     dataset_error = None
     if auth.available:
         try:
-            result = _kaggle("datasets", "files", "-d", spec.dataset_ref)
+            result = _kaggle_checked("datasets", "files", "-d", spec.dataset_ref, timeout=45, phase="auth_check_complete", kernel_ref=notebook_ref, stage_root=stage_root)
             dataset_ok = result.returncode == 0 and bool(_safe_cli_output(result))
         except subprocess.CalledProcessError as exc:
             dataset_error = _safe_cli_output(exc)
@@ -304,7 +413,7 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
         raise KaggleAutomationError("authentication_missing")
     stage = ensure_stage_paths(stage_root)
     notebook_dir = sync_notebook_to_stage(stage, spec, auth)
-    result = _kaggle("kernels", "push", "-p", str(notebook_dir))
+    result = _kaggle_checked("kernels", "push", "-p", str(notebook_dir), timeout=120, phase="push_complete", kernel_ref=kaggle_kernel_ref(auth, spec), stage_root=stage_root)
     return {
         "notebook_ref": kaggle_kernel_ref(auth, spec),
         "dataset_ref": spec.dataset_ref,
@@ -319,22 +428,152 @@ def run(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_ST
     if not auth.available:
         raise KaggleAutomationError("authentication_missing")
     kernel_ref = kaggle_kernel_ref(auth, spec)
+    start_time = time.perf_counter()
+    _write_runner_heartbeat(
+        phase="runner_started",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=0.0,
+        last_status=None,
+        safe_message="runner start",
+        stage_root=stage_root,
+    )
     current = _status_payload(spec, stage_root=stage_root)
+    _write_runner_heartbeat(
+        phase="auth_check_complete",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=current.get("status"),
+        safe_message="status checked",
+        stage_root=stage_root,
+    )
     if "running" in current.get("status", "").lower():
         raise KaggleAutomationError("kernel_already_running")
+    _write_runner_heartbeat(
+        phase="push_started",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=current.get("status"),
+        safe_message="push start",
+        stage_root=stage_root,
+    )
     push_result = push(spec, stage_root=stage_root)
+    _write_runner_heartbeat(
+        phase="push_complete",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=current.get("status"),
+        safe_message="push complete",
+        stage_root=stage_root,
+    )
+    _write_runner_heartbeat(
+        phase="execute_request_complete",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=current.get("status"),
+        safe_message="execute request acknowledged",
+        stage_root=stage_root,
+    )
     deadline = time.time() + timeout_seconds
     polls = 0
     status_text = None
+    _write_runner_heartbeat(
+        phase="execute_started",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=current.get("status"),
+        safe_message="execute request accepted",
+        stage_root=stage_root,
+    )
     while time.time() < deadline:
         polls += 1
-        result = _kaggle("kernels", "status", kernel_ref)
+        _write_runner_heartbeat(
+            phase="poll_iteration",
+            kernel_ref=kernel_ref,
+            expected_commit=get_repo_state().head,
+            elapsed_seconds=round(time.perf_counter() - start_time, 2),
+            last_status=status_text or current.get("status"),
+            safe_message=f"poll={polls}",
+            stage_root=stage_root,
+        )
+        result = _kaggle_checked("kernels", "status", kernel_ref, timeout=min(60, poll_seconds + 15), phase="poll_started", kernel_ref=kernel_ref, expected_commit=get_repo_state().head, start_time=start_time, last_status=status_text or current.get("status"), stage_root=stage_root)
         status_text = _safe_cli_output(result)
         if any(token in status_text.lower() for token in ("complete", "error", "failed", "killed", "cancelled", "cancelled")):
+            _write_runner_heartbeat(
+                phase="terminal_status_received",
+                kernel_ref=kernel_ref,
+                expected_commit=get_repo_state().head,
+                elapsed_seconds=round(time.perf_counter() - start_time, 2),
+                last_status=status_text,
+                safe_message=status_text,
+                stage_root=stage_root,
+            )
             break
         time.sleep(poll_seconds)
     else:
+        _write_runner_failure(
+            phase="poll_started",
+            command="kaggle kernels status",
+            exc=KaggleAutomationError("timeout"),
+            timeout_seconds=timeout_seconds,
+            kernel_ref=kernel_ref,
+            expected_commit=get_repo_state().head,
+            elapsed_seconds=round(time.perf_counter() - start_time, 2),
+            last_status=status_text or current.get("status"),
+            stage_root=stage_root,
+        )
         raise KaggleAutomationError("timeout")
+    _write_runner_heartbeat(
+        phase="logs_started",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=status_text,
+        safe_message="logs requested",
+        stage_root=stage_root,
+    )
+    _write_runner_heartbeat(
+        phase="logs_complete",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=status_text,
+        safe_message="logs handled",
+        stage_root=stage_root,
+    )
+    _write_runner_heartbeat(
+        phase="outputs_started",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=status_text,
+        safe_message="outputs requested",
+        stage_root=stage_root,
+    )
+    output_result = outputs(spec, stage_root=stage_root)
+    _write_runner_heartbeat(
+        phase="outputs_complete",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=status_text,
+        safe_message="outputs complete",
+        stage_root=stage_root,
+    )
+    _write_runner_heartbeat(
+        phase="runner_complete",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=status_text,
+        safe_message="runner complete",
+        stage_root=stage_root,
+    )
     return {
         "notebook_ref": kernel_ref,
         "push": push_result,
@@ -355,7 +594,7 @@ def outputs(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAUL
         raise KaggleAutomationError("authentication_missing")
     stage = ensure_stage_paths(stage_root)
     kernel_ref = kaggle_kernel_ref(auth, spec)
-    result = _kaggle("kernels", "output", kernel_ref, "-p", str(stage.download_dir))
+    result = _kaggle_checked("kernels", "output", kernel_ref, "-p", str(stage.download_dir), timeout=180, phase="outputs_started", kernel_ref=kernel_ref, stage_root=stage_root)
     downloaded = [path.name for path in stage.download_dir.iterdir() if path.is_file() and path.name in SAFE_OUTPUT_NAMES]
     return {
         "notebook_ref": kernel_ref,
@@ -395,6 +634,26 @@ def _read_breadcrumbs(stage_root: Path = DEFAULT_STAGE_ROOT) -> list[dict[str, A
         return []
 
 
+def _read_runner_heartbeat(stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any] | None:
+    path = ensure_stage_paths(stage_root).stage_root / "runner_heartbeat.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _read_runner_failure(stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any] | None:
+    path = ensure_stage_paths(stage_root).stage_root / "runner_failure.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _kaggle_postmortem(spec: KaggleNotebookSpec, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
     stage = ensure_stage_paths(stage_root)
     reports_dir = stage.download_dir / "reports"
@@ -426,7 +685,15 @@ def _kaggle_postmortem(spec: KaggleNotebookSpec, *, stage_root: Path = DEFAULT_S
         auth = discover_kaggle_auth()
         if auth.available:
             kernel_ref = kaggle_kernel_ref(auth, spec)
-            live_result = _kaggle("kernels", "logs", kernel_ref)
+            live_result = _kaggle_checked(
+                "kernels",
+                "logs",
+                kernel_ref,
+                timeout=60,
+                phase="logs_started",
+                kernel_ref=kernel_ref,
+                stage_root=stage_root,
+            )
             live_text = _safe_cli_output(live_result)
             if live_text:
                 payload["live_log_tail"] = "\n".join(live_text.splitlines()[-100:])
@@ -435,12 +702,18 @@ def _kaggle_postmortem(spec: KaggleNotebookSpec, *, stage_root: Path = DEFAULT_S
     return payload
 
 
-def _status_payload(spec: KaggleNotebookSpec, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
+def _status_payload(
+    spec: KaggleNotebookSpec,
+    *,
+    stage_root: Path = DEFAULT_STAGE_ROOT,
+    include_error_artifacts: bool = True,
+) -> dict[str, Any]:
     auth = discover_kaggle_auth()
     if not auth.available:
         raise KaggleAutomationError("authentication_missing")
     kernel_ref = kaggle_kernel_ref(auth, spec)
-    result = _kaggle("kernels", "status", kernel_ref)
+    start_time = time.perf_counter()
+    result = _kaggle_checked("kernels", "status", kernel_ref, timeout=60, phase="poll_started", kernel_ref=kernel_ref, start_time=start_time, stage_root=stage_root)
     status_text = _safe_cli_output(result)
     breadcrumbs = _read_breadcrumbs(stage_root)
     heartbeat = _read_heartbeat(stage_root)
@@ -460,7 +733,7 @@ def _status_payload(spec: KaggleNotebookSpec, *, stage_root: Path = DEFAULT_STAG
         "breadcrumbs": breadcrumbs,
         "stall_detection": stall_detection,
     }
-    if "error" in status_text.lower():
+    if "error" in status_text.lower() and include_error_artifacts:
         try:
             payload["outputs"] = outputs(spec, stage_root=stage_root)
         except Exception as exc:
@@ -502,6 +775,35 @@ def smoke_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSp
     }
 
 
+def diagnose(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None) -> dict[str, Any]:
+    spec = spec or KaggleNotebookSpec()
+    auth = discover_kaggle_auth()
+    repo = get_repo_state()
+    stage = ensure_stage_paths(stage_root)
+    kernel_ref = kaggle_kernel_ref(auth, spec)
+    status_result: dict[str, Any] | None = None
+    status_error: str | None = None
+    try:
+        status_result = _status_payload(spec, stage_root=stage_root, include_error_artifacts=False)
+    except Exception as exc:
+        status_error = str(exc)
+    return {
+        "auth": auth.to_dict(),
+        "repo": repo.to_dict(),
+        "kernel_ref": kernel_ref,
+        "status_result": status_result,
+        "status_error": status_error,
+        "runner_heartbeat": _read_runner_heartbeat(stage_root),
+        "runner_failure": _read_runner_failure(stage_root),
+        "heartbeat": _read_heartbeat(stage_root),
+        "breadcrumbs": _read_breadcrumbs(stage_root),
+        "postmortem": _kaggle_postmortem(spec, stage_root=stage_root),
+        "stage_root": stage.to_dict(),
+        "expected_commit": repo.head,
+        "dataset_ref": spec.dataset_ref,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Kaggle notebook deployment and execution workflow")
     parser.add_argument("--dataset-ref", default=DEFAULT_DATASET_REF)
@@ -516,6 +818,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("outputs")
     sub.add_parser("full-cycle")
     sub.add_parser("smoke-cycle")
+    sub.add_parser("diagnose")
     return parser
 
 
@@ -545,6 +848,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json(full_cycle(stage_root=args.stage_root, spec=spec))
         elif args.command == "smoke-cycle":
             _emit_json(smoke_cycle(stage_root=args.stage_root, spec=spec))
+        elif args.command == "diagnose":
+            _emit_json(diagnose(stage_root=args.stage_root, spec=spec))
         else:
             raise KaggleAutomationError(f"unsupported_command:{args.command}")
         return 0

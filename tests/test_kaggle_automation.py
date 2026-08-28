@@ -197,3 +197,86 @@ def test_run_command_uses_utf8_safe_subprocess(monkeypatch):
     assert seen["errors"] == "replace"
     assert seen["env"]["PYTHONUTF8"] == "1"
     assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_runner_heartbeat_and_failure_files_are_written(tmp_path):
+    heartbeat = kaggle_runner._write_runner_heartbeat(
+        phase="runner_started",
+        kernel_ref="user/notebook",
+        expected_commit="abc123",
+        elapsed_seconds=1.25,
+        last_status="RUNNING",
+        safe_message="start",
+        stage_root=tmp_path,
+    )
+    failure = kaggle_runner._write_runner_failure(
+        phase="poll_started",
+        command="kaggle kernels status",
+        exc=RuntimeError("boom"),
+        timeout_seconds=30,
+        kernel_ref="user/notebook",
+        expected_commit="abc123",
+        elapsed_seconds=2.5,
+        stdout="line1\nline2",
+        stderr="err1\nerr2",
+        last_status="RUNNING",
+        stage_root=tmp_path,
+    )
+
+    heartbeat_payload = json.loads(heartbeat.read_text(encoding="utf-8"))
+    failure_payload = json.loads(failure.read_text(encoding="utf-8"))
+
+    assert heartbeat_payload["phase"] == "runner_started"
+    assert heartbeat_payload["kernel_ref"] == "user/notebook"
+    assert failure_payload["phase"] == "poll_started"
+    assert failure_payload["timeout_seconds"] == 30
+    assert "line2" in failure_payload["safe_stdout_tail"]
+    assert "err2" in failure_payload["safe_stderr_tail"]
+
+
+def test_bounded_kaggle_call_writes_failure_on_timeout(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "_kaggle", lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd=args, timeout=30)))
+
+    try:
+        kaggle_runner._kaggle_checked(
+            "kernels",
+            "status",
+            "user/notebook",
+            timeout=30,
+            phase="poll_started",
+            kernel_ref="user/notebook",
+            expected_commit="abc123",
+            stage_root=tmp_path,
+        )
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc) == "poll_started_timeout"
+    else:
+        raise AssertionError("timeout should be wrapped as KaggleAutomationError")
+
+    failure_path = tmp_path / "runner_failure.json"
+    assert failure_path.exists()
+    payload = json.loads(failure_path.read_text(encoding="utf-8"))
+    assert payload["phase"] == "poll_started"
+    assert payload["timeout_seconds"] == 30
+
+
+def test_diagnose_reports_heartbeat_and_postmortem(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "access_token"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
+    monkeypatch.setattr(kaggle_runner, "_status_payload", lambda spec, stage_root: {"status": "RUNNING"})
+    heartbeat_path = kaggle_runner._write_runner_heartbeat(
+        phase="poll_iteration",
+        kernel_ref="jiban/data-analysis-llm-semantic-extractor",
+        expected_commit="abc123",
+        elapsed_seconds=3.0,
+        last_status="RUNNING",
+        safe_message="poll",
+        stage_root=tmp_path,
+    )
+    assert heartbeat_path.exists()
+
+    result = kaggle_runner.diagnose(stage_root=tmp_path)
+
+    assert result["auth"]["available"] is True
+    assert result["expected_commit"] == "abc123"
+    assert result["runner_heartbeat"]["phase"] == "poll_iteration"
