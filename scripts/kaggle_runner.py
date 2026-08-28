@@ -23,6 +23,9 @@ SAFE_OUTPUT_NAMES = {
     "semantic_metrics.json",
     "artifact_manifest.json",
     "semantic_extractor_artifacts.zip",
+    "smoke_training_report.json",
+    "smoke_breadcrumbs.jsonl",
+    "smoke_failure.json",
 }
 
 
@@ -92,9 +95,12 @@ def _run_command(args: list[str], *, check: bool = True, timeout: int | None = N
         args,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=check,
         timeout=timeout,
         cwd=cwd,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
     )
 
 
@@ -313,6 +319,9 @@ def run(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_ST
     if not auth.available:
         raise KaggleAutomationError("authentication_missing")
     kernel_ref = kaggle_kernel_ref(auth, spec)
+    current = _status_payload(spec, stage_root=stage_root)
+    if "running" in current.get("status", "").lower():
+        raise KaggleAutomationError("kernel_already_running")
     push_result = push(spec, stage_root=stage_root)
     deadline = time.time() + timeout_seconds
     polls = 0
@@ -334,17 +343,9 @@ def run(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_ST
     }
 
 
-def status(spec: KaggleNotebookSpec | None = None) -> dict[str, Any]:
+def status(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
     spec = spec or KaggleNotebookSpec()
-    auth = discover_kaggle_auth()
-    if not auth.available:
-        raise KaggleAutomationError("authentication_missing")
-    kernel_ref = kaggle_kernel_ref(auth, spec)
-    result = _kaggle("kernels", "status", kernel_ref)
-    return {
-        "notebook_ref": kernel_ref,
-        "status": _safe_cli_output(result),
-    }
+    return _status_payload(spec, stage_root=stage_root)
 
 
 def outputs(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
@@ -362,6 +363,110 @@ def outputs(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAUL
         "downloaded_safe_artifacts": sorted(downloaded),
         "stdout": _safe_cli_output(result),
     }
+
+
+def _read_tail(path: Path, *, lines: int = 100) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8").splitlines()
+        return "\n".join(content[-lines:])
+    except Exception:
+        return None
+
+
+def _read_heartbeat(stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any] | None:
+    path = ensure_stage_paths(stage_root).download_dir / "reports" / "smoke_heartbeat.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _read_breadcrumbs(stage_root: Path = DEFAULT_STAGE_ROOT) -> list[dict[str, Any]]:
+    path = ensure_stage_paths(stage_root).download_dir / "reports" / "smoke_breadcrumbs.jsonl"
+    if not path.exists():
+        return []
+    try:
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
+def _kaggle_postmortem(spec: KaggleNotebookSpec, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
+    stage = ensure_stage_paths(stage_root)
+    reports_dir = stage.download_dir / "reports"
+    failure_path = reports_dir / "smoke_failure.json"
+    log_paths = list(stage.download_dir.glob("*.log"))
+    payload: dict[str, Any] = {
+        "last_breadcrumb_stage": None,
+        "smoke_failure": None,
+        "last_safe_log_lines": None,
+        "last_progress_timestamp": None,
+        "heartbeat": None,
+        "live_log_tail": None,
+    }
+    records = _read_breadcrumbs(stage_root)
+    if records:
+        payload["last_breadcrumb_stage"] = records[-1].get("stage")
+        payload["last_progress_timestamp"] = records[-1].get("timestamp")
+    heartbeat = _read_heartbeat(stage_root)
+    if heartbeat:
+        payload["heartbeat"] = heartbeat
+    if failure_path.exists():
+        try:
+            payload["smoke_failure"] = json.loads(failure_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload["smoke_failure"] = None
+    if log_paths:
+        payload["last_safe_log_lines"] = _read_tail(log_paths[0], lines=100)
+    try:
+        auth = discover_kaggle_auth()
+        if auth.available:
+            kernel_ref = kaggle_kernel_ref(auth, spec)
+            live_result = _kaggle("kernels", "logs", kernel_ref)
+            live_text = _safe_cli_output(live_result)
+            if live_text:
+                payload["live_log_tail"] = "\n".join(live_text.splitlines()[-100:])
+    except Exception:
+        pass
+    return payload
+
+
+def _status_payload(spec: KaggleNotebookSpec, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
+    auth = discover_kaggle_auth()
+    if not auth.available:
+        raise KaggleAutomationError("authentication_missing")
+    kernel_ref = kaggle_kernel_ref(auth, spec)
+    result = _kaggle("kernels", "status", kernel_ref)
+    status_text = _safe_cli_output(result)
+    breadcrumbs = _read_breadcrumbs(stage_root)
+    heartbeat = _read_heartbeat(stage_root)
+    stall_threshold = int(os.environ.get("KAGGLE_SMOKE_NO_PROGRESS_THRESHOLD_SECONDS", "1800"))
+    stall_detection = None
+    if breadcrumbs:
+        last = breadcrumbs[-1]
+        stall_detection = {
+            "last_stage": last.get("stage"),
+            "last_progress_timestamp": last.get("timestamp"),
+            "no_progress_threshold_seconds": stall_threshold,
+        }
+    payload: dict[str, Any] = {
+        "notebook_ref": kernel_ref,
+        "status": status_text,
+        "heartbeat": heartbeat,
+        "breadcrumbs": breadcrumbs,
+        "stall_detection": stall_detection,
+    }
+    if "error" in status_text.lower():
+        try:
+            payload["outputs"] = outputs(spec, stage_root=stage_root)
+        except Exception as exc:
+            payload["outputs_error"] = str(exc)
+        payload["postmortem"] = _kaggle_postmortem(spec, stage_root=stage_root)
+    return payload
 
 
 def full_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, tests_command: list[str] | None = None, spec: KaggleNotebookSpec | None = None) -> dict[str, Any]:

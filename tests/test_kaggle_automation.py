@@ -128,4 +128,72 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
         "semantic_metrics.json",
         "artifact_manifest.json",
         "semantic_extractor_artifacts.zip",
+        "smoke_training_report.json",
+        "smoke_breadcrumbs.jsonl",
+        "smoke_failure.json",
     }
+
+
+def test_status_error_triggers_postmortem_download(monkeypatch, tmp_path):
+    def fake_kaggle(*args, **kwargs):
+        if args[:2] == ("kernels", "status"):
+            return _completed("error")
+        if args[:2] == ("kernels", "output"):
+            download_dir = Path(args[args.index("-p") + 1])
+            (download_dir / "reports").mkdir(parents=True, exist_ok=True)
+            (download_dir / "reports" / "smoke_breadcrumbs.jsonl").write_text(
+                json.dumps({"stage": "model_loaded", "success": True, "safe_message": "ok"}) + "\n",
+                encoding="utf-8",
+            )
+            (download_dir / "reports" / "smoke_failure.json").write_text(
+                json.dumps({"stage": "model_load_started", "exception_type": "RuntimeError", "sanitized_exception_message": "boom"}),
+                encoding="utf-8",
+            )
+            (download_dir / "kaggle.log").write_text("line1\nline2\n", encoding="utf-8")
+            return _completed("downloaded")
+        if args[:2] == ("kernels", "logs"):
+            return _completed("line1\nline2")
+        return _completed("pushed")
+
+    monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json"))
+    monkeypatch.setattr(kaggle_runner, "_kaggle", fake_kaggle)
+
+    result = kaggle_runner.status(stage_root=tmp_path / "stage")
+
+    assert "error" in result["status"].lower()
+    assert result["postmortem"]["last_breadcrumb_stage"] == "model_loaded"
+    assert result["postmortem"]["smoke_failure"]["stage"] == "model_load_started"
+    assert "line1" in result["postmortem"]["last_safe_log_lines"]
+    assert result["postmortem"]["live_log_tail"] == "line1\nline2"
+
+
+def test_run_refuses_duplicate_active_kernel(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json"))
+    monkeypatch.setattr(kaggle_runner, "_status_payload", lambda spec, stage_root: {"status": "KernelWorkerStatus.RUNNING"})
+    monkeypatch.setattr(kaggle_runner, "push", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("push should not run")))
+
+    try:
+        kaggle_runner.run(stage_root=tmp_path / "stage")
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc) == "kernel_already_running"
+    else:
+        raise AssertionError("run should refuse to launch a duplicate session")
+
+
+def test_run_command_uses_utf8_safe_subprocess(monkeypatch):
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return _completed("ok")
+
+    monkeypatch.setattr(kaggle_runner.subprocess, "run", fake_run)
+    result = kaggle_runner._run_command(["echo", "hi"])
+
+    assert result.stdout == "ok"
+    assert seen["encoding"] == "utf-8"
+    assert seen["errors"] == "replace"
+    assert seen["env"]["PYTHONUTF8"] == "1"
+    assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
