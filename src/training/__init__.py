@@ -1,5 +1,4 @@
 from .config import TrainingConfig, load_default_config
-from .cli import main
 from .dataset import (
     DatasetValidationResult,
     build_manifest_fingerprint,
