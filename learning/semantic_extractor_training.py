@@ -222,7 +222,14 @@ def build_semantic_readiness_report(targets: list[SemanticExtractorTarget]) -> S
         notes.append("low_predicate_diversity")
     if ambiguity_rate > 0.1:
         notes.append("ambiguity_rate_high")
-    ready = row_count > 0 and len(intents) >= 3 and len(predicates) >= 2 and ambiguity_rate <= 0.1 and average_quality >= 0.95
+    ready = (
+        row_count > 0
+        and role_coverage >= 0.5
+        and ambiguity_rate <= 0.1
+        and average_quality >= 0.95
+        and len(intents) >= 1
+        and len(predicates) >= 1
+    )
     return SemanticDatasetReadinessReport(
         row_count=row_count,
         intent_diversity=len(intents),

@@ -15,7 +15,16 @@ from kaggle.bootstrap import (
 )
 
 
-def _canonical_record(*, source_id: str, intent: str, family_fingerprint: str, split: str, logical_structure: str = "AND", quality: float = 0.99) -> dict[str, object]:
+def _canonical_record(
+    *,
+    source_id: str,
+    intent: str,
+    family_fingerprint: str,
+    split: str,
+    logical_structure: str = "AND",
+    quality: float = 0.99,
+    semantic_roles: list[str] | None = None,
+) -> dict[str, object]:
     return {
         "source_kind": "experience",
         "source_id": source_id,
@@ -23,7 +32,7 @@ def _canonical_record(*, source_id: str, intent: str, family_fingerprint: str, s
         "family_fingerprint": family_fingerprint,
         "input": {
             "intent": intent,
-            "semantic_roles": ["numeric_metric", "filter_value"],
+            "semantic_roles": semantic_roles or ["numeric_metric", "filter_value"],
             "operators": ["equals", "greater_than"],
             "logical_structure": logical_structure,
             "predicate_graph": {"predicate_count": 2, "shape": "safe"},
@@ -62,27 +71,35 @@ def _canonical_record(*, source_id: str, intent: str, family_fingerprint: str, s
 def _write_canonical_dataset(root: Path, *, with_sha_manifest: bool = False) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     records = [
-        _canonical_record(source_id="evt_a", intent="filter", family_fingerprint="a" * 64, split="train"),
-        _canonical_record(source_id="evt_b", intent="analytics", family_fingerprint="b" * 64, split="validation", logical_structure="OR"),
-        _canonical_record(source_id="evt_c", intent="operation", family_fingerprint="c" * 64, split="test", logical_structure="MIXED"),
+        _canonical_record(source_id="evt_a", intent="filter", family_fingerprint="a" * 64, split="train", semantic_roles=["numeric_metric", "filter_value", "dimension_label"]),
+        _canonical_record(source_id="evt_b", intent="analytics", family_fingerprint="b" * 64, split="train", logical_structure="OR", semantic_roles=["trend_metric", "time_window", "dimension_label"]),
+        _canonical_record(source_id="evt_c", intent="operation", family_fingerprint="c" * 64, split="train", logical_structure="MIXED", semantic_roles=["action", "constraint", "status_flag"]),
+        _canonical_record(source_id="evt_d", intent="cleaning", family_fingerprint="d" * 64, split="train", logical_structure="NOT", semantic_roles=["column_name", "null_check", "threshold"]),
+        _canonical_record(source_id="evt_e", intent="sentiment", family_fingerprint="e" * 64, split="validation", semantic_roles=["text_span", "sentiment_label", "source_field"]),
+        _canonical_record(source_id="evt_f", intent="filter", family_fingerprint="f" * 64, split="validation", semantic_roles=["numeric_metric", "range_bound", "dimension_label"]),
+        _canonical_record(source_id="evt_g", intent="analytics", family_fingerprint="g" * 64, split="validation", logical_structure="OR", semantic_roles=["trend_metric", "aggregation_target", "time_window"]),
+        _canonical_record(source_id="evt_h", intent="operation", family_fingerprint="h" * 64, split="test", logical_structure="MIXED", semantic_roles=["action", "workflow_step", "status_flag"]),
+        _canonical_record(source_id="evt_i", intent="cleaning", family_fingerprint="i" * 64, split="test", logical_structure="NOT", semantic_roles=["column_name", "duplicate_check", "null_check"]),
+        _canonical_record(source_id="evt_j", intent="sentiment", family_fingerprint="j" * 64, split="test", semantic_roles=["text_span", "sentiment_label", "channel_source"]),
     ]
     for split in ("train", "validation", "test"):
         lines = [json.dumps(record, sort_keys=True, separators=(",", ":")) for record in records if record["split"] == split]
         (root / f"{split}.jsonl").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    split_counts = {split: sum(1 for record in records if record["split"] == split) for split in ("train", "validation", "test")}
     manifest = {
         "dataset_version": "canonical-test",
-        "train_count": 1,
-        "validation_count": 1,
-        "test_count": 1,
-        "eligible_examples": 3,
+        "train_count": split_counts["train"],
+        "validation_count": split_counts["validation"],
+        "test_count": split_counts["test"],
+        "eligible_examples": sum(split_counts.values()),
         "readiness": {"ready_for_prototype": True},
     }
     report = {
         "dataset_version": "canonical-test",
-        "train_count": 1,
-        "validation_count": 1,
-        "test_count": 1,
-        "eligible_examples": 3,
+        "train_count": split_counts["train"],
+        "validation_count": split_counts["validation"],
+        "test_count": split_counts["test"],
+        "eligible_examples": sum(split_counts.values()),
         "readiness": {"ready_for_prototype": True},
         "split_integrity_passed": True,
     }
