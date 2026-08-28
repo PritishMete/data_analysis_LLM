@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import time
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +87,59 @@ def _run_real_smoke_training(
     output_root: Path,
     resume_from: str | None = None,
 ) -> dict[str, Any]:
+    def _ensure_runtime_packages() -> dict[str, str | None]:
+        installed: dict[str, str | None] = {}
+        try:
+            import torch
+
+            cuda_capability = torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None
+            installed["torch"] = torch.__version__
+            installed["cuda_capability"] = f"{cuda_capability[0]}.{cuda_capability[1]}" if cuda_capability else None
+        except Exception:
+            installed["torch"] = None
+            installed["cuda_capability"] = None
+        try:
+            import bitsandbytes  # type: ignore
+
+            installed["bitsandbytes"] = getattr(bitsandbytes, "__version__", None)
+        except Exception:
+            installed["bitsandbytes"] = None
+
+        upgrade_required = installed["bitsandbytes"] is None
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                major, minor = torch.cuda.get_device_capability(0)
+                if major < 7:
+                    upgrade_required = True
+        except Exception:
+            upgrade_required = True
+
+        if upgrade_required:
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-q",
+                    "--upgrade",
+                    "--extra-index-url",
+                    "https://download.pytorch.org/whl/cu124",
+                    "torch==2.6.0+cu124",
+                    "bitsandbytes==0.46.1",
+                    "accelerate>=0.31",
+                    "peft>=0.11",
+                    "transformers>=4.43",
+                    "trl>=0.9",
+                    "safetensors>=0.4",
+                    "sentencepiece>=0.2.0",
+                ]
+            )
+        return installed
+
+    runtime_packages = _ensure_runtime_packages()
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     from transformers import (
@@ -227,6 +282,7 @@ def _run_real_smoke_training(
             "bnb_4bit_quant_type": "nf4",
             "compute_dtype": "fp16",
         },
+        "runtime_packages": runtime_packages,
         "lora": {
             "r": 16,
             "alpha": 32,
