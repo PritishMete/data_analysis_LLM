@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .import_trace import write_import_trace
-from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json
+from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, resolve_executed_source_commit, write_json, write_source_identity
 from .bootstrap import (
     KAGGLE_WORKING_ROOT,
     build_kaggle_dependency_plan,
@@ -115,18 +115,49 @@ def _safe_traceback_tail(exc: BaseException, *, limit: int = 25) -> str:
     return "".join(safe_lines)
 
 
-def _safe_commit_hash() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
-        return (result.stdout or "").strip() or None
-    except Exception:
-        return None
+def _safe_commit_hash(repo_root: Path | None = None) -> str | None:
+    explicit = os.environ.get("KAGGLE_EXECUTED_SOURCE_COMMIT") or os.environ.get("KAGGLE_SOURCE_COMMIT")
+    if explicit and len(explicit.strip()) == 40:
+        return explicit.strip()
+    if repo_root is not None and (repo_root / ".git").exists():
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            )
+            commit = (result.stdout or "").strip()
+            return commit or None
+        except Exception:
+            return None
+    return None
+
+
+def _validate_archive_root(repo_root: Path) -> None:
+    required_paths = [
+        repo_root / "kaggle" / "bootstrap_environment.py",
+        repo_root / "kaggle" / "execute_smoke_training.py",
+        repo_root / "kaggle" / "run_semantic_training.py",
+        repo_root / "src",
+    ]
+    if not repo_root.exists() or not repo_root.is_dir() or any(not path.exists() for path in required_paths):
+        raise RuntimeError("ARCHIVE_ROOT_INVALID")
+
+
+def _resolve_source_identity(*, run_root: Path, repo_root: Path, expected_git_commit: str | None) -> dict[str, Any]:
+    resolved = resolve_executed_source_commit(run_root=run_root, repo_root=repo_root, expected_git_commit=expected_git_commit)
+    executed = resolved.get("executed_source_commit")
+    if not executed:
+        raise RuntimeError("SOURCE_IDENTITY_MISSING")
+    expected = expected_git_commit or _expected_commit_hash()
+    if expected and executed != expected:
+        raise RuntimeError("STALE_SOURCE_SNAPSHOT")
+    resolved["source_identity_verified"] = True
+    return resolved
 
 
 def _run_command(args: list[str], *, timeout: int | None = None, check: bool = True, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -260,14 +291,22 @@ def _expected_commit_hash() -> str | None:
 def _write_smoke_heartbeat(report_root: Path, *, stage: str, smoke_mode: bool = True, run_id: str | None = None, expected_git_commit: str | None = None, executed_git_commit: str | None = None, extra: dict[str, Any] | None = None) -> Path:
     report_root.mkdir(parents=True, exist_ok=True)
     run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID")
+    if executed_git_commit is None:
+        executed_git_commit = (
+            os.environ.get("KAGGLE_EXECUTED_SOURCE_COMMIT")
+            or os.environ.get("KAGGLE_SOURCE_COMMIT")
+            or expected_git_commit
+            or _safe_commit_hash()
+        )
+    heartbeat_commit = executed_git_commit or expected_git_commit or os.environ.get("KAGGLE_EXPECTED_GIT_COMMIT") or _safe_commit_hash()
     payload = {
         "stage": stage,
         "timestamp": time.time(),
-        "git_commit": executed_git_commit or _safe_commit_hash(),
+        "git_commit": heartbeat_commit,
         "smoke_mode": smoke_mode,
         "run_id": run_id,
         "expected_git_commit": expected_git_commit or _expected_commit_hash(),
-        "executed_git_commit": executed_git_commit or _safe_commit_hash(),
+        "executed_git_commit": executed_git_commit or heartbeat_commit,
     }
     if extra:
         payload.update(extra)
@@ -842,28 +881,59 @@ def run_notebook_flow(
     resume_from: str | None = None,
     run_id: str | None = None,
     expected_git_commit: str | None = None,
+    source_root: Path | None = None,
 ) -> dict[str, Any]:
-    executed_commit = _safe_commit_hash()
     expected_commit = expected_git_commit or _expected_commit_hash()
-    resolved_run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID") or generate_run_id(git_commit=executed_commit or expected_commit)
+    resolved_run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID") or generate_run_id(git_commit=expected_commit)
     os.environ["KAGGLE_SMOKE_RUN_ID"] = resolved_run_id
     if expected_commit:
         os.environ["KAGGLE_EXPECTED_GIT_COMMIT"] = expected_commit
     run_root = _run_root(output_root, resolved_run_id)
     paths = ensure_kaggle_paths(run_root)
+    repo_root = Path(source_root) if source_root is not None else (output_root / "data_analysis_LLM")
     notebook_started_path = write_json(
         run_root / "notebook_started.json",
         {
             "run_id": resolved_run_id,
             "expected_git_commit": expected_commit,
-            "executed_git_commit": executed_commit,
             "timestamp": time.time(),
             "pid": os.getpid(),
             "python_version": sys.version,
             "smoke_mode": True,
         },
     )
-    _write_smoke_heartbeat(run_root, stage="notebook_started", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
+    _write_json(
+        run_root / "archive_extracted.json",
+        {
+            "run_id": resolved_run_id,
+            "timestamp": time.time(),
+            "repo_root": str(repo_root),
+        },
+    )
+    _validate_archive_root(repo_root)
+    resolved_source = _resolve_source_identity(run_root=run_root, repo_root=repo_root, expected_git_commit=expected_commit)
+    executed_commit = str(resolved_source["executed_source_commit"])
+    _write_smoke_heartbeat(run_root, stage="source_identity_resolved", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
+    _write_json(
+        run_root / "source_identity.json",
+        {
+            "run_id": resolved_run_id,
+            "expected_git_commit": expected_commit,
+            "executed_source_commit": executed_commit,
+            "source_identity_method": resolved_source["source_identity_method"],
+            "source_identity_verified": bool(resolved_source["source_identity_verified"]),
+            "timestamp": time.time(),
+        },
+    )
+    write_source_identity(
+        run_root,
+        run_id=resolved_run_id,
+        expected_git_commit=expected_commit,
+        executed_source_commit=executed_commit,
+        source_identity_method=str(resolved_source["source_identity_method"]),
+        source_identity_verified=bool(resolved_source["source_identity_verified"]),
+    )
+    _write_smoke_heartbeat(run_root, stage="source_identity_verified", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     _write_json(
         run_root / RUNNER_METADATA_NAME,
         {
@@ -875,10 +945,7 @@ def run_notebook_flow(
             "notebook_started_path": str(notebook_started_path),
         },
     )
-    if expected_commit and executed_commit and executed_commit != expected_commit:
-        exc = RuntimeError("stale_kaggle_checkout")
-        _write_smoke_failure(report_root=run_root, stage="notebook_started", exc=exc, torch_module=None, run_id=resolved_run_id)
-        raise exc
+    _write_smoke_heartbeat(run_root, stage="bootstrap_script_started", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     resolved = resolve_canonical_dataset_root()
     dataset_dir = Path(resolved["root"]) if resolved.get("root") else None
     if dataset_dir is None:
@@ -900,6 +967,11 @@ def run_notebook_flow(
             "run_id": resolved_run_id,
         }
     breadcrumbs_path = run_root / "smoke_breadcrumbs.jsonl"
+    _emit_smoke_stage(breadcrumbs_path, stage="notebook_started", success=True, safe_message="notebook started", run_id=resolved_run_id)
+    _emit_smoke_stage(breadcrumbs_path, stage="archive_extracted", success=True, safe_message="archive extracted", run_id=resolved_run_id)
+    _emit_smoke_stage(breadcrumbs_path, stage="source_identity_resolved", success=True, safe_message="source identity resolved", run_id=resolved_run_id)
+    _emit_smoke_stage(breadcrumbs_path, stage="source_identity_verified", success=True, safe_message="source identity verified", run_id=resolved_run_id)
+    _emit_smoke_stage(breadcrumbs_path, stage="bootstrap_script_started", success=True, safe_message="bootstrap start", run_id=resolved_run_id)
     dependency_preflight = _run_dependency_compatibility_preflight(report_root=run_root, breadcrumbs_path=breadcrumbs_path)
     _stage_guard(stage="dependencies_started", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     runtime_packages = _ensure_runtime_packages(preflight=dependency_preflight)

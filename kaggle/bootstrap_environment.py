@@ -10,8 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from kaggle.import_trace import write_import_trace
-
 if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
@@ -28,6 +26,7 @@ if __package__ in {None, ""}:
         write_dependency_preflight_report,
     )
     from kaggle.run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper  # type: ignore[no-redef]
+    from kaggle.import_trace import write_import_trace  # type: ignore[no-redef]
 else:
     from .bootstrap import (
         KAGGLE_WORKING_ROOT,
@@ -41,6 +40,7 @@ else:
         write_dependency_preflight_report,
     )
     from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper
+    from .import_trace import write_import_trace
 
 
 def _write_json(path: Path, payload: Any) -> Path:

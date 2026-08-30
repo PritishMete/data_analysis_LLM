@@ -14,7 +14,13 @@ from typing import Any
 from kagglesdk import KaggleClient, KaggleEnv
 from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionStatusRequest
 
-from kaggle.run_context import ensure_run_root, generate_run_id, read_json, resolve_current_run_id, run_root_for, write_json
+if __package__ in {None, ""}:
+    REPO_ROOT = Path(__file__).resolve().parents[1]
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from kaggle.run_context import ensure_run_root, generate_run_id, read_json, resolve_current_run_id, run_root_for, write_json  # type: ignore[no-redef]
+else:
+    from kaggle.run_context import ensure_run_root, generate_run_id, read_json, resolve_current_run_id, run_root_for, write_json
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

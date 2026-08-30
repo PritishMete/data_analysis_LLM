@@ -17,6 +17,7 @@ from kaggle.bootstrap import (
     write_sha_manifest,
     write_dependency_preflight_report,
 )
+from kaggle.run_context import resolve_executed_source_commit, write_source_identity
 from kaggle.run_semantic_training import _build_smoke_corpus, _patch_torch_dynamo_compatibility, _smoke_split_targets
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
 
@@ -269,7 +270,7 @@ def test_smoke_split_targets_and_report_require_validation(tmp_path):
 
 
 def test_smoke_heartbeat_and_failure_artifacts_are_safe(tmp_path, monkeypatch):
-    monkeypatch.setenv("KAGGLE_EXPECTED_GIT_COMMIT", "abc123")
+    monkeypatch.setenv("KAGGLE_EXPECTED_GIT_COMMIT", "a" * 40)
     heartbeat = _write_smoke_heartbeat(tmp_path / "reports", stage="notebook_started")
     failure = _write_smoke_failure(report_root=tmp_path / "reports", stage="model_load_started", exc=RuntimeError("boom"), torch_module=None)
 
@@ -279,6 +280,7 @@ def test_smoke_heartbeat_and_failure_artifacts_are_safe(tmp_path, monkeypatch):
     assert heartbeat_payload["stage"] == "notebook_started"
     assert heartbeat_payload["smoke_mode"] is True
     assert heartbeat_payload["git_commit"] is not None
+    assert len(str(heartbeat_payload["git_commit"])) == 40
     assert failure_payload["stage"] == "model_load_started"
     assert failure_payload["exception_type"] == "RuntimeError"
     assert "boom" in failure_payload["sanitized_exception_message"]
@@ -372,23 +374,49 @@ def test_dependency_preflight_passes_after_cu126_verification():
 
 def test_stale_kaggle_checkout_fails_fast(tmp_path, monkeypatch):
     canonical_root = _write_canonical_dataset(tmp_path / "canonical")
+    repo_root = tmp_path / "archive"
+    (repo_root / "kaggle").mkdir(parents=True, exist_ok=True)
+    (repo_root / "src").mkdir(parents=True, exist_ok=True)
+    for name in ("bootstrap_environment.py", "execute_smoke_training.py", "run_semantic_training.py"):
+        (repo_root / "kaggle" / name).write_text("# stub\n", encoding="utf-8")
     monkeypatch.setenv("KAGGLE_EXPECTED_GIT_COMMIT", "expected123")
-    monkeypatch.setattr("kaggle.run_semantic_training._safe_commit_hash", lambda: "actual456")
     monkeypatch.setattr("kaggle.run_semantic_training.resolve_canonical_dataset_root", lambda: {"root": str(canonical_root)})
     monkeypatch.setattr("kaggle.run_semantic_training.verify_attached_dataset", lambda dataset_dir: {"verified": True, "mismatches": []})
+    monkeypatch.setattr("kaggle.run_semantic_training.resolve_executed_source_commit", lambda **kwargs: {"executed_source_commit": "actual456", "source_identity_method": "source_identity_json", "source_identity_verified": True})
     monkeypatch.setattr("kaggle.run_semantic_training.build_semantic_dataset_from_canonical", lambda dataset_dir, output_dir: {"semantic_output_root": str(tmp_path / "semantic_training"), "bundle_report": {"train_count": 1, "validation_count": 1, "test_count": 1}, "semantic_row_count": 3, "split_counts": {"train": 1, "validation": 1, "test": 1}, "readiness": {"ready": True}, "sha_manifest_path": str(tmp_path / "sha.json")})
     monkeypatch.setattr("kaggle.run_semantic_training.build_training_plan", lambda **kwargs: {"base_model": "Qwen/Qwen2.5-0.5B-Instruct"})
     monkeypatch.setattr("kaggle.run_semantic_training._build_smoke_corpus", lambda semantic_root, output_root: {"root": tmp_path / "smoke_training", "report": {}, "splits": {"train": [], "validation": [], "test": []}})
     monkeypatch.setattr("kaggle.run_semantic_training.detect_resume_checkpoint", lambda *args, **kwargs: None)
     monkeypatch.setattr("kaggle.run_semantic_training.ensure_kaggle_paths", lambda output_root: type("P", (), {"reports": tmp_path / "reports", "metrics": tmp_path / "metrics", "manifests": tmp_path / "manifests", "root": tmp_path, "checkpoints": tmp_path / "checkpoints", "adapters": tmp_path / "adapters", "to_dict": lambda self: {"root": str(tmp_path)}})())
     monkeypatch.setattr("kaggle.run_semantic_training._run_real_smoke_training", lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not run")))
+    monkeypatch.setattr("kaggle.run_semantic_training._safe_commit_hash", lambda repo_root=None: "expected123")
+    monkeypatch.setattr("kaggle.run_semantic_training._validate_archive_root", lambda repo_root: None)
 
     try:
         run_notebook_flow(output_root=tmp_path)
     except RuntimeError as exc:
-        assert str(exc) == "stale_kaggle_checkout"
+        assert str(exc) == "STALE_SOURCE_SNAPSHOT"
     else:
         raise AssertionError("stale checkout should fail fast")
+
+
+def test_resolve_executed_source_commit_supports_archive_without_git(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    source_identity = write_source_identity(
+        run_root,
+        run_id="run-123",
+        expected_git_commit="a" * 40,
+        executed_source_commit="b" * 40,
+        source_identity_method="explicit_runner_metadata",
+        source_identity_verified=True,
+    )
+    (tmp_path / "archive").mkdir()
+    resolved = resolve_executed_source_commit(run_root=run_root, repo_root=tmp_path / "archive", expected_git_commit="a" * 40)
+
+    assert source_identity.exists()
+    assert resolved["executed_source_commit"] == "b" * 40
+    assert resolved["source_identity_method"] == "explicit_runner_metadata"
 
 
 def test_torch_dynamo_compatibility_patch_adds_missing_skip_code():

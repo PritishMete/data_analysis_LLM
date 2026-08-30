@@ -14,12 +14,12 @@ if __package__ in {None, ""}:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from kaggle.bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths  # type: ignore[no-redef]
+    from kaggle.run_context import ensure_run_root, generate_run_id, resolve_current_run_id, resolve_executed_source_commit, write_source_identity  # type: ignore[no-redef]
     from kaggle.import_trace import write_import_trace  # type: ignore[no-redef]
-    from kaggle.run_context import generate_run_id, resolve_current_run_id, ensure_run_root  # type: ignore[no-redef]
 else:
     from .bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths
+    from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, resolve_executed_source_commit, write_source_identity
     from .import_trace import write_import_trace
-    from .run_context import generate_run_id, resolve_current_run_id, ensure_run_root
 
 
 def _write_json(path: Path, payload: Any) -> Path:
@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bootstrap-pid", type=int, default=None)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--expected-git-commit", default=None)
+    parser.add_argument("--source-root", default=None)
     args = parser.parse_args(argv)
     output_root = Path(args.output_root)
     resolved_run_id = args.run_id or resolve_current_run_id(base_root=output_root / "smoke_runs") or generate_run_id()
@@ -43,23 +44,25 @@ def main(argv: list[str] | None = None) -> int:
     training_pid = os.getpid()
     heartbeat_path = report_root / "smoke_heartbeat.json"
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="bootstrap_started")
-    git_commit_result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    ).stdout.strip() or None
-    git_commit = git_commit_result
+    repo_root = Path(args.source_root) if args.source_root else (output_root / "data_analysis_LLM")
+    resolved_source = resolve_executed_source_commit(run_root=run_root, repo_root=repo_root, expected_git_commit=args.expected_git_commit)
+    git_commit = resolved_source.get("executed_source_commit")
+    write_source_identity(
+        run_root,
+        run_id=resolved_run_id,
+        expected_git_commit=args.expected_git_commit,
+        executed_source_commit=git_commit,
+        source_identity_method=str(resolved_source.get("source_identity_method") or "unknown"),
+        source_identity_verified=bool(resolved_source.get("source_identity_verified")),
+    )
     heartbeat_path.write_text(
         json.dumps(
             {
-                "stage": "training_started",
+                "stage": "runtime_process_started",
                 "timestamp": time.time(),
                 "git_commit": git_commit,
                 "expected_git_commit": args.expected_git_commit,
-                "executed_git_commit": git_commit,
+                "executed_source_commit": git_commit,
                 "smoke_mode": True,
                 "run_id": resolved_run_id,
                 "bootstrap_pid": args.bootstrap_pid,
@@ -75,11 +78,13 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["KAGGLE_SMOKE_RUN_ID"] = resolved_run_id
     if args.expected_git_commit:
         os.environ["KAGGLE_EXPECTED_GIT_COMMIT"] = args.expected_git_commit
+    if git_commit:
+        os.environ["KAGGLE_EXECUTED_SOURCE_COMMIT"] = git_commit
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="before_project_training_import")
     from kaggle.run_semantic_training import run_notebook_flow
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
 
-    result = run_notebook_flow(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit)
+    result = run_notebook_flow(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root)
     result["bootstrap_pid"] = args.bootstrap_pid
     result["training_pid"] = training_pid
     result["fresh_process_verified"] = args.bootstrap_pid is not None and args.bootstrap_pid != training_pid

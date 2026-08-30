@@ -10,6 +10,8 @@ from typing import Any
 
 
 DEFAULT_RUN_ROOT = Path("/kaggle/working/smoke_runs")
+SOURCE_IDENTITY_NAME = "source_identity.json"
+SOURCE_IDENTITY_RESOLVED_NAME = "source_identity_resolved.json"
 
 
 def utc_run_timestamp() -> str:
@@ -49,6 +51,94 @@ def read_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _is_full_sha(value: str | None) -> bool:
+    return bool(value) and len(value.strip()) == 40 and all(ch in "0123456789abcdefABCDEF" for ch in value.strip())
+
+
+def write_source_identity(
+    run_root: Path,
+    *,
+    run_id: str,
+    expected_git_commit: str | None,
+    executed_source_commit: str | None,
+    source_identity_method: str,
+    source_identity_verified: bool,
+    timestamp: float | None = None,
+) -> Path:
+    payload = {
+        "run_id": run_id,
+        "expected_git_commit": expected_git_commit,
+        "executed_source_commit": executed_source_commit,
+        "source_identity_method": source_identity_method,
+        "source_identity_verified": bool(source_identity_verified),
+        "timestamp": timestamp or time.time(),
+    }
+    return write_json(run_root / SOURCE_IDENTITY_RESOLVED_NAME, payload)
+
+
+def source_identity_paths(run_root: Path, repo_root: Path | None = None) -> list[Path]:
+    paths = [run_root / SOURCE_IDENTITY_NAME, run_root / SOURCE_IDENTITY_RESOLVED_NAME]
+    if repo_root is not None:
+        paths.append(repo_root / SOURCE_IDENTITY_NAME)
+        paths.append(repo_root / SOURCE_IDENTITY_RESOLVED_NAME)
+    return paths
+
+
+def resolve_executed_source_commit(
+    *,
+    run_root: Path,
+    repo_root: Path | None = None,
+    expected_git_commit: str | None = None,
+) -> dict[str, Any]:
+    explicit = os.environ.get("KAGGLE_EXECUTED_SOURCE_COMMIT") or os.environ.get("KAGGLE_SOURCE_COMMIT")
+    if _is_full_sha(explicit):
+        return {
+            "executed_source_commit": explicit.strip(),
+            "source_identity_method": "environment",
+            "source_identity_verified": True,
+        }
+    for path in source_identity_paths(run_root, repo_root):
+        payload = read_json(path)
+        if not payload:
+            continue
+        executed = payload.get("executed_source_commit") or payload.get("executed_git_commit") or payload.get("source_commit") or payload.get("commit")
+        method = str(payload.get("source_identity_method") or "source_identity_json")
+        verified = bool(payload.get("source_identity_verified", True))
+        if _is_full_sha(executed):
+            return {
+                "executed_source_commit": str(executed).strip(),
+                "source_identity_method": method,
+                "source_identity_verified": verified,
+            }
+    if repo_root is not None and (repo_root / ".git").exists():
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        commit = (result.stdout or "").strip()
+        if result.returncode == 0 and _is_full_sha(commit):
+            return {
+                "executed_source_commit": commit,
+                "source_identity_method": "git_rev_parse",
+                "source_identity_verified": True,
+            }
+    return {
+        "executed_source_commit": None,
+        "source_identity_method": None,
+        "source_identity_verified": False,
+        "reason": "SOURCE_IDENTITY_MISSING" if expected_git_commit else "SOURCE_IDENTITY_MISSING",
+    }
 
 
 def resolve_current_run_id(explicit_run_id: str | None = None, *, base_root: Path = DEFAULT_RUN_ROOT) -> str | None:
