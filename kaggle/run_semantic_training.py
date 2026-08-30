@@ -9,6 +9,10 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from src.training.torch_compat import ensure_torch_dynamo_compatibility
+
+COMPATIBILITY_REPORT = ensure_torch_dynamo_compatibility()
+
 from .bootstrap import (
     KAGGLE_WORKING_ROOT,
     build_artifact_manifest,
@@ -150,6 +154,36 @@ def _write_smoke_heartbeat(report_root: Path, *, stage: str, smoke_mode: bool = 
         "smoke_mode": smoke_mode,
     }
     path = report_root / "smoke_heartbeat.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _write_import_preflight(
+    report_root: Path,
+    *,
+    torch_imported: bool,
+    compatibility_bootstrap_ran: bool,
+    skip_code_present_before: bool | None,
+    skip_code_patch_applied: bool,
+    transformers_import_attempted: bool,
+    transformers_import_succeeded: bool,
+    git_commit: str | None = None,
+    error: BaseException | None = None,
+) -> Path:
+    report_root.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "git_commit": git_commit or _safe_commit_hash(),
+        "torch_imported": torch_imported,
+        "compatibility_bootstrap_ran": compatibility_bootstrap_ran,
+        "skip_code_present_before": skip_code_present_before,
+        "skip_code_patch_applied": skip_code_patch_applied,
+        "transformers_import_attempted": transformers_import_attempted,
+        "transformers_import_succeeded": transformers_import_succeeded,
+    }
+    if error is not None:
+        payload["sanitized_exception"] = _sanitize_exception_message(error)
+        payload["exception_type"] = type(error).__name__
+    path = report_root / "import_preflight.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
 
@@ -314,14 +348,42 @@ def _run_real_smoke_training(
         raise
 
     try:
+        _write_import_preflight(
+            report_root,
+            torch_imported=torch is not None,
+            compatibility_bootstrap_ran=bool(COMPATIBILITY_REPORT.skip_code_patch_applied or COMPATIBILITY_REPORT.skip_code_present_before is not None),
+            skip_code_present_before=COMPATIBILITY_REPORT.skip_code_present_before,
+            skip_code_patch_applied=COMPATIBILITY_REPORT.skip_code_patch_applied,
+            transformers_import_attempted=False,
+            transformers_import_succeeded=False,
+        )
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         _patch_torch_dynamo_compatibility(torch)
+        _write_import_preflight(
+            report_root,
+            torch_imported=torch is not None,
+            compatibility_bootstrap_ran=True,
+            skip_code_present_before=COMPATIBILITY_REPORT.skip_code_present_before,
+            skip_code_patch_applied=COMPATIBILITY_REPORT.skip_code_patch_applied,
+            transformers_import_attempted=True,
+            transformers_import_succeeded=True,
+        )
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
             BitsAndBytesConfig,
         )
     except Exception as exc:
+        _write_import_preflight(
+            report_root,
+            torch_imported=torch is not None,
+            compatibility_bootstrap_ran=True,
+            skip_code_present_before=COMPATIBILITY_REPORT.skip_code_present_before,
+            skip_code_patch_applied=COMPATIBILITY_REPORT.skip_code_patch_applied,
+            transformers_import_attempted=True,
+            transformers_import_succeeded=False,
+            error=exc,
+        )
         _write_smoke_failure(report_root=report_root, stage="dependencies_complete", exc=exc, torch_module=torch)
         raise
 

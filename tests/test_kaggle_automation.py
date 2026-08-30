@@ -280,3 +280,36 @@ def test_diagnose_reports_heartbeat_and_postmortem(monkeypatch, tmp_path):
     assert result["auth"]["available"] is True
     assert result["expected_commit"] == "abc123"
     assert result["runner_heartbeat"]["phase"] == "poll_iteration"
+
+
+def test_training_package_import_is_lazy_for_benchmark(monkeypatch):
+    import importlib
+    import sys
+
+    sys.modules.pop("src.training", None)
+    sys.modules.pop("src.training.benchmark", None)
+
+    training_pkg = importlib.import_module("src.training")
+
+    assert "src.training.benchmark" not in sys.modules
+    assert hasattr(training_pkg, "run_planner_benchmark")
+    assert "src.training.benchmark" in sys.modules
+
+
+def test_torch_compat_bootstrap_is_idempotent_and_preserves_real_skip_code(monkeypatch):
+    import types
+    import sys
+    from src.training.torch_compat import ensure_torch_dynamo_compatibility
+
+    fake_eval_frame = types.SimpleNamespace(skip_code=lambda *args, **kwargs: "real")
+    fake_torch = types.SimpleNamespace(_C=types.SimpleNamespace(_dynamo=types.SimpleNamespace(eval_frame=fake_eval_frame)))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    first = ensure_torch_dynamo_compatibility()
+    second = ensure_torch_dynamo_compatibility()
+
+    assert first.skip_code_present_before is True
+    assert first.skip_code_patch_applied is False
+    assert second.skip_code_present_before is True
+    assert second.skip_code_patch_applied is False
+    assert fake_torch._C._dynamo.eval_frame.skip_code() == "real"

@@ -319,3 +319,18 @@ def test_torch_dynamo_compatibility_patch_adds_missing_skip_code():
 
     assert patched is True
     assert callable(DummyTorch._C._dynamo.eval_frame.skip_code)
+
+
+def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
+    import importlib
+    import sys
+
+    sys.modules.pop("transformers", None)
+    sys.modules.pop("kaggle.run_semantic_training", None)
+    sys.modules.pop("src.training.benchmark", None)
+
+    module = importlib.import_module("kaggle.run_semantic_training")
+
+    assert "transformers" not in sys.modules
+    assert "src.training.benchmark" not in sys.modules
+    assert hasattr(module, "COMPATIBILITY_REPORT")

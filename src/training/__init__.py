@@ -24,17 +24,6 @@ from .execution import (
 )
 from .hardware import HardwareReport, detect_hardware
 from .metrics import TrainingMetrics, evaluate_training_metrics
-from .benchmark import (
-    HeuristicPlannerModel,
-    LlamaCppPlannerAdapter,
-    PlannerFailureModeReport,
-    PlannerBenchmarkSummary,
-    PlannerInferenceResult,
-    PlannerModel,
-    audit_failure_modes,
-    run_planner_benchmark,
-    write_benchmark_report,
-)
 from .config import LowSpecTrainingConfigV2
 from .model_loader import (
     DEFAULT_MODEL_REGISTRY_ENTRY,
@@ -67,12 +56,6 @@ __all__ = [
     "TrainingConfig",
     "LowSpecTrainingConfigV2",
     "TrainingMetrics",
-    "PlannerBenchmarkSummary",
-    "PlannerInferenceResult",
-    "PlannerModel",
-    "HeuristicPlannerModel",
-    "LlamaCppPlannerAdapter",
-    "PlannerFailureModeReport",
     "SeedBundle",
     "build_manifest_fingerprint",
     "create_dataset_manifest",
@@ -96,9 +79,6 @@ __all__ = [
     "choose_backend",
     "select_model_profile",
     "select_runtime_profile",
-    "audit_failure_modes",
-    "run_planner_benchmark",
-    "write_benchmark_report",
     "preflight_gpu_training",
     "recommended_oom_actions",
     "record_safe_metrics",
@@ -108,3 +88,23 @@ __all__ = [
     "write_experiment_summary",
     "write_dataset_manifest",
 ]
+
+
+def __getattr__(name: str):
+    if name in {
+        "PlannerBenchmarkSummary",
+        "PlannerInferenceResult",
+        "PlannerModel",
+        "HeuristicPlannerModel",
+        "LlamaCppPlannerAdapter",
+        "PlannerFailureModeReport",
+        "audit_failure_modes",
+        "run_planner_benchmark",
+        "write_benchmark_report",
+    }:
+        from . import benchmark as _benchmark
+
+        value = getattr(_benchmark, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(name)

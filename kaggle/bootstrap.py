@@ -12,6 +12,10 @@ import sys
 from typing import Any, Iterable
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from src.training.torch_compat import ensure_torch_dynamo_compatibility
+
+ensure_torch_dynamo_compatibility()
+
 from src.training.dataset import verify_dataset_manifest
 from src.training.hardware import detect_hardware
 from learning.models import stable_hash
