@@ -225,6 +225,42 @@ def test_run_command_uses_utf8_safe_subprocess(monkeypatch):
     assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_kaggle_module_preferred_over_system_cli(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(kaggle_runner, "_kaggle_python_available", lambda: True)
+    monkeypatch.setattr(kaggle_runner.shutil, "which", lambda name: "/usr/bin/kaggle")
+    monkeypatch.setattr(kaggle_runner, "_run_command", lambda args, **kwargs: calls.append(args) or _completed("ok"))
+
+    result = kaggle_runner._kaggle("kernels", "status", "user/notebook", timeout=5)
+
+    assert result.stdout == "ok"
+    assert calls[0][:3] == [kaggle_runner.sys.executable, "-m", "kaggle"]
+
+
+def test_sdk_kernel_status_is_used_for_preflight(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "access_token"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
+    monkeypatch.setattr(kaggle_runner, "_sdk_kernel_status", lambda auth, spec: "RUNNING")
+    monkeypatch.setattr(kaggle_runner, "_kaggle_checked", lambda *args, **kwargs: _completed("file1\nfile2\n"))
+
+    result = kaggle_runner.preflight(stage_root=tmp_path / "stage")
+
+    assert result["kernel_status"] == "RUNNING"
+    assert result["kernel_exists"] is True
+    assert result["ready"] is True
+
+
+def test_normalize_status_text_handles_sdk_enums():
+    class FakeStatus:
+        value = "KernelWorkerStatus.ERROR"
+
+    assert kaggle_runner._normalize_status_text(FakeStatus()) == "KernelWorkerStatus.ERROR"
+    assert kaggle_runner._normalize_status_text("RUNNING") == "RUNNING"
+    assert kaggle_runner._normalize_status_text(None) is None
+
+
 def test_runner_heartbeat_and_failure_files_are_written(tmp_path):
     heartbeat = kaggle_runner._write_runner_heartbeat(
         phase="runner_started",

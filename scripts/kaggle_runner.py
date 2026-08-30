@@ -11,6 +11,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from kagglesdk import KaggleClient, KaggleEnv
+from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionStatusRequest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_SOURCE = REPO_ROOT / "kaggle" / "semantic_extractor_training.ipynb"
@@ -116,6 +119,28 @@ def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
 def _safe_cli_output(result: subprocess.CompletedProcess[str]) -> str:
     text = result.stdout or ""
     return text.strip()
+
+
+def _normalize_status_text(status: Any | None) -> str | None:
+    if status is None:
+        return None
+    value = getattr(status, "value", status)
+    return str(value)
+
+
+def _sdk_kernel_status(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str | None:
+    if not auth.available or not auth.username:
+        return None
+    client = KaggleClient(KaggleEnv.PROD, username=auth.username)
+    request = ApiGetKernelSessionStatusRequest()
+    request._user_name = auth.username
+    request._kernel_slug = spec.notebook_slug
+    try:
+        response = client.kernels.kernels_api_client.get_kernel_session_status(request)
+        status = getattr(response, "status", None)
+        return _normalize_status_text(status)
+    except Exception:
+        return None
 
 
 def kaggle_cli_available() -> bool:
@@ -303,10 +328,10 @@ def kaggle_kernel_ref(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str:
 
 
 def _kaggle(*args: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    if shutil.which("kaggle") is not None:
-        return _run_command(["kaggle", *args], timeout=timeout)
     if _kaggle_python_available():
         return _run_command([sys.executable, "-m", "kaggle", *args], timeout=timeout, cwd=str(Path.home()))
+    if shutil.which("kaggle") is not None:
+        return _run_command(["kaggle", *args], timeout=timeout)
     raise KaggleAutomationError("kaggle_cli_missing")
 
 
@@ -360,6 +385,7 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
     notebook_ref = kaggle_kernel_ref(auth, spec)
     notebook_exists = None
     notebook_error = None
+    notebook_status = None
     if auth.available and auth.username:
         _write_runner_heartbeat(
             phase="auth_check_started",
@@ -371,14 +397,10 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
             stage_root=stage_root,
         )
         try:
-            result = _kaggle_checked("kernels", "status", notebook_ref, timeout=45, phase="auth_check_complete", kernel_ref=notebook_ref, stage_root=stage_root)
-            notebook_exists = result.returncode == 0
+            notebook_status = _sdk_kernel_status(auth, spec)
+            notebook_exists = notebook_status is not None
         except subprocess.CalledProcessError as exc:
             notebook_error = _safe_cli_output(exc)
-            if "404" in (exc.stderr or "") or "not found" in (exc.stderr or "").lower():
-                notebook_exists = False
-            else:
-                notebook_exists = None
         except Exception as exc:
             notebook_error = str(exc)
     dataset_ok = False
@@ -407,6 +429,7 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
         "spec": spec.to_dict(),
         "paths": stage.to_dict(),
         "kernel_ref": notebook_ref,
+        "kernel_status": notebook_status,
         "kernel_exists": notebook_exists,
         "kernel_error": notebook_error,
         "dataset_ref": spec.dataset_ref,
@@ -749,8 +772,10 @@ def _status_payload(
         raise KaggleAutomationError("authentication_missing")
     kernel_ref = kaggle_kernel_ref(auth, spec)
     start_time = time.perf_counter()
-    result = _kaggle_checked("kernels", "status", kernel_ref, timeout=60, phase="poll_started", kernel_ref=kernel_ref, start_time=start_time, stage_root=stage_root)
-    status_text = _safe_cli_output(result)
+    status_text = _sdk_kernel_status(auth, spec)
+    if status_text is None:
+        result = _kaggle_checked("kernels", "status", kernel_ref, timeout=60, phase="poll_started", kernel_ref=kernel_ref, start_time=start_time, stage_root=stage_root)
+        status_text = _safe_cli_output(result)
     breadcrumbs = _read_breadcrumbs(stage_root)
     heartbeat = _read_heartbeat(stage_root)
     stall_threshold = int(os.environ.get("KAGGLE_SMOKE_NO_PROGRESS_THRESHOLD_SECONDS", "1800"))
