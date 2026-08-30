@@ -435,6 +435,54 @@ def _stage_guard(
     _emit_smoke_stage(breadcrumbs_path, stage=stage, success=success, safe_message=safe_message, torch_module=torch_module, run_id=run_id)
 
 
+def _ensure_runtime_packages(*, preflight: dict[str, Any] | None = None) -> dict[str, str | None]:
+    installed: dict[str, str | None] = {}
+    if os.environ.get("KAGGLE_SKIP_DEP_INSTALL", "").strip().lower() in {"1", "true", "yes"}:
+        try:
+            from importlib.metadata import version
+
+            installed["torch"] = version("torch")
+            installed["bitsandbytes"] = version("bitsandbytes")
+            installed["transformers"] = version("transformers")
+            installed["accelerate"] = version("accelerate")
+            installed["peft"] = version("peft")
+        except Exception:
+            pass
+        return installed
+    preflight = preflight or {}
+    installed_plan = (preflight.get("preflight") or {}).get("install_plan") or {}
+    pip_groups = installed_plan.get("pip_groups") or []
+    if pip_groups:
+        for group in pip_groups:
+            packages = group.get("packages") or []
+            if not packages:
+                continue
+            install_args = [sys.executable, "-m", "pip", "install"]
+            if group.get("upgrade"):
+                install_args.append("--upgrade")
+            if group.get("find_links"):
+                for link in group.get("find_links") or []:
+                    install_args.extend(["--find-links", str(link)])
+            if group.get("index_url"):
+                install_args.extend(["--index-url", str(group.get("index_url"))])
+            if group.get("extra_index_url"):
+                for url in group.get("extra_index_url") or []:
+                    install_args.extend(["--extra-index-url", str(url)])
+            install_args.extend(packages)
+            subprocess.run(install_args, check=True, timeout=300)
+    try:
+        from importlib.metadata import version
+
+        installed["torch"] = version("torch")
+        installed["bitsandbytes"] = version("bitsandbytes")
+        installed["transformers"] = version("transformers")
+        installed["accelerate"] = version("accelerate")
+        installed["peft"] = version("peft")
+    except Exception:
+        pass
+    return installed
+
+
 def _emit_smoke_stage(
     breadcrumbs_path: Path,
     *,
