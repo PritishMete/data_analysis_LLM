@@ -10,17 +10,33 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .bootstrap import (
-    KAGGLE_WORKING_ROOT,
-    build_kaggle_dependency_plan,
-    detect_resume_checkpoint,
-    discover_semantic_dataset,
-    ensure_kaggle_paths,
-    inspect_kaggle_gpu_identity,
-    resolve_canonical_dataset_root,
-    verify_attached_dataset,
-    write_dependency_preflight_report,
-)
+if __package__ in {None, ""}:
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from kaggle.bootstrap import (  # type: ignore[no-redef]
+        KAGGLE_WORKING_ROOT,
+        build_kaggle_dependency_plan,
+        detect_resume_checkpoint,
+        discover_semantic_dataset,
+        ensure_kaggle_paths,
+        inspect_kaggle_gpu_identity,
+        resolve_canonical_dataset_root,
+        verify_attached_dataset,
+        write_dependency_preflight_report,
+    )
+else:
+    from .bootstrap import (
+        KAGGLE_WORKING_ROOT,
+        build_kaggle_dependency_plan,
+        detect_resume_checkpoint,
+        discover_semantic_dataset,
+        ensure_kaggle_paths,
+        inspect_kaggle_gpu_identity,
+        resolve_canonical_dataset_root,
+        verify_attached_dataset,
+        write_dependency_preflight_report,
+    )
 
 
 def _write_json(path: Path, payload: Any) -> Path:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 
 from kaggle.bootstrap import (
@@ -436,6 +437,12 @@ def test_bootstrap_environment_import_is_transformers_lazy(monkeypatch):
 
     assert "transformers" not in sys.modules
     assert hasattr(module, "main")
+
+
+def test_bootstrap_environment_supports_standalone_script_import():
+    module_path = Path("kaggle/bootstrap_environment.py").resolve()
+    result = runpy.run_path(str(module_path), run_name="bootstrap_environment_script")
+    assert result["KAGGLE_WORKING_ROOT"].name == "working"
 
 
 def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_path):
