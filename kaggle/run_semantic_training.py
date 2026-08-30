@@ -208,6 +208,13 @@ def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
 def _dependency_probe_snippets() -> tuple[str, str]:
     torch_snippet = """
 import json
+import pathlib
+import sys
+repo_root = pathlib.Path.cwd()
+if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
+    repo_root = repo_root.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 from src.training.torch_compat import ensure_torch_dynamo_compatibility
 ensure_torch_dynamo_compatibility()
 import torch
@@ -223,6 +230,13 @@ print(json.dumps(payload))
 """
     bitsandbytes_snippet = """
 import json
+import pathlib
+import sys
+repo_root = pathlib.Path.cwd()
+if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
+    repo_root = repo_root.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 from src.training.torch_compat import ensure_torch_dynamo_compatibility
 ensure_torch_dynamo_compatibility()
 from bitsandbytes import cextension

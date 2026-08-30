@@ -19,7 +19,7 @@ from kaggle.bootstrap import (
     write_dependency_preflight_report,
 )
 from kaggle.run_context import resolve_executed_source_commit, write_source_identity
-from kaggle.run_semantic_training import _build_smoke_corpus, _patch_torch_dynamo_compatibility, _smoke_split_targets
+from kaggle.run_semantic_training import _build_smoke_corpus, _dependency_probe_snippets, _patch_torch_dynamo_compatibility, _smoke_split_targets
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
 
 
@@ -437,6 +437,14 @@ def test_torch_dynamo_compatibility_patch_adds_missing_skip_code():
 
     assert patched is True
     assert callable(DummyTorch._C._dynamo.eval_frame.skip_code)
+
+
+def test_dependency_probe_snippets_add_repo_root_to_sys_path():
+    torch_snippet, bitsandbytes_snippet = _dependency_probe_snippets()
+    for snippet in (torch_snippet, bitsandbytes_snippet):
+        assert "pathlib.Path.cwd()" in snippet
+        assert "sys.path.insert(0, str(repo_root))" in snippet
+        assert "from src.training.torch_compat import ensure_torch_dynamo_compatibility" in snippet
 
 
 def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
