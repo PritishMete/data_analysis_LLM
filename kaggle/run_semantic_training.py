@@ -492,8 +492,8 @@ def _run_real_smoke_training(
             transformers_import_attempted=False,
             transformers_import_succeeded=False,
         )
-        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         _patch_torch_dynamo_compatibility(torch)
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         _write_import_preflight(
             report_root,
             torch_imported=torch is not None,
