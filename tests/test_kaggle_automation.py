@@ -115,6 +115,32 @@ def test_smoke_cycle_skips_local_tests_and_runs_kaggle(monkeypatch, tmp_path):
     assert any(call[:2] == ("kernels", "output") for call in calls)
 
 
+def test_run_writes_preflight_heartbeat_progress(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
+    def fake_kaggle(*args, **kwargs):
+        if args[:2] == ("kernels", "status"):
+            return _completed("complete")
+        if args[:2] == ("kernels", "output"):
+            download_dir = Path(kwargs.get("cwd", tmp_path / "stage"))
+            download_dir.mkdir(parents=True, exist_ok=True)
+            return _completed("downloaded")
+        return _completed("pushed")
+
+    monkeypatch.setattr(kaggle_runner, "_kaggle", fake_kaggle)
+    monkeypatch.setattr(kaggle_runner, "_run_command", lambda *args, **kwargs: _completed("ok"))
+
+    result = kaggle_runner.run(stage_root=tmp_path / "stage", poll_seconds=0, timeout_seconds=1)
+
+    heartbeat_path = tmp_path / "stage" / "runner_heartbeat.json"
+    payload = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+
+    assert result["status"] == "complete"
+    assert payload["phase"] in {"outputs_complete", "runner_complete"}
+    assert payload["expected_commit"] == "abc123"
+
+
 def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
     auth = kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json")
     spec = kaggle_runner.KaggleNotebookSpec()

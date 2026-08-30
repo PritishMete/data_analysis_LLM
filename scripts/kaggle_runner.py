@@ -361,6 +361,15 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
     notebook_exists = None
     notebook_error = None
     if auth.available and auth.username:
+        _write_runner_heartbeat(
+            phase="auth_check_started",
+            kernel_ref=notebook_ref,
+            expected_commit=repo.head,
+            elapsed_seconds=None,
+            last_status=None,
+            safe_message="auth notebook status check started",
+            stage_root=stage_root,
+        )
         try:
             result = _kaggle_checked("kernels", "status", notebook_ref, timeout=45, phase="auth_check_complete", kernel_ref=notebook_ref, stage_root=stage_root)
             notebook_exists = result.returncode == 0
@@ -375,6 +384,15 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
     dataset_ok = False
     dataset_error = None
     if auth.available:
+        _write_runner_heartbeat(
+            phase="dataset_check_started",
+            kernel_ref=notebook_ref,
+            expected_commit=repo.head,
+            elapsed_seconds=None,
+            last_status=None,
+            safe_message=f"dataset check started for {spec.dataset_ref}",
+            stage_root=stage_root,
+        )
         try:
             result = _kaggle_checked("datasets", "files", "-d", spec.dataset_ref, timeout=45, phase="auth_check_complete", kernel_ref=notebook_ref, stage_root=stage_root)
             dataset_ok = result.returncode == 0 and bool(_safe_cli_output(result))
@@ -438,7 +456,25 @@ def run(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_ST
         safe_message="runner start",
         stage_root=stage_root,
     )
+    _write_runner_heartbeat(
+        phase="preflight_started",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=None,
+        safe_message="preflight start",
+        stage_root=stage_root,
+    )
     current = _status_payload(spec, stage_root=stage_root)
+    _write_runner_heartbeat(
+        phase="preflight_complete",
+        kernel_ref=kernel_ref,
+        expected_commit=get_repo_state().head,
+        elapsed_seconds=round(time.perf_counter() - start_time, 2),
+        last_status=current.get("status"),
+        safe_message="preflight complete",
+        stage_root=stage_root,
+    )
     _write_runner_heartbeat(
         phase="auth_check_complete",
         kernel_ref=kernel_ref,
