@@ -9,7 +9,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths
+if __package__ in {None, ""}:
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from kaggle.bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths  # type: ignore[no-redef]
+    from kaggle.import_trace import write_import_trace  # type: ignore[no-redef]
+else:
+    from .bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths
+    from .import_trace import write_import_trace
 
 
 def _write_json(path: Path, payload: Any) -> Path:
@@ -28,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     report_root = paths.reports
     training_pid = os.getpid()
     heartbeat_path = report_root / "smoke_heartbeat.json"
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="bootstrap_started")
     git_commit_result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         capture_output=True,
@@ -54,7 +63,9 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     os.environ["KAGGLE_SKIP_DEP_INSTALL"] = "1"
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="before_project_training_import")
     from kaggle.run_semantic_training import run_notebook_flow
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
 
     result = run_notebook_flow(output_root=output_root)
     result["bootstrap_pid"] = args.bootstrap_pid

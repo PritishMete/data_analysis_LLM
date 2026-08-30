@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from kaggle.import_trace import write_import_trace
+
 if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
@@ -171,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     paths = ensure_kaggle_paths(output_root)
     report_root = paths.reports
     bootstrap_pid = os.getpid()
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="bootstrap_started")
     repo_dataset = resolve_canonical_dataset_root()
     dataset_dir = Path(repo_dataset["root"]) if repo_dataset.get("root") else None
     if dataset_dir is None:
@@ -181,8 +184,12 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(report_root / "dependency_install_result.json", {"install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification})
         return 1
     gpu_identity = inspect_kaggle_gpu_identity()
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="before_torch_import")
     torch_probe = _probe_runtime()
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="after_torch_import")
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="before_bitsandbytes_import")
     bnb_probe = {"ok": True, "json": {"version": None, "available_cuda_versions": None}}
+    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="after_bitsandbytes_import")
     preflight = build_kaggle_dependency_plan(gpu_identity=gpu_identity, torch_probe=torch_probe, bitsandbytes_probe=bnb_probe)
     write_dependency_preflight_report(report_root, preflight)
     install_result = _install_packages({"preflight": preflight.to_dict(), "gpu_identity": gpu_identity, "torch_probe": torch_probe})

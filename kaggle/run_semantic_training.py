@@ -9,6 +9,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from .import_trace import write_import_trace
 from .bootstrap import (
     KAGGLE_WORKING_ROOT,
     build_kaggle_dependency_plan,
@@ -390,6 +391,8 @@ def _run_real_smoke_training(
 ) -> dict[str, Any]:
     report_root = output_root / "reports"
     compatibility_report = _load_torch_compatibility_report()
+    trace_path = report_root / "import_trace.jsonl"
+    write_import_trace(trace_path, module="kaggle.run_semantic_training", event="before_torch_import")
 
     def _run_with_timeout(cmd: list[str], *, timeout: int, stage: str) -> None:
         try:
@@ -469,7 +472,10 @@ def _run_real_smoke_training(
         import torch as torch_module
 
         torch = torch_module
+        write_import_trace(trace_path, module="kaggle.run_semantic_training", event="after_torch_import")
+        write_import_trace(trace_path, module="kaggle.run_semantic_training", event="before_compat_patch", compatibility_patch_ran=False)
         _patch_torch_dynamo_compatibility(torch)
+        write_import_trace(trace_path, module="kaggle.run_semantic_training", event="after_compat_patch", compatibility_patch_ran=True)
         _stage_guard(stage="gpu_check_started", report_root=report_root, breadcrumbs_path=breadcrumbs_path, torch_module=torch, safe_message="gpu check start")
         if torch.cuda.is_available():
             _stage_guard(stage="gpu_check_complete", report_root=report_root, breadcrumbs_path=breadcrumbs_path, torch_module=torch, safe_message=torch.cuda.get_device_name(0))
@@ -492,8 +498,10 @@ def _run_real_smoke_training(
             transformers_import_attempted=False,
             transformers_import_succeeded=False,
         )
+        write_import_trace(trace_path, module="kaggle.run_semantic_training", event="before_peft_import", compatibility_patch_ran=True)
         _patch_torch_dynamo_compatibility(torch)
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        write_import_trace(trace_path, module="kaggle.run_semantic_training", event="after_peft_import", compatibility_patch_ran=True)
         _write_import_preflight(
             report_root,
             torch_imported=torch is not None,
@@ -503,11 +511,13 @@ def _run_real_smoke_training(
             transformers_import_attempted=True,
             transformers_import_succeeded=True,
         )
+        write_import_trace(trace_path, module="kaggle.run_semantic_training", event="before_transformers_import", compatibility_patch_ran=True)
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
             BitsAndBytesConfig,
         )
+        write_import_trace(trace_path, module="kaggle.run_semantic_training", event="after_transformers_import", compatibility_patch_ran=True)
     except Exception as exc:
         _write_import_preflight(
             report_root,

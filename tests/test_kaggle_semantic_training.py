@@ -445,6 +445,22 @@ def test_bootstrap_environment_supports_standalone_script_import():
     assert result["KAGGLE_WORKING_ROOT"].name == "working"
 
 
+def test_import_trace_order_records_ml_boundaries(tmp_path, monkeypatch):
+    import importlib
+
+    trace_path = tmp_path / "import_trace.jsonl"
+    trace_module = importlib.import_module("kaggle.import_trace")
+    monkeypatch.setattr(trace_module, "DEFAULT_IMPORT_TRACE_PATH", trace_path)
+
+    trace_module.write_import_trace(trace_path, module="bootstrap", event="bootstrap_started")
+    trace_module.write_import_trace(trace_path, module="training", event="before_torch_import")
+    trace_module.write_import_trace(trace_path, module="training", event="after_torch_import", compatibility_patch_ran=True)
+
+    lines = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert [line["event"] for line in lines] == ["bootstrap_started", "before_torch_import", "after_torch_import"]
+    assert all("pid" in line and "timestamp" in line for line in lines)
+
+
 def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_path):
     import importlib
 
@@ -459,3 +475,8 @@ def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_pat
     assert payload["bootstrap_pid"] == 12345
     assert payload["training_pid"] != 12345
     assert payload["fresh_process_verified"] is True
+
+
+def test_execute_smoke_training_supports_standalone_script_import():
+    result = runpy.run_path(str(Path("kaggle/execute_smoke_training.py").resolve()), run_name="execute_smoke_training_script")
+    assert result["__name__"] == "execute_smoke_training_script"
