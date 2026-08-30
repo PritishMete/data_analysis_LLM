@@ -208,6 +208,8 @@ def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
 def _dependency_probe_snippets() -> tuple[str, str]:
     torch_snippet = """
 import json
+from src.training.torch_compat import ensure_torch_dynamo_compatibility
+ensure_torch_dynamo_compatibility()
 import torch
 payload = {
     "version": torch.__version__,
@@ -221,6 +223,8 @@ print(json.dumps(payload))
 """
     bitsandbytes_snippet = """
 import json
+from src.training.torch_compat import ensure_torch_dynamo_compatibility
+ensure_torch_dynamo_compatibility()
 from bitsandbytes import cextension
 import bitsandbytes as bnb
 payload = {
