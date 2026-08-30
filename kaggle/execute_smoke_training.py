@@ -15,9 +15,11 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(repo_root))
     from kaggle.bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths  # type: ignore[no-redef]
     from kaggle.import_trace import write_import_trace  # type: ignore[no-redef]
+    from kaggle.run_context import generate_run_id, resolve_current_run_id, ensure_run_root  # type: ignore[no-redef]
 else:
     from .bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths
     from .import_trace import write_import_trace
+    from .run_context import generate_run_id, resolve_current_run_id, ensure_run_root
 
 
 def _write_json(path: Path, payload: Any) -> Path:
@@ -30,10 +32,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", default=str(KAGGLE_WORKING_ROOT))
     parser.add_argument("--bootstrap-pid", type=int, default=None)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--expected-git-commit", default=None)
     args = parser.parse_args(argv)
     output_root = Path(args.output_root)
-    paths = ensure_kaggle_paths(output_root)
-    report_root = paths.reports
+    resolved_run_id = args.run_id or resolve_current_run_id(base_root=output_root / "smoke_runs") or generate_run_id()
+    run_root = ensure_run_root(resolved_run_id, base_root=output_root / "smoke_runs")
+    paths = ensure_kaggle_paths(run_root)
+    report_root = run_root
     training_pid = os.getpid()
     heartbeat_path = report_root / "smoke_heartbeat.json"
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="bootstrap_started")
@@ -52,7 +58,10 @@ def main(argv: list[str] | None = None) -> int:
                 "stage": "training_started",
                 "timestamp": time.time(),
                 "git_commit": git_commit,
+                "expected_git_commit": args.expected_git_commit,
+                "executed_git_commit": git_commit,
                 "smoke_mode": True,
+                "run_id": resolved_run_id,
                 "bootstrap_pid": args.bootstrap_pid,
                 "training_pid": training_pid,
                 "fresh_process_verified": args.bootstrap_pid is not None and args.bootstrap_pid != training_pid,
@@ -63,16 +72,22 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     os.environ["KAGGLE_SKIP_DEP_INSTALL"] = "1"
+    os.environ["KAGGLE_SMOKE_RUN_ID"] = resolved_run_id
+    if args.expected_git_commit:
+        os.environ["KAGGLE_EXPECTED_GIT_COMMIT"] = args.expected_git_commit
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="before_project_training_import")
     from kaggle.run_semantic_training import run_notebook_flow
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
 
-    result = run_notebook_flow(output_root=output_root)
+    result = run_notebook_flow(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit)
     result["bootstrap_pid"] = args.bootstrap_pid
     result["training_pid"] = training_pid
     result["fresh_process_verified"] = args.bootstrap_pid is not None and args.bootstrap_pid != training_pid
     _write_json(report_root / "smoke_training_report.json", result.get("smoke_training_report", {}))
     _write_json(report_root / "final_report.json", result)
+    legacy_report_root = output_root / "reports"
+    legacy_report_root.mkdir(parents=True, exist_ok=True)
+    _write_json(legacy_report_root / "smoke_heartbeat.json", json.loads(heartbeat_path.read_text(encoding="utf-8")))
     return 0
 
 

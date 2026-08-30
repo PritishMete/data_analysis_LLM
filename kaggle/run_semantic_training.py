@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .import_trace import write_import_trace
+from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json
 from .bootstrap import (
     KAGGLE_WORKING_ROOT,
     build_kaggle_dependency_plan,
@@ -30,6 +31,7 @@ from .bootstrap import (
 )
 
 COMPATIBILITY_REPORT: Any | None = None
+RUNNER_METADATA_NAME = "runner_metadata.json"
 
 
 def _load_semantic_rows(semantic_root: Path) -> list[dict[str, Any]]:
@@ -80,18 +82,24 @@ def _runtime_memory_state(torch_module: Any | None) -> dict[str, float | None]:
     return state
 
 
-def _write_jsonl_breadcrumb(path: Path, *, stage: str, success: bool, safe_message: str, torch_module: Any | None = None) -> dict[str, Any]:
+def _write_jsonl_breadcrumb(path: Path, *, stage: str, success: bool, safe_message: str, torch_module: Any | None = None, run_id: str | None = None) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
+    run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID")
     payload = {
         "timestamp": time.time(),
         "stage": stage,
         "success": bool(success),
         "safe_message": safe_message,
+        "run_id": run_id,
         **_runtime_memory_state(torch_module),
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
         handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except Exception:
+            pass
     return payload
 
 
@@ -249,14 +257,20 @@ def _expected_commit_hash() -> str | None:
     return os.environ.get("KAGGLE_EXPECTED_GIT_COMMIT") or os.environ.get("EXPECTED_GIT_COMMIT")
 
 
-def _write_smoke_heartbeat(report_root: Path, *, stage: str, smoke_mode: bool = True) -> Path:
+def _write_smoke_heartbeat(report_root: Path, *, stage: str, smoke_mode: bool = True, run_id: str | None = None, expected_git_commit: str | None = None, executed_git_commit: str | None = None, extra: dict[str, Any] | None = None) -> Path:
     report_root.mkdir(parents=True, exist_ok=True)
+    run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID")
     payload = {
         "stage": stage,
         "timestamp": time.time(),
-        "git_commit": _safe_commit_hash(),
+        "git_commit": executed_git_commit or _safe_commit_hash(),
         "smoke_mode": smoke_mode,
+        "run_id": run_id,
+        "expected_git_commit": expected_git_commit or _expected_commit_hash(),
+        "executed_git_commit": executed_git_commit or _safe_commit_hash(),
     }
+    if extra:
+        payload.update(extra)
     path = report_root / "smoke_heartbeat.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
@@ -298,8 +312,10 @@ def _write_smoke_failure(
     stage: str,
     exc: BaseException,
     torch_module: Any | None = None,
+    run_id: str | None = None,
 ) -> Path:
     report_root.mkdir(parents=True, exist_ok=True)
+    run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID")
     failure_path = report_root / "smoke_failure.json"
     try:
         import importlib.metadata as metadata
@@ -314,6 +330,7 @@ def _write_smoke_failure(
         package_versions = {"torch": None, "transformers": None, "peft": None, "bitsandbytes": None}
     payload = {
         "stage": stage,
+        "run_id": run_id,
         "exception_type": type(exc).__name__,
         "sanitized_exception_message": _sanitize_exception_message(exc),
         "traceback_tail": _safe_traceback_tail(exc),
@@ -332,6 +349,12 @@ def _write_smoke_failure(
     except Exception:
         payload["gpu_name"] = None
     failure_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        with failure_path.open("a", encoding="utf-8") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        pass
     return failure_path
 
 
@@ -365,9 +388,12 @@ def _stage_guard(
     smoke_mode: bool = True,
     success: bool = True,
     safe_message: str = "",
+    run_id: str | None = None,
+    expected_git_commit: str | None = None,
+    executed_git_commit: str | None = None,
 ) -> None:
-    _write_smoke_heartbeat(report_root, stage=stage, smoke_mode=smoke_mode)
-    _emit_smoke_stage(breadcrumbs_path, stage=stage, success=success, safe_message=safe_message, torch_module=torch_module)
+    _write_smoke_heartbeat(report_root, stage=stage, smoke_mode=smoke_mode, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit)
+    _emit_smoke_stage(breadcrumbs_path, stage=stage, success=success, safe_message=safe_message, torch_module=torch_module, run_id=run_id)
 
 
 def _emit_smoke_stage(
@@ -377,8 +403,9 @@ def _emit_smoke_stage(
     success: bool,
     safe_message: str,
     torch_module: Any | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    return _write_jsonl_breadcrumb(breadcrumbs_path, stage=stage, success=success, safe_message=safe_message, torch_module=torch_module)
+    return _write_jsonl_breadcrumb(breadcrumbs_path, stage=stage, success=success, safe_message=safe_message, torch_module=torch_module, run_id=run_id)
 
 
 def _run_real_smoke_training(
@@ -387,9 +414,11 @@ def _run_real_smoke_training(
     smoke_root: Path,
     output_root: Path,
     breadcrumbs_path: Path,
+    run_id: str | None = None,
+    expected_git_commit: str | None = None,
     resume_from: str | None = None,
 ) -> dict[str, Any]:
-    report_root = output_root / "reports"
+    report_root = output_root
     compatibility_report = _load_torch_compatibility_report()
     trace_path = report_root / "import_trace.jsonl"
     write_import_trace(trace_path, module="kaggle.run_semantic_training", event="before_torch_import")
@@ -398,7 +427,7 @@ def _run_real_smoke_training(
         try:
             subprocess.run(cmd, check=True, timeout=timeout)
         except Exception as exc:
-            _write_smoke_failure(report_root=report_root, stage=stage, exc=exc, torch_module=None)
+            _write_smoke_failure(report_root=report_root, stage=stage, exc=exc, torch_module=None, run_id=run_id)
             raise
 
     def _ensure_runtime_packages(*, preflight: dict[str, Any] | None = None) -> dict[str, str | None]:
@@ -461,7 +490,7 @@ def _run_real_smoke_training(
             )
         return installed
 
-    _write_smoke_heartbeat(report_root, stage="notebook_started")
+    _write_smoke_heartbeat(report_root, stage="notebook_started", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=_safe_commit_hash())
     _stage_guard(stage="repo_checkout_started", report_root=report_root, breadcrumbs_path=breadcrumbs_path, safe_message="repo checkout start")
     _stage_guard(stage="repo_checkout_complete", report_root=report_root, breadcrumbs_path=breadcrumbs_path, safe_message="repo checkout complete")
     _stage_guard(stage="dependencies_started", report_root=report_root, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap")
@@ -746,6 +775,16 @@ def _write_json(path: Path, payload: Any) -> Path:
     return path
 
 
+def _run_root(output_root: Path, run_id: str | None) -> Path:
+    if run_id:
+        return ensure_run_root(run_id, base_root=output_root / "smoke_runs")
+    resolved_run_id = resolve_current_run_id(run_id, base_root=output_root / "smoke_runs")
+    if resolved_run_id:
+        return ensure_run_root(resolved_run_id, base_root=output_root / "smoke_runs")
+    generated = generate_run_id(git_commit=_safe_commit_hash())
+    return ensure_run_root(generated, base_root=output_root / "smoke_runs")
+
+
 def _safe_runtime_report(*, dataset_dir: Path, output_root: Path) -> dict[str, Any]:
     env = inspect_kaggle_environment().to_dict()
     paths = ensure_kaggle_paths(output_root)
@@ -797,14 +836,48 @@ def build_training_plan(*, dataset_dir: Path, output_root: Path = KAGGLE_WORKING
     }
 
 
-def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: str | None = None) -> dict[str, Any]:
-    paths = ensure_kaggle_paths(output_root)
-    _write_smoke_heartbeat(paths.reports, stage="notebook_started")
+def run_notebook_flow(
+    *,
+    output_root: Path = KAGGLE_WORKING_ROOT,
+    resume_from: str | None = None,
+    run_id: str | None = None,
+    expected_git_commit: str | None = None,
+) -> dict[str, Any]:
     executed_commit = _safe_commit_hash()
-    expected_commit = _expected_commit_hash()
+    expected_commit = expected_git_commit or _expected_commit_hash()
+    resolved_run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID") or generate_run_id(git_commit=executed_commit or expected_commit)
+    os.environ["KAGGLE_SMOKE_RUN_ID"] = resolved_run_id
+    if expected_commit:
+        os.environ["KAGGLE_EXPECTED_GIT_COMMIT"] = expected_commit
+    run_root = _run_root(output_root, resolved_run_id)
+    paths = ensure_kaggle_paths(run_root)
+    notebook_started_path = write_json(
+        run_root / "notebook_started.json",
+        {
+            "run_id": resolved_run_id,
+            "expected_git_commit": expected_commit,
+            "executed_git_commit": executed_commit,
+            "timestamp": time.time(),
+            "pid": os.getpid(),
+            "python_version": sys.version,
+            "smoke_mode": True,
+        },
+    )
+    _write_smoke_heartbeat(run_root, stage="notebook_started", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
+    _write_json(
+        run_root / RUNNER_METADATA_NAME,
+        {
+            "run_id": resolved_run_id,
+            "expected_git_commit": expected_commit,
+            "executed_git_commit": executed_commit,
+            "timestamp": time.time(),
+            "pid": os.getpid(),
+            "notebook_started_path": str(notebook_started_path),
+        },
+    )
     if expected_commit and executed_commit and executed_commit != expected_commit:
         exc = RuntimeError("stale_kaggle_checkout")
-        _write_smoke_failure(report_root=paths.reports, stage="notebook_started", exc=exc, torch_module=None)
+        _write_smoke_failure(report_root=run_root, stage="notebook_started", exc=exc, torch_module=None, run_id=resolved_run_id)
         raise exc
     resolved = resolve_canonical_dataset_root()
     dataset_dir = Path(resolved["root"]) if resolved.get("root") else None
@@ -814,6 +887,7 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
             "reason": resolved.get("reason") or "no_attached_dataset_found",
             "canonical_dataset_root": None,
             "paths": paths.to_dict(),
+            "run_id": resolved_run_id,
         }
     canonical_verification = verify_attached_dataset(dataset_dir)
     if not canonical_verification.get("verified"):
@@ -823,30 +897,33 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
             "canonical_dataset_root": str(dataset_dir),
             "dataset_verification": canonical_verification,
             "paths": paths.to_dict(),
+            "run_id": resolved_run_id,
         }
-    breadcrumbs_path = paths.reports / "smoke_breadcrumbs.jsonl"
-    dependency_preflight = _run_dependency_compatibility_preflight(report_root=paths.reports, breadcrumbs_path=breadcrumbs_path)
-    _stage_guard(stage="dependencies_started", report_root=paths.reports, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap")
+    breadcrumbs_path = run_root / "smoke_breadcrumbs.jsonl"
+    dependency_preflight = _run_dependency_compatibility_preflight(report_root=run_root, breadcrumbs_path=breadcrumbs_path)
+    _stage_guard(stage="dependencies_started", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     runtime_packages = _ensure_runtime_packages(preflight=dependency_preflight)
-    _stage_guard(stage="dependencies_complete", report_root=paths.reports, breadcrumbs_path=breadcrumbs_path, safe_message="runtime packages checked")
-    post_install_preflight = _run_dependency_compatibility_preflight(report_root=paths.reports, breadcrumbs_path=breadcrumbs_path)
+    _stage_guard(stage="dependencies_complete", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="runtime packages checked", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
+    post_install_preflight = _run_dependency_compatibility_preflight(report_root=run_root, breadcrumbs_path=breadcrumbs_path)
     if not post_install_preflight["preflight"].get("compatibility_passed"):
         failure_reason = post_install_preflight["preflight"].get("reason") or "dependency_preflight_failed"
         exc = RuntimeError(failure_reason)
-        _write_smoke_failure(report_root=paths.reports, stage="dependency_compatibility_preflight", exc=exc, torch_module=None)
+        _write_smoke_failure(report_root=run_root, stage="dependency_compatibility_preflight", exc=exc, torch_module=None, run_id=resolved_run_id)
         raise exc
-    semantic_data = build_semantic_dataset_from_canonical(dataset_dir, output_root / "semantic_training")
+    semantic_data = build_semantic_dataset_from_canonical(dataset_dir, run_root / "semantic_training")
     resume_checkpoint = detect_resume_checkpoint(paths.checkpoints, resume_from=resume_from)
-    runtime = _safe_runtime_report(dataset_dir=dataset_dir, output_root=output_root)
-    training_plan = build_training_plan(dataset_dir=Path(semantic_data["semantic_output_root"]), output_root=output_root)
-    smoke_corpus = _build_smoke_corpus(Path(semantic_data["semantic_output_root"]), output_root)
+    runtime = _safe_runtime_report(dataset_dir=dataset_dir, output_root=run_root)
+    training_plan = build_training_plan(dataset_dir=Path(semantic_data["semantic_output_root"]), output_root=run_root)
+    smoke_corpus = _build_smoke_corpus(Path(semantic_data["semantic_output_root"]), run_root)
     smoke_failure: Exception | None = None
     try:
         smoke_training = _run_real_smoke_training(
             base_model=str(training_plan["base_model"]),
             smoke_root=Path(smoke_corpus["root"]),
-            output_root=output_root,
+            output_root=run_root,
             breadcrumbs_path=breadcrumbs_path,
+            run_id=resolved_run_id,
+            expected_git_commit=expected_commit,
             resume_from=resume_from,
         )
     except Exception as exc:  # pragma: no cover - surfaced via Kaggle notebook logs
@@ -855,7 +932,7 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
             import torch as torch_module
         except Exception:
             torch_module = None
-        _write_smoke_failure(report_root=paths.reports, stage="smoke_notebook", exc=exc, torch_module=torch_module)
+        _write_smoke_failure(report_root=run_root, stage="smoke_notebook", exc=exc, torch_module=torch_module, run_id=resolved_run_id)
         smoke_training = {
             "smoke_training_report": _failed_smoke_training_report(error=exc),
             "checkpoint_dir": None,
@@ -864,13 +941,14 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
             "train_metrics": {"train_loss": None},
             "validation_metrics": {"eval_loss": None},
         }
-    safe_report_path = paths.reports / "final_report.json"
-    safe_metrics_path = paths.metrics / "semantic_metrics.json"
-    smoke_report_path = paths.reports / "smoke_training_report.json"
-    artifact_manifest_path = paths.manifests / "artifact_manifest.json"
+    safe_report_path = run_root / "final_report.json"
+    safe_metrics_path = run_root / "semantic_metrics.json"
+    smoke_report_path = run_root / "smoke_training_report.json"
+    artifact_manifest_path = run_root / "artifact_manifest.json"
     _write_json(
         safe_report_path,
         {
+            "run_id": resolved_run_id,
             "runtime": runtime,
             "dependency_preflight": dependency_preflight,
             "dependency_post_install_preflight": post_install_preflight,
@@ -887,8 +965,9 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
     _write_json(smoke_report_path, smoke_training["smoke_training_report"])
     artifact_manifest = build_artifact_manifest([safe_report_path, safe_metrics_path, smoke_report_path])
     _write_json(artifact_manifest_path, artifact_manifest)
-    final_zip = create_final_zip(paths.root, [safe_report_path, safe_metrics_path, smoke_report_path, artifact_manifest_path, breadcrumbs_path, paths.reports / "smoke_failure.json"], zip_name="semantic_extractor_artifacts.zip")
+    final_zip = create_final_zip(run_root, [safe_report_path, safe_metrics_path, smoke_report_path, artifact_manifest_path, breadcrumbs_path, run_root / "smoke_failure.json"], zip_name="semantic_extractor_artifacts.zip")
     result = {
+        "run_id": resolved_run_id,
         "environment": runtime["environment"],
         "paths": paths.to_dict(),
         "executed_git_commit": executed_commit,

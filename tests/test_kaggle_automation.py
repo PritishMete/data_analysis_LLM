@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from scripts import kaggle_runner
+from kaggle.run_context import generate_run_id, ensure_run_root
 
 
 def _completed(stdout: str = "", returncode: int = 0):
@@ -297,6 +298,44 @@ def test_runner_heartbeat_and_failure_files_are_written(tmp_path):
     assert failure_payload["timeout_seconds"] == 30
     assert "line2" in failure_payload["safe_stdout_tail"]
     assert "err2" in failure_payload["safe_stderr_tail"]
+
+
+def test_generate_run_id_has_commit_timestamp_and_suffix():
+    run_id = generate_run_id(git_commit="c1fa220eaa3b22ad109ee812d6caf88aa6b4cb87", timestamp="20260830T083500Z")
+
+    assert run_id.startswith("c1fa220-20260830T083500Z-")
+    assert len(run_id.split("-")[-1]) == 4
+
+
+def test_run_scoped_root_and_report_command_are_isolated(tmp_path, monkeypatch):
+    run_id = "abc123-20260830T083500Z-wxyz"
+    run_root = ensure_run_root(run_id, base_root=tmp_path / "runtime" / "kaggle_runner")
+    (run_root / "runner_metadata.json").write_text(json.dumps({"run_id": run_id, "expected_git_commit": "abc123"}), encoding="utf-8")
+    (run_root / "notebook_started.json").write_text(json.dumps({"run_id": run_id, "expected_git_commit": "abc123", "executed_git_commit": "abc123"}), encoding="utf-8")
+    (run_root / "smoke_breadcrumbs.jsonl").write_text(json.dumps({"run_id": run_id, "stage": "notebook_started", "success": True}) + "\n", encoding="utf-8")
+    (run_root / "smoke_heartbeat.json").write_text(json.dumps({"run_id": run_id, "stage": "notebook_started", "expected_git_commit": "abc123", "executed_git_commit": "abc123"}), encoding="utf-8")
+
+    result = kaggle_runner.report(run_id=run_id, stage_root=tmp_path / "runtime" / "kaggle_runner")
+
+    assert result["run_id"] == run_id
+    assert result["heartbeat"]["run_id"] == run_id
+    assert result["breadcrumbs"][0]["run_id"] == run_id
+    assert result["remote_identity"] is None
+
+
+def test_postmortem_rejects_historical_logs_without_current_run_evidence(tmp_path):
+    stage_root = tmp_path / "runtime" / "kaggle_runner" / "run-a"
+    stage = kaggle_runner.ensure_stage_paths(stage_root)
+    log = stage.download_dir / "old.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("historical log only\n", encoding="utf-8")
+    (stage.download_dir / "reports").mkdir(parents=True, exist_ok=True)
+    (stage.download_dir / "reports" / "smoke_heartbeat.json").write_text(json.dumps({"run_id": "run-a", "stage": "poll_iteration", "executed_git_commit": "abc123"}), encoding="utf-8")
+
+    payload = kaggle_runner._kaggle_postmortem(kaggle_runner.KaggleNotebookSpec(), stage_root=stage_root)
+
+    assert payload["historical_log_detected"] is True
+    assert payload["log_evidence_current_run"] is False
 
 
 def test_bounded_kaggle_call_writes_failure_on_timeout(monkeypatch, tmp_path):

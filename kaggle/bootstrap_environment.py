@@ -27,6 +27,7 @@ if __package__ in {None, ""}:
         verify_attached_dataset,
         write_dependency_preflight_report,
     )
+    from kaggle.run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper  # type: ignore[no-redef]
 else:
     from .bootstrap import (
         KAGGLE_WORKING_ROOT,
@@ -39,6 +40,7 @@ else:
         verify_attached_dataset,
         write_dependency_preflight_report,
     )
+    from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper
 
 
 def _write_json(path: Path, payload: Any) -> Path:
@@ -168,20 +170,24 @@ def _install_packages(plan: dict[str, Any]) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", default=str(KAGGLE_WORKING_ROOT))
+    parser.add_argument("--run-id", default=None)
     args = parser.parse_args(argv)
     output_root = Path(args.output_root)
-    paths = ensure_kaggle_paths(output_root)
-    report_root = paths.reports
+    resolved_run_id = args.run_id or resolve_current_run_id(base_root=output_root / "smoke_runs") or generate_run_id()
+    run_root = ensure_run_root(resolved_run_id, base_root=output_root / "smoke_runs")
+    paths = ensure_kaggle_paths(run_root)
+    report_root = run_root
     bootstrap_pid = os.getpid()
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="bootstrap_started")
+    _write_json_helper(report_root / "runner_metadata.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "timestamp": time.time()})
     repo_dataset = resolve_canonical_dataset_root()
     dataset_dir = Path(repo_dataset["root"]) if repo_dataset.get("root") else None
     if dataset_dir is None:
-        _write_json(report_root / "dependency_install_result.json", {"install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": repo_dataset.get("reason") or "dataset_not_found"})
+        _write_json_helper(report_root / "dependency_install_result.json", {"install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": repo_dataset.get("reason") or "dataset_not_found", "run_id": resolved_run_id})
         return 1
     verification = verify_attached_dataset(dataset_dir)
     if not verification.get("verified"):
-        _write_json(report_root / "dependency_install_result.json", {"install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification})
+        _write_json_helper(report_root / "dependency_install_result.json", {"install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification, "run_id": resolved_run_id})
         return 1
     gpu_identity = inspect_kaggle_gpu_identity()
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="before_torch_import")
@@ -195,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     install_result = _install_packages({"preflight": preflight.to_dict(), "gpu_identity": gpu_identity, "torch_probe": torch_probe})
     install_result.update({
         "bootstrap_pid": bootstrap_pid,
+        "run_id": resolved_run_id,
         "dataset_dir": str(dataset_dir),
         "gpu_identity": gpu_identity,
         "torch_probe": torch_probe,
@@ -208,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         "resume_checkpoint": str(detect_resume_checkpoint(paths.checkpoints)) if detect_resume_checkpoint(paths.checkpoints) else None,
         "semantic_dataset_root": str(discover_semantic_dataset() or ""),
     })
-    _write_json(report_root / "dependency_install_result.json", install_result)
+    _write_json_helper(report_root / "dependency_install_result.json", install_result)
     return 0 if install_result["install_success"] else 1
 
 

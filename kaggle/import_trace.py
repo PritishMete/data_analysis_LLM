@@ -45,4 +45,8 @@ def write_import_trace(
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
         handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except Exception:
+            pass
     return payload
