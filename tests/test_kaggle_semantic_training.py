@@ -286,7 +286,7 @@ def test_smoke_heartbeat_and_failure_artifacts_are_safe(tmp_path, monkeypatch):
     assert "boom" in failure_payload["sanitized_exception_message"]
 
 
-def test_dependency_preflight_selects_p100_cu126_stack(tmp_path):
+def test_dependency_preflight_selects_p100_cu124_stack(tmp_path):
     gpu_identity = {
         "gpu_name": "Tesla P100-PCIE-16GB",
         "driver_version": "535.54.03",
@@ -325,13 +325,13 @@ def test_dependency_preflight_selects_p100_cu126_stack(tmp_path):
 
     assert preflight.requires_torch_cu126 is True
     assert preflight.requires_bitsandbytes_upgrade is False
-    assert preflight.compatibility_passed is False
+    assert preflight.compatibility_passed is True
     assert payload["gpu_name"] == "Tesla P100-PCIE-16GB"
-    assert payload["install_plan"]["pip_groups"][0]["index_url"].endswith("/cu126")
-    assert any("torch==2.7.1+cu126" in package for package in payload["install_plan"]["pip_groups"][0]["packages"])
+    assert payload["install_plan"]["pip_groups"][0]["index_url"].endswith("/cu124")
+    assert any("torch==2.6.0+cu124" in package for package in payload["install_plan"]["pip_groups"][0]["packages"])
 
 
-def test_dependency_preflight_passes_after_cu126_verification():
+def test_dependency_preflight_passes_after_cu124_verification():
     gpu_identity = {
         "gpu_name": "Tesla P100-PCIE-16GB",
         "driver_version": "535.54.03",
@@ -340,8 +340,8 @@ def test_dependency_preflight_passes_after_cu126_verification():
     torch_probe = {
         "ok": True,
         "json": {
-            "version": "2.7.1+cu126",
-            "cuda": "12.6",
+            "version": "2.6.0+cu124",
+            "cuda": "12.4",
             "available": True,
             "device_name": "Tesla P100-PCIE-16GB",
             "capability": [6, 0],
@@ -351,11 +351,11 @@ def test_dependency_preflight_passes_after_cu126_verification():
         "ok": True,
         "json": {
             "version": "0.50.2",
-            "available_cuda_versions": ["11.8", "12.1", "12.4", "12.6"],
+            "available_cuda_versions": ["11.8", "12.1", "12.4"],
             "cuda_specs": {
                 "highest_compute_capability": [6, 0],
-                "cuda_version_string": "126",
-                "cuda_version_tuple": [12, 6],
+                "cuda_version_string": "124",
+                "cuda_version_tuple": [12, 4],
             },
         },
     }
@@ -369,7 +369,7 @@ def test_dependency_preflight_passes_after_cu126_verification():
     assert preflight.compatibility_passed is True
     assert preflight.reason is None
     assert any(group["name"] == "torch_cu126" for group in preflight.install_plan["pip_groups"])
-    assert preflight.install_plan["pip_groups"][0]["index_url"].endswith("/cu126")
+    assert preflight.install_plan["pip_groups"][0]["index_url"].endswith("/cu124")
 
 
 def test_stale_kaggle_checkout_fails_fast(tmp_path, monkeypatch):
