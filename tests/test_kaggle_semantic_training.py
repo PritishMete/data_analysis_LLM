@@ -286,7 +286,7 @@ def test_smoke_heartbeat_and_failure_artifacts_are_safe(tmp_path, monkeypatch):
     assert "boom" in failure_payload["sanitized_exception_message"]
 
 
-def test_dependency_preflight_selects_p100_cu121_stack(tmp_path):
+def test_dependency_preflight_selects_p100_cu118_stack(tmp_path):
     gpu_identity = {
         "gpu_name": "Tesla P100-PCIE-16GB",
         "driver_version": "535.54.03",
@@ -295,8 +295,8 @@ def test_dependency_preflight_selects_p100_cu121_stack(tmp_path):
     torch_probe = {
         "ok": True,
         "json": {
-            "version": "2.5.1+cu121",
-            "cuda": "12.1",
+            "version": "2.4.1+cu118",
+            "cuda": "11.8",
             "available": True,
             "device_name": "Tesla P100-PCIE-16GB",
             "capability": [6, 0],
@@ -327,11 +327,11 @@ def test_dependency_preflight_selects_p100_cu121_stack(tmp_path):
     assert preflight.requires_bitsandbytes_upgrade is False
     assert preflight.compatibility_passed is True
     assert payload["gpu_name"] == "Tesla P100-PCIE-16GB"
-    assert payload["install_plan"]["pip_groups"][0]["index_url"].endswith("/cu121")
-    assert any("torch==2.5.1+cu121" in package for package in payload["install_plan"]["pip_groups"][0]["packages"])
+    assert payload["install_plan"]["pip_groups"][0]["index_url"].endswith("/cu118")
+    assert any("torch==2.4.1+cu118" in package for package in payload["install_plan"]["pip_groups"][0]["packages"])
 
 
-def test_dependency_preflight_passes_after_cu121_verification():
+def test_dependency_preflight_passes_after_cu118_verification():
     gpu_identity = {
         "gpu_name": "Tesla P100-PCIE-16GB",
         "driver_version": "535.54.03",
@@ -340,8 +340,8 @@ def test_dependency_preflight_passes_after_cu121_verification():
     torch_probe = {
         "ok": True,
         "json": {
-            "version": "2.5.1+cu121",
-            "cuda": "12.1",
+            "version": "2.4.1+cu118",
+            "cuda": "11.8",
             "available": True,
             "device_name": "Tesla P100-PCIE-16GB",
             "capability": [6, 0],
@@ -369,7 +369,7 @@ def test_dependency_preflight_passes_after_cu121_verification():
     assert preflight.compatibility_passed is True
     assert preflight.reason is None
     assert any(group["name"] == "torch_cu126" for group in preflight.install_plan["pip_groups"])
-    assert preflight.install_plan["pip_groups"][0]["index_url"].endswith("/cu121")
+    assert preflight.install_plan["pip_groups"][0]["index_url"].endswith("/cu118")
 
 
 def test_stale_kaggle_checkout_fails_fast(tmp_path, monkeypatch):

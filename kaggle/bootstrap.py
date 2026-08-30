@@ -33,11 +33,11 @@ SAFE_ZIP_NAMES = {
     "training_config",
 }
 
-P100_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu121"
+P100_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu118"
 P100_TORCH_PACKAGES = {
-    "torch": "2.5.1+cu121",
-    "torchvision": "0.20.1+cu121",
-    "torchaudio": "2.5.1+cu121",
+    "torch": "2.4.1+cu118",
+    "torchvision": "0.19.1+cu118",
+    "torchaudio": "2.4.1+cu118",
 }
 
 
@@ -279,7 +279,7 @@ def build_kaggle_dependency_plan(*, gpu_identity: dict[str, Any], torch_probe: d
     if compute_capability is not None and compute_capability < (7, 0):
         cuda_specs = (bitsandbytes_probe.get("json") or {}).get("cuda_specs") if bitsandbytes_probe.get("ok") else None
         bnb_supports_sm60 = bool(cuda_specs and cuda_specs.get("highest_compute_capability") and tuple(cuda_specs["highest_compute_capability"]) >= (6, 0))
-        torch_supports_sm60 = bool(torch_probe.get("ok") and (torch_probe.get("json") or {}).get("cuda") in {"12.1", "12.4", "12.6"})
+        torch_supports_sm60 = bool(torch_probe.get("ok") and (torch_probe.get("json") or {}).get("cuda") in {"11.8", "12.1", "12.4", "12.6"})
         compatibility_passed = torch_supports_sm60 and bnb_supports_sm60
         if not compatibility_passed:
             reason = "sm60_requires_cu121_or_newer_compatible_torch_and_bitsandbytes"
