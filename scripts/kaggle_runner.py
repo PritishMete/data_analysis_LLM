@@ -29,8 +29,10 @@ SAFE_OUTPUT_NAMES = {
     "artifact_manifest.json",
     "semantic_extractor_artifacts.zip",
     "smoke_training_report.json",
+    "smoke_heartbeat.json",
     "smoke_breadcrumbs.jsonl",
     "smoke_failure.json",
+    "dependency_preflight.json",
 }
 
 

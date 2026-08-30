@@ -12,10 +12,6 @@ import sys
 from typing import Any, Iterable
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from src.training.torch_compat import ensure_torch_dynamo_compatibility
-
-ensure_torch_dynamo_compatibility()
-
 from src.training.dataset import verify_dataset_manifest
 from src.training.hardware import detect_hardware
 from learning.models import stable_hash
@@ -35,6 +31,13 @@ SAFE_ZIP_NAMES = {
     "model_registry",
     "smoke_training_report",
     "training_config",
+}
+
+P100_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu126"
+P100_TORCH_PACKAGES = {
+    "torch": "2.7.1+cu126",
+    "torchvision": "0.22.1+cu126",
+    "torchaudio": "2.7.1+cu126",
 }
 
 
@@ -80,6 +83,28 @@ class KaggleDatasetCandidate:
         return {"root": str(self.root), "score": list(self.score), "reason": self.reason}
 
 
+@dataclass(slots=True)
+class KaggleDependencyPreflight:
+    gpu_name: str | None
+    driver_version: str | None
+    compute_capability: tuple[int, int] | None
+    torch_version: str | None
+    torch_cuda_version: str | None
+    bitsandbytes_version: str | None
+    compatibility_passed: bool
+    requires_torch_cu126: bool
+    requires_bitsandbytes_upgrade: bool
+    install_plan: dict[str, Any]
+    probe_results: dict[str, Any]
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        if self.compute_capability is not None:
+            payload["compute_capability"] = list(self.compute_capability)
+        return payload
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -94,6 +119,216 @@ def _safe_free_disk_gb(path: Path) -> float | None:
         return round(usage.free / 1024**3, 2)
     except Exception:
         return None
+
+
+def _safe_run_json_probe(command: list[str], *, timeout: int = 45) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+            "returncode": None,
+            "stdout": None,
+            "stderr": None,
+        }
+    payload: dict[str, Any] = {
+        "ok": result.returncode == 0,
+        "returncode": result.returncode,
+        "stdout": (result.stdout or "").strip() or None,
+        "stderr": (result.stderr or "").strip() or None,
+    }
+    if payload["stdout"]:
+        try:
+            payload["json"] = json.loads(str(payload["stdout"]))
+        except Exception:
+            payload["json"] = None
+    return payload
+
+
+def _gpu_compute_capability_from_name(gpu_name: str | None) -> tuple[int, int] | None:
+    if not gpu_name:
+        return None
+    normalized = gpu_name.upper()
+    if "P100" in normalized:
+        return (6, 0)
+    if "T4" in normalized:
+        return (7, 5)
+    if "GTX 1650" in normalized:
+        return (7, 5)
+    if "V100" in normalized:
+        return (7, 0)
+    if "A100" in normalized:
+        return (8, 0)
+    if "L4" in normalized:
+        return (8, 9)
+    return None
+
+
+def inspect_kaggle_gpu_identity() -> dict[str, Any]:
+    payload = {
+        "gpu_name": None,
+        "driver_version": None,
+        "memory_total_mb": None,
+        "compute_capability": None,
+        "nvidia_smi_available": False,
+    }
+    command = [
+        "nvidia-smi",
+        "--query-gpu=name,driver_version,memory.total",
+        "--format=csv,noheader",
+    ]
+    result = _safe_run_json_probe(command, timeout=20)
+    payload["nvidia_smi_available"] = bool(result.get("ok"))
+    if result.get("ok") and result.get("stdout"):
+        line = str(result["stdout"]).splitlines()[0]
+        parts = [part.strip() for part in line.split(",")]
+        if parts:
+            payload["gpu_name"] = parts[0] or None
+        if len(parts) > 1:
+            payload["driver_version"] = parts[1] or None
+        if len(parts) > 2:
+            text = parts[2].split()[0]
+            try:
+                payload["memory_total_mb"] = int(float(text))
+            except Exception:
+                payload["memory_total_mb"] = None
+    payload["compute_capability"] = list(_gpu_compute_capability_from_name(payload["gpu_name"])) if _gpu_compute_capability_from_name(payload["gpu_name"]) else None
+    return payload
+
+
+def _probe_torch_runtime() -> dict[str, Any]:
+    snippet = """
+import json
+import torch
+payload = {
+    "version": torch.__version__,
+    "cuda": getattr(torch.version, "cuda", None),
+    "available": bool(torch.cuda.is_available()),
+}
+if payload["available"]:
+    payload["device_name"] = torch.cuda.get_device_name(0)
+    payload["capability"] = list(torch.cuda.get_device_capability(0))
+print(json.dumps(payload))
+"""
+    result = _safe_run_json_probe([sys.executable, "-c", snippet], timeout=60)
+    return result
+
+
+def _probe_bitsandbytes_runtime() -> dict[str, Any]:
+    snippet = """
+import json
+from bitsandbytes import cextension
+import bitsandbytes as bnb
+payload = {
+    "version": bnb.__version__,
+    "available_cuda_versions": cextension.get_available_cuda_binary_versions(),
+}
+try:
+    specs = cextension.get_cuda_specs()
+    payload["cuda_specs"] = {
+        "highest_compute_capability": list(specs.highest_compute_capability) if specs.highest_compute_capability is not None else None,
+        "cuda_version_string": specs.cuda_version_string,
+        "cuda_version_tuple": list(specs.cuda_version_tuple) if specs.cuda_version_tuple is not None else None,
+    }
+except Exception as exc:
+    payload["cuda_specs_error"] = str(exc)
+print(json.dumps(payload))
+"""
+    result = _safe_run_json_probe([sys.executable, "-c", snippet], timeout=60)
+    return result
+
+
+def _parse_version_prefix(version: str | None) -> tuple[int, int] | None:
+    if not version:
+        return None
+    numbers = re.findall(r"\d+", version)
+    if len(numbers) < 2:
+        return None
+    return int(numbers[0]), int(numbers[1])
+
+
+def build_kaggle_dependency_plan(*, gpu_identity: dict[str, Any], torch_probe: dict[str, Any], bitsandbytes_probe: dict[str, Any]) -> KaggleDependencyPreflight:
+    gpu_name = gpu_identity.get("gpu_name")
+    compute_capability = _gpu_compute_capability_from_name(gpu_name)
+    torch_version = (torch_probe.get("json") or {}).get("version") if torch_probe.get("ok") else None
+    torch_cuda_version = (torch_probe.get("json") or {}).get("cuda") if torch_probe.get("ok") else None
+    bitsandbytes_version = (bitsandbytes_probe.get("json") or {}).get("version") if bitsandbytes_probe.get("ok") else None
+
+    requires_torch_cu126 = bool(compute_capability and compute_capability < (7, 0))
+    requires_bitsandbytes_upgrade = False
+
+    if bitsandbytes_version is None:
+        requires_bitsandbytes_upgrade = True
+    else:
+        bitsandbytes_tuple = _parse_version_prefix(bitsandbytes_version)
+        requires_bitsandbytes_upgrade = bitsandbytes_tuple is not None and bitsandbytes_tuple < (0, 50)
+
+    compatibility_passed = True
+    reason = None
+    if compute_capability is not None and compute_capability < (7, 0):
+        cuda_specs = (bitsandbytes_probe.get("json") or {}).get("cuda_specs") if bitsandbytes_probe.get("ok") else None
+        bnb_supports_sm60 = bool(cuda_specs and cuda_specs.get("highest_compute_capability") and tuple(cuda_specs["highest_compute_capability"]) >= (6, 0))
+        torch_supports_sm60 = bool(torch_probe.get("ok") and (torch_probe.get("json") or {}).get("cuda") == "12.6")
+        compatibility_passed = torch_supports_sm60 and bnb_supports_sm60
+        if not compatibility_passed:
+            reason = "sm60_requires_cu126_compatible_torch_and_bitsandbytes"
+    elif not torch_probe.get("ok") or not bitsandbytes_probe.get("ok"):
+        compatibility_passed = False
+        reason = "runtime_probe_failed"
+
+    install_plan: dict[str, Any] = {
+        "requires_torch_cu126": requires_torch_cu126,
+        "requires_bitsandbytes_upgrade": requires_bitsandbytes_upgrade,
+        "pip_groups": [],
+    }
+    if requires_torch_cu126:
+        install_plan["pip_groups"].append(
+            {
+                "name": "torch_cu126",
+                "index_url": P100_TORCH_INDEX_URL,
+                "packages": [f"{package}=={version}" for package, version in P100_TORCH_PACKAGES.items()],
+            }
+        )
+    if requires_bitsandbytes_upgrade or bitsandbytes_version is None:
+        install_plan["pip_groups"].append(
+            {
+                "name": "bitsandbytes_runtime",
+                "index_url": None,
+                "packages": ["bitsandbytes>=0.50.2"],
+            }
+        )
+    return KaggleDependencyPreflight(
+        gpu_name=gpu_name,
+        driver_version=gpu_identity.get("driver_version"),
+        compute_capability=compute_capability,
+        torch_version=torch_version,
+        torch_cuda_version=torch_cuda_version,
+        bitsandbytes_version=bitsandbytes_version,
+        compatibility_passed=compatibility_passed,
+        requires_torch_cu126=requires_torch_cu126,
+        requires_bitsandbytes_upgrade=requires_bitsandbytes_upgrade,
+        install_plan=install_plan,
+        probe_results={"torch": torch_probe, "bitsandbytes": bitsandbytes_probe},
+        reason=reason,
+    )
+
+
+def write_dependency_preflight_report(report_root: Path, preflight: KaggleDependencyPreflight) -> Path:
+    report_root.mkdir(parents=True, exist_ok=True)
+    path = report_root / "dependency_preflight.json"
+    path.write_text(json.dumps(preflight.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    return path
 
 
 def _has_jsonl_split_root(path: Path) -> bool:

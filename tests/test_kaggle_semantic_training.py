@@ -5,6 +5,7 @@ from pathlib import Path
 
 from kaggle.bootstrap import (
     build_artifact_manifest,
+    build_kaggle_dependency_plan,
     build_semantic_dataset_from_canonical,
     create_final_zip,
     discover_semantic_dataset,
@@ -13,6 +14,7 @@ from kaggle.bootstrap import (
     semantic_verdict,
     verify_attached_dataset,
     write_sha_manifest,
+    write_dependency_preflight_report,
 )
 from kaggle.run_semantic_training import _build_smoke_corpus, _patch_torch_dynamo_compatibility, _smoke_split_targets
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
@@ -281,6 +283,92 @@ def test_smoke_heartbeat_and_failure_artifacts_are_safe(tmp_path, monkeypatch):
     assert "boom" in failure_payload["sanitized_exception_message"]
 
 
+def test_dependency_preflight_selects_p100_cu126_stack(tmp_path):
+    gpu_identity = {
+        "gpu_name": "Tesla P100-PCIE-16GB",
+        "driver_version": "535.54.03",
+        "memory_total_mb": 16280,
+    }
+    torch_probe = {
+        "ok": True,
+        "json": {
+            "version": "2.6.0+cu124",
+            "cuda": "12.4",
+            "available": True,
+            "device_name": "Tesla P100-PCIE-16GB",
+            "capability": [6, 0],
+        },
+    }
+    bitsandbytes_probe = {
+        "ok": True,
+        "json": {
+            "version": "0.50.2",
+            "available_cuda_versions": ["11.8", "12.1", "12.4", "12.6"],
+            "cuda_specs": {
+                "highest_compute_capability": [7, 5],
+                "cuda_version_string": "124",
+                "cuda_version_tuple": [12, 4],
+            },
+        },
+    }
+
+    preflight = build_kaggle_dependency_plan(
+        gpu_identity=gpu_identity,
+        torch_probe=torch_probe,
+        bitsandbytes_probe=bitsandbytes_probe,
+    )
+    report_path = write_dependency_preflight_report(tmp_path, preflight)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert preflight.requires_torch_cu126 is True
+    assert preflight.requires_bitsandbytes_upgrade is False
+    assert preflight.compatibility_passed is False
+    assert payload["gpu_name"] == "Tesla P100-PCIE-16GB"
+    assert payload["install_plan"]["pip_groups"][0]["index_url"].endswith("/cu126")
+    assert any("torch==2.7.1+cu126" in package for package in payload["install_plan"]["pip_groups"][0]["packages"])
+
+
+def test_dependency_preflight_passes_after_cu126_verification():
+    gpu_identity = {
+        "gpu_name": "Tesla P100-PCIE-16GB",
+        "driver_version": "535.54.03",
+        "memory_total_mb": 16280,
+    }
+    torch_probe = {
+        "ok": True,
+        "json": {
+            "version": "2.7.1+cu126",
+            "cuda": "12.6",
+            "available": True,
+            "device_name": "Tesla P100-PCIE-16GB",
+            "capability": [6, 0],
+        },
+    }
+    bitsandbytes_probe = {
+        "ok": True,
+        "json": {
+            "version": "0.50.2",
+            "available_cuda_versions": ["11.8", "12.1", "12.4", "12.6"],
+            "cuda_specs": {
+                "highest_compute_capability": [6, 0],
+                "cuda_version_string": "126",
+                "cuda_version_tuple": [12, 6],
+            },
+        },
+    }
+
+    preflight = build_kaggle_dependency_plan(
+        gpu_identity=gpu_identity,
+        torch_probe=torch_probe,
+        bitsandbytes_probe=bitsandbytes_probe,
+    )
+
+    assert preflight.compatibility_passed is True
+    assert preflight.reason is None
+    assert any(group["name"] == "torch_cu126" for group in preflight.install_plan["pip_groups"])
+    assert preflight.install_plan["pip_groups"][0]["index_url"].endswith("/cu126")
+
+
 def test_stale_kaggle_checkout_fails_fast(tmp_path, monkeypatch):
     canonical_root = _write_canonical_dataset(tmp_path / "canonical")
     monkeypatch.setenv("KAGGLE_EXPECTED_GIT_COMMIT", "expected123")
@@ -334,3 +422,4 @@ def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
     assert "transformers" not in sys.modules
     assert "src.training.benchmark" not in sys.modules
     assert hasattr(module, "COMPATIBILITY_REPORT")
+    assert module.COMPATIBILITY_REPORT is None

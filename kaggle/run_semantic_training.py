@@ -9,16 +9,14 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from src.training.torch_compat import ensure_torch_dynamo_compatibility
-
-COMPATIBILITY_REPORT = ensure_torch_dynamo_compatibility()
-
 from .bootstrap import (
     KAGGLE_WORKING_ROOT,
+    build_kaggle_dependency_plan,
     build_artifact_manifest,
     build_semantic_kaggle_report,
     create_final_zip,
     detect_resume_checkpoint,
+    inspect_kaggle_gpu_identity,
     discover_semantic_dataset,
     ensure_kaggle_paths,
     inspect_kaggle_environment,
@@ -26,8 +24,11 @@ from .bootstrap import (
     load_semantic_config,
     semantic_verdict,
     verify_attached_dataset,
+    write_dependency_preflight_report,
     build_semantic_dataset_from_canonical,
 )
+
+COMPATIBILITY_REPORT: Any | None = None
 
 
 def _load_semantic_rows(semantic_root: Path) -> list[dict[str, Any]]:
@@ -119,6 +120,15 @@ def _safe_commit_hash() -> str | None:
         return None
 
 
+def _load_torch_compatibility_report() -> Any | None:
+    try:
+        from src.training.torch_compat import ensure_torch_dynamo_compatibility
+
+        return ensure_torch_dynamo_compatibility()
+    except Exception:
+        return None
+
+
 def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
     if torch_module is None:
         return False
@@ -139,6 +149,85 @@ def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
         return True
     except Exception:
         return False
+
+
+def _dependency_probe_snippets() -> tuple[str, str]:
+    torch_snippet = """
+import json
+import torch
+payload = {
+    "version": torch.__version__,
+    "cuda": getattr(torch.version, "cuda", None),
+    "available": bool(torch.cuda.is_available()),
+}
+if payload["available"]:
+    payload["device_name"] = torch.cuda.get_device_name(0)
+    payload["capability"] = list(torch.cuda.get_device_capability(0))
+print(json.dumps(payload))
+"""
+    bitsandbytes_snippet = """
+import json
+from bitsandbytes import cextension
+import bitsandbytes as bnb
+payload = {
+    "version": bnb.__version__,
+    "available_cuda_versions": cextension.get_available_cuda_binary_versions(),
+}
+try:
+    specs = cextension.get_cuda_specs()
+    payload["cuda_specs"] = {
+        "highest_compute_capability": list(specs.highest_compute_capability) if specs.highest_compute_capability is not None else None,
+        "cuda_version_string": specs.cuda_version_string,
+        "cuda_version_tuple": list(specs.cuda_version_tuple) if specs.cuda_version_tuple is not None else None,
+    }
+except Exception as exc:
+    payload["cuda_specs_error"] = str(exc)
+print(json.dumps(payload))
+"""
+    return torch_snippet, bitsandbytes_snippet
+
+
+def _run_python_probe(snippet: str, *, timeout: int, phase: str) -> subprocess.CompletedProcess[str]:
+    return _run_command([sys.executable, "-c", snippet], timeout=timeout, check=False)
+
+
+def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_path: Path) -> dict[str, Any]:
+    _write_smoke_heartbeat(report_root, stage="dependency_compatibility_preflight")
+    _emit_smoke_stage(breadcrumbs_path, stage="dependency_compatibility_preflight_started", success=True, safe_message="preflight start")
+    gpu_identity = inspect_kaggle_gpu_identity()
+    torch_snippet, bitsandbytes_snippet = _dependency_probe_snippets()
+    torch_probe = _safe_probe_result(_run_python_probe(torch_snippet, timeout=60, phase="dependency_compatibility_preflight"), label="torch")
+    bnb_probe = _safe_probe_result(_run_python_probe(bitsandbytes_snippet, timeout=60, phase="dependency_compatibility_preflight"), label="bitsandbytes")
+    preflight = build_kaggle_dependency_plan(gpu_identity=gpu_identity, torch_probe=torch_probe, bitsandbytes_probe=bnb_probe)
+    write_dependency_preflight_report(report_root, preflight)
+    _emit_smoke_stage(
+        breadcrumbs_path,
+        stage="dependency_compatibility_preflight_complete",
+        success=bool(preflight.compatibility_passed or preflight.install_plan.get("pip_groups")),
+        safe_message=preflight.reason or "dependency plan ready",
+    )
+    return {
+        "gpu_identity": gpu_identity,
+        "torch_probe": torch_probe,
+        "bitsandbytes_probe": bnb_probe,
+        "preflight": preflight.to_dict(),
+    }
+
+
+def _safe_probe_result(result: subprocess.CompletedProcess[str], *, label: str) -> dict[str, Any]:
+    payload = {
+        "label": label,
+        "returncode": result.returncode,
+        "stdout": (result.stdout or "").strip() or None,
+        "stderr": (result.stderr or "").strip() or None,
+        "ok": result.returncode == 0,
+    }
+    if payload["stdout"]:
+        try:
+            payload["json"] = json.loads(str(payload["stdout"]))
+        except Exception:
+            payload["json"] = None
+    return payload
 
 
 def _expected_commit_hash() -> str | None:
@@ -286,6 +375,7 @@ def _run_real_smoke_training(
     resume_from: str | None = None,
 ) -> dict[str, Any]:
     report_root = output_root / "reports"
+    compatibility_report = _load_torch_compatibility_report()
 
     def _run_with_timeout(cmd: list[str], *, timeout: int, stage: str) -> None:
         try:
@@ -294,17 +384,33 @@ def _run_real_smoke_training(
             _write_smoke_failure(report_root=report_root, stage=stage, exc=exc, torch_module=None)
             raise
 
-    def _ensure_runtime_packages() -> dict[str, str | None]:
+    def _ensure_runtime_packages(*, preflight: dict[str, Any] | None = None) -> dict[str, str | None]:
         installed: dict[str, str | None] = {}
+        preflight = preflight or {}
+        installed_plan = (preflight.get("preflight") or {}).get("install_plan") or {}
+        pip_groups = installed_plan.get("pip_groups") or []
+        if pip_groups:
+            for group in pip_groups:
+                packages = list(group.get("packages") or [])
+                if not packages:
+                    continue
+                command = [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir"]
+                index_url = group.get("index_url")
+                if index_url:
+                    command.extend(["--index-url", str(index_url)])
+                command.extend(packages)
+                _run_with_timeout(command, timeout=900, stage="dependencies_started")
         try:
             import torch
 
             cuda_capability = torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None
             installed["torch"] = torch.__version__
             installed["cuda_capability"] = f"{cuda_capability[0]}.{cuda_capability[1]}" if cuda_capability else None
+            installed["torch_cuda"] = getattr(torch.version, "cuda", None)
         except Exception:
             installed["torch"] = None
             installed["cuda_capability"] = None
+            installed["torch_cuda"] = None
         try:
             from importlib.metadata import version
 
@@ -313,14 +419,14 @@ def _run_real_smoke_training(
             installed["bitsandbytes"] = None
 
         required_packages = []
-        if installed["bitsandbytes"] is None or tuple(int(part) for part in str(installed["bitsandbytes"]).split(".")[:2] if part.isdigit()) < (0, 46):
-            required_packages.append("bitsandbytes>=0.46.1")
+        if installed["bitsandbytes"] is None or tuple(int(part) for part in str(installed["bitsandbytes"]).split(".")[:2] if part.isdigit()) < (0, 50):
+            required_packages.append("bitsandbytes>=0.50.2")
         for package in ("accelerate>=0.31", "peft>=0.11", "transformers>=4.43", "trl>=0.9", "safetensors>=0.4", "sentencepiece>=0.2.0"):
             required_packages.append(package)
 
         if required_packages:
             _run_with_timeout(
-                [sys.executable, "-m", "pip", "install", "-q", "--upgrade", *required_packages],
+                [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir", *required_packages],
                 timeout=600,
                 stage="dependencies_started",
             )
@@ -351,9 +457,12 @@ def _run_real_smoke_training(
         _write_import_preflight(
             report_root,
             torch_imported=torch is not None,
-            compatibility_bootstrap_ran=bool(COMPATIBILITY_REPORT.skip_code_patch_applied or COMPATIBILITY_REPORT.skip_code_present_before is not None),
-            skip_code_present_before=COMPATIBILITY_REPORT.skip_code_present_before,
-            skip_code_patch_applied=COMPATIBILITY_REPORT.skip_code_patch_applied,
+            compatibility_bootstrap_ran=bool(
+                getattr(compatibility_report, "skip_code_patch_applied", False)
+                or getattr(compatibility_report, "skip_code_present_before", None) is not None
+            ),
+            skip_code_present_before=getattr(compatibility_report, "skip_code_present_before", None),
+            skip_code_patch_applied=bool(getattr(compatibility_report, "skip_code_patch_applied", False)),
             transformers_import_attempted=False,
             transformers_import_succeeded=False,
         )
@@ -363,8 +472,8 @@ def _run_real_smoke_training(
             report_root,
             torch_imported=torch is not None,
             compatibility_bootstrap_ran=True,
-            skip_code_present_before=COMPATIBILITY_REPORT.skip_code_present_before,
-            skip_code_patch_applied=COMPATIBILITY_REPORT.skip_code_patch_applied,
+            skip_code_present_before=getattr(compatibility_report, "skip_code_present_before", None),
+            skip_code_patch_applied=bool(getattr(compatibility_report, "skip_code_patch_applied", False)),
             transformers_import_attempted=True,
             transformers_import_succeeded=True,
         )
@@ -378,8 +487,8 @@ def _run_real_smoke_training(
             report_root,
             torch_imported=torch is not None,
             compatibility_bootstrap_ran=True,
-            skip_code_present_before=COMPATIBILITY_REPORT.skip_code_present_before,
-            skip_code_patch_applied=COMPATIBILITY_REPORT.skip_code_patch_applied,
+            skip_code_present_before=getattr(compatibility_report, "skip_code_present_before", None),
+            skip_code_patch_applied=bool(getattr(compatibility_report, "skip_code_patch_applied", False)),
             transformers_import_attempted=True,
             transformers_import_succeeded=False,
             error=exc,
@@ -679,12 +788,22 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
             "dataset_verification": canonical_verification,
             "paths": paths.to_dict(),
         }
+    breadcrumbs_path = paths.reports / "smoke_breadcrumbs.jsonl"
+    dependency_preflight = _run_dependency_compatibility_preflight(report_root=paths.reports, breadcrumbs_path=breadcrumbs_path)
+    _stage_guard(stage="dependencies_started", report_root=paths.reports, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap")
+    runtime_packages = _ensure_runtime_packages(preflight=dependency_preflight)
+    _stage_guard(stage="dependencies_complete", report_root=paths.reports, breadcrumbs_path=breadcrumbs_path, safe_message="runtime packages checked")
+    post_install_preflight = _run_dependency_compatibility_preflight(report_root=paths.reports, breadcrumbs_path=breadcrumbs_path)
+    if not post_install_preflight["preflight"].get("compatibility_passed"):
+        failure_reason = post_install_preflight["preflight"].get("reason") or "dependency_preflight_failed"
+        exc = RuntimeError(failure_reason)
+        _write_smoke_failure(report_root=paths.reports, stage="dependency_compatibility_preflight", exc=exc, torch_module=None)
+        raise exc
     semantic_data = build_semantic_dataset_from_canonical(dataset_dir, output_root / "semantic_training")
     resume_checkpoint = detect_resume_checkpoint(paths.checkpoints, resume_from=resume_from)
     runtime = _safe_runtime_report(dataset_dir=dataset_dir, output_root=output_root)
     training_plan = build_training_plan(dataset_dir=Path(semantic_data["semantic_output_root"]), output_root=output_root)
     smoke_corpus = _build_smoke_corpus(Path(semantic_data["semantic_output_root"]), output_root)
-    breadcrumbs_path = paths.reports / "smoke_breadcrumbs.jsonl"
     smoke_failure: Exception | None = None
     try:
         smoke_training = _run_real_smoke_training(
@@ -717,6 +836,8 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
         safe_report_path,
         {
             "runtime": runtime,
+            "dependency_preflight": dependency_preflight,
+            "dependency_post_install_preflight": post_install_preflight,
             "training_plan": training_plan,
             "canonical_dataset_root": str(dataset_dir),
             "semantic_dataset_root": semantic_data["semantic_output_root"],
@@ -738,6 +859,9 @@ def run_notebook_flow(*, output_root: Path = KAGGLE_WORKING_ROOT, resume_from: s
         "expected_git_commit": expected_commit,
         "canonical_dataset_root": str(dataset_dir),
         "semantic_dataset_root": semantic_data["semantic_output_root"],
+        "dependency_preflight": dependency_preflight,
+        "dependency_post_install_preflight": post_install_preflight,
+        "dependency_preflight_passed": bool(post_install_preflight["preflight"].get("compatibility_passed")),
         "canonical_row_counts": {
             "train": int(semantic_data["bundle_report"].get("train_count", 0)),
             "validation": int(semantic_data["bundle_report"].get("validation_count", 0)),
