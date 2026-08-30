@@ -296,8 +296,8 @@ def test_dependency_preflight_selects_p100_cu118_stack(tmp_path):
     torch_probe = {
         "ok": True,
         "json": {
-            "version": "2.4.1+cu118",
-            "cuda": "11.8",
+            "version": "2.10.0+cu128",
+            "cuda": "12.8",
             "available": True,
             "device_name": "Tesla P100-PCIE-16GB",
             "capability": [6, 0],
@@ -341,8 +341,8 @@ def test_dependency_preflight_passes_after_cu118_verification():
     torch_probe = {
         "ok": True,
         "json": {
-            "version": "2.4.1+cu118",
-            "cuda": "11.8",
+            "version": "2.10.0+cu128",
+            "cuda": "12.8",
             "available": True,
             "device_name": "Tesla P100-PCIE-16GB",
             "capability": [6, 0],

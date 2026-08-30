@@ -279,10 +279,10 @@ def build_kaggle_dependency_plan(*, gpu_identity: dict[str, Any], torch_probe: d
     if compute_capability is not None and compute_capability < (7, 0):
         cuda_specs = (bitsandbytes_probe.get("json") or {}).get("cuda_specs") if bitsandbytes_probe.get("ok") else None
         bnb_supports_sm60 = bool(cuda_specs and cuda_specs.get("highest_compute_capability") and tuple(cuda_specs["highest_compute_capability"]) >= (6, 0))
-        torch_supports_sm60 = bool(torch_probe.get("ok") and (torch_probe.get("json") or {}).get("cuda") in {"11.8", "12.1", "12.4", "12.6"})
+        torch_supports_sm60 = bool(torch_probe.get("ok") and (torch_probe.get("json") or {}).get("cuda") in {"11.8", "12.1", "12.4", "12.6", "12.8"})
         compatibility_passed = torch_supports_sm60 and bnb_supports_sm60
         if not compatibility_passed:
-            reason = "sm60_requires_cu121_or_newer_compatible_torch_and_bitsandbytes"
+            reason = "sm60_requires_compatible_torch_and_bitsandbytes"
     elif not torch_probe.get("ok") or not bitsandbytes_probe.get("ok"):
         compatibility_passed = False
         reason = "runtime_probe_failed"
