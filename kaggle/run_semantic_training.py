@@ -386,6 +386,18 @@ def _run_real_smoke_training(
 
     def _ensure_runtime_packages(*, preflight: dict[str, Any] | None = None) -> dict[str, str | None]:
         installed: dict[str, str | None] = {}
+        if os.environ.get("KAGGLE_SKIP_DEP_INSTALL", "").strip().lower() in {"1", "true", "yes"}:
+            try:
+                from importlib.metadata import version
+
+                installed["torch"] = version("torch")
+                installed["bitsandbytes"] = version("bitsandbytes")
+                installed["transformers"] = version("transformers")
+                installed["accelerate"] = version("accelerate")
+                installed["peft"] = version("peft")
+            except Exception:
+                pass
+            return installed
         preflight = preflight or {}
         installed_plan = (preflight.get("preflight") or {}).get("install_plan") or {}
         pip_groups = installed_plan.get("pip_groups") or []

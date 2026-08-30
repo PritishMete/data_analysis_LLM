@@ -423,3 +423,32 @@ def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
     assert "src.training.benchmark" not in sys.modules
     assert hasattr(module, "COMPATIBILITY_REPORT")
     assert module.COMPATIBILITY_REPORT is None
+
+
+def test_bootstrap_environment_import_is_transformers_lazy(monkeypatch):
+    import importlib
+    import sys
+
+    sys.modules.pop("transformers", None)
+    sys.modules.pop("kaggle.bootstrap_environment", None)
+
+    module = importlib.import_module("kaggle.bootstrap_environment")
+
+    assert "transformers" not in sys.modules
+    assert hasattr(module, "main")
+
+
+def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_path):
+    import importlib
+
+    module = importlib.import_module("kaggle.execute_smoke_training")
+    monkeypatch.setattr("kaggle.run_semantic_training.run_notebook_flow", lambda **kwargs: {"smoke_training_report": {"ok": True}, "result": "ok"})
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: __import__("subprocess").CompletedProcess(args=args[0], returncode=0, stdout="0309f6e824127a1ebab2bf13a87cb7ab12ff3a61\n", stderr=""))
+
+    result_code = module.main(["--output-root", str(tmp_path), "--bootstrap-pid", "12345"])
+
+    payload = json.loads((tmp_path / "reports" / "smoke_heartbeat.json").read_text(encoding="utf-8"))
+    assert result_code == 0
+    assert payload["bootstrap_pid"] == 12345
+    assert payload["training_pid"] != 12345
+    assert payload["fresh_process_verified"] is True

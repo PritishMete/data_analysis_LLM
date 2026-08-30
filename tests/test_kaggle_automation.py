@@ -159,6 +159,7 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
         "smoke_breadcrumbs.jsonl",
         "smoke_failure.json",
         "dependency_preflight.json",
+        "dependency_install_result.json",
     }
 
 

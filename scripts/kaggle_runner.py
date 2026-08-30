@@ -33,6 +33,7 @@ SAFE_OUTPUT_NAMES = {
     "smoke_breadcrumbs.jsonl",
     "smoke_failure.json",
     "dependency_preflight.json",
+    "dependency_install_result.json",
 }
 
 
