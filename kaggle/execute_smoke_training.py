@@ -74,7 +74,6 @@ def main(argv: list[str] | None = None) -> int:
         ),
         encoding="utf-8",
     )
-    os.environ["KAGGLE_SKIP_DEP_INSTALL"] = "1"
     os.environ["KAGGLE_SMOKE_RUN_ID"] = resolved_run_id
     if args.expected_git_commit:
         os.environ["KAGGLE_EXPECTED_GIT_COMMIT"] = args.expected_git_commit

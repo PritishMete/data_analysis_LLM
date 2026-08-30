@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 from pathlib import Path
 
@@ -495,6 +496,7 @@ def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_pat
     module = importlib.import_module("kaggle.execute_smoke_training")
     monkeypatch.setattr("kaggle.run_semantic_training.run_notebook_flow", lambda **kwargs: {"smoke_training_report": {"ok": True}, "result": "ok"})
     monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: __import__("subprocess").CompletedProcess(args=args[0], returncode=0, stdout="0309f6e824127a1ebab2bf13a87cb7ab12ff3a61\n", stderr=""))
+    monkeypatch.delenv("KAGGLE_SKIP_DEP_INSTALL", raising=False)
 
     result_code = module.main(["--output-root", str(tmp_path), "--bootstrap-pid", "12345"])
 
@@ -503,6 +505,7 @@ def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_pat
     assert payload["bootstrap_pid"] == 12345
     assert payload["training_pid"] != 12345
     assert payload["fresh_process_verified"] is True
+    assert "KAGGLE_SKIP_DEP_INSTALL" not in os.environ
 
 
 def test_execute_smoke_training_supports_standalone_script_import():
