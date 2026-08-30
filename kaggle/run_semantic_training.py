@@ -564,8 +564,8 @@ def _run_real_smoke_training(
             installed["bitsandbytes"] = None
 
         required_packages = []
-        if installed["bitsandbytes"] is None or tuple(int(part) for part in str(installed["bitsandbytes"]).split(".")[:2] if part.isdigit()) < (0, 50):
-            required_packages.append("bitsandbytes>=0.50.2")
+        if installed["bitsandbytes"] is None or tuple(int(part) for part in str(installed["bitsandbytes"]).split(".")[:2] if part.isdigit()) < (0, 43):
+            required_packages.append("bitsandbytes==0.43.3")
         for package in ("accelerate>=0.31", "peft>=0.11", "transformers>=4.43", "trl>=0.9", "safetensors>=0.4", "sentencepiece>=0.2.0"):
             required_packages.append(package)
 
