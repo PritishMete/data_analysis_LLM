@@ -120,6 +120,20 @@ def _safe_commit_hash() -> str | None:
         return None
 
 
+def _run_command(args: list[str], *, timeout: int | None = None, check: bool = True, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=check,
+        timeout=timeout,
+        cwd=cwd,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+
+
 def _load_torch_compatibility_report() -> Any | None:
     try:
         from src.training.torch_compat import ensure_torch_dynamo_compatibility
