@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
 import sys
 import time
-import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -16,18 +16,16 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(repo_root))
     from kaggle.bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths, inspect_kaggle_gpu_identity  # type: ignore[no-redef]
     from kaggle.import_trace import write_import_trace  # type: ignore[no-redef]
+    from kaggle.p100_torch_runtime import run_shared_p100_torch_bootstrap, run_shared_p100_torch_validation  # type: ignore[no-redef]
     from kaggle.run_context import ensure_run_root, generate_run_id, resolve_current_run_id, resolve_executed_source_commit, write_source_identity  # type: ignore[no-redef]
 else:
     from .bootstrap import KAGGLE_WORKING_ROOT, ensure_kaggle_paths, inspect_kaggle_gpu_identity
     from .import_trace import write_import_trace
+    from .p100_torch_runtime import run_shared_p100_torch_bootstrap, run_shared_p100_torch_validation
     from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, resolve_executed_source_commit, write_source_identity
 
 
 WORKFLOW_MODE = "bnb_compat"
-TORCH_REQUESTED_VERSION = "2.5.1+cu118"
-TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu118"
-TORCH_PACKAGES = ["torch==2.5.1", "torchvision==0.20.1", "torchaudio==2.5.1"]
-TORCH_INSTALL_TIMEOUT_SECONDS = 900
 BNB_REQUESTED_VERSION = "0.43.3"
 BNB_INSTALL_TIMEOUT_SECONDS = 900
 BNB_RUNTIME_TIMEOUT_SECONDS = 120
@@ -41,10 +39,7 @@ class BnbCompatCycleReport:
     expected_git_commit: str | None
     executed_git_commit: str | None
     workflow_mode: str
-    torch_preinstall: dict[str, Any]
-    torch_install: dict[str, Any]
-    torch_runtime: dict[str, Any]
-    torch_cuda: dict[str, Any]
+    shared_torch_bootstrap: dict[str, Any]
     gpu: dict[str, Any]
     installer: dict[str, Any]
     import_probe: dict[str, Any]
@@ -68,10 +63,6 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
         handle.flush()
-        try:
-            os.fsync(handle.fileno())
-        except Exception:
-            pass
 
 
 def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
@@ -80,15 +71,7 @@ def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
     return "\n".join(text.splitlines()[-lines:])
 
 
-def _write_heartbeat(
-    report_root: Path,
-    *,
-    stage: str,
-    run_id: str,
-    expected_git_commit: str | None,
-    executed_git_commit: str | None,
-    safe_message: str,
-) -> None:
+def _write_heartbeat(report_root: Path, *, stage: str, run_id: str, expected_git_commit: str | None, executed_git_commit: str | None, safe_message: str) -> None:
     _write_json(
         report_root / "smoke_heartbeat.json",
         {
@@ -151,10 +134,12 @@ def _write_failure(
         "safe_stderr_tail": _safe_tail(stderr),
     }
     try:
+        import traceback
+
         payload["traceback_tail"] = "\n".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-25:])
     except Exception:
         payload["traceback_tail"] = None
-    for name in ("torch", "bitsandbytes"):
+    for name in ("torch", "bitsandbytes", "transformers", "peft"):
         try:
             from importlib.metadata import version
 
@@ -199,70 +184,7 @@ raise SystemExit(result.returncode)
 """
 
 
-def _torch_install_snippet() -> str:
-    return f"""
-import subprocess, sys
-cmd = [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir", "--index-url", "{TORCH_INDEX_URL}", *{TORCH_PACKAGES!r}]
-result = subprocess.run(cmd, check=False)
-raise SystemExit(result.returncode)
-"""
-
-
-def _torch_probe_snippet() -> str:
-    return """
-import json
-import torch
-import torch._dynamo
-from torch._C._dynamo.eval_frame import skip_code
-
-payload = {
-    "torch_version": torch.__version__,
-    "torch_cuda_version": getattr(torch.version, "cuda", None),
-    "torch_dynamo_import_passed": True,
-    "skip_code_available": callable(skip_code),
-    "gpu_available": bool(torch.cuda.is_available()),
-    "gpu_name": None,
-    "compute_capability": None,
-    "arch_list": None,
-}
-if payload["gpu_available"]:
-    payload["gpu_name"] = torch.cuda.get_device_name(0)
-    payload["compute_capability"] = list(torch.cuda.get_device_capability(0))
-    try:
-        payload["arch_list"] = list(torch.cuda.get_arch_list())
-    except Exception:
-        payload["arch_list"] = None
-print(json.dumps(payload))
-"""
-
-
-def _torch_cuda_validation_snippet() -> str:
-    return """
-import json
-import torch
-
-payload = {
-    "cuda_available": bool(torch.cuda.is_available()),
-    "device_name": None,
-    "capability": None,
-    "arch_list": list(torch.cuda.get_arch_list()) if hasattr(torch.cuda, "get_arch_list") else None,
-    "basic_cuda_tensor_test": False,
-    "synchronize": False,
-}
-if payload["cuda_available"]:
-    payload["device_name"] = torch.cuda.get_device_name(0)
-    payload["capability"] = list(torch.cuda.get_device_capability(0))
-    x = torch.tensor([1.0], device="cuda")
-    y = torch.tensor([2.0], device="cuda")
-    z = x @ y.reshape(1, 1)
-    torch.cuda.synchronize()
-    payload["basic_cuda_tensor_test"] = bool(z.item() == 2.0)
-    payload["synchronize"] = True
-print(json.dumps(payload))
-"""
-
-
-def _make_bnb_import_probe_snippet() -> str:
+def _bnb_import_snippet() -> str:
     return """
 import json
 import torch
@@ -293,6 +215,38 @@ try:
     payload["selected_native_cuda_library"] = getattr(lib, "_name", None) or getattr(lib, "__file__", None) or None
 except Exception as exc:
     payload["selected_native_cuda_library_error"] = str(exc)
+print(json.dumps(payload))
+"""
+
+
+def _bnb_cuda_snippet() -> str:
+    return """
+import json
+import torch
+import bitsandbytes as bnb
+from bitsandbytes import cextension
+
+payload = {
+    "cuda_available": bool(torch.cuda.is_available()),
+    "device_name": None,
+    "capability": None,
+    "arch_list": list(torch.cuda.get_arch_list()) if hasattr(torch.cuda, "get_arch_list") else None,
+    "basic_cuda_tensor_test": False,
+    "cuda_backend_active": False,
+    "bnb_version": bnb.__version__,
+}
+if payload["cuda_available"]:
+    payload["device_name"] = torch.cuda.get_device_name(0)
+    payload["capability"] = list(torch.cuda.get_device_capability(0))
+    x = torch.ones((2, 2), device="cuda")
+    y = torch.ones((2, 2), device="cuda")
+    z = x @ y
+    torch.cuda.synchronize()
+    payload["basic_cuda_tensor_test"] = bool(z.sum().item() == 8.0)
+try:
+    payload["cuda_backend_active"] = bool(getattr(cextension, "lib", None) is not None or getattr(cextension, "CUDASetup", None) is not None)
+except Exception as exc:
+    payload["cuda_backend_error"] = str(exc)
 print(json.dumps(payload))
 """
 
@@ -353,91 +307,13 @@ def _run_json_probe(command: list[str], *, timeout: int, label: str) -> dict[str
     return payload
 
 
-def _run_torch_preflight(report_root: Path, *, run_id: str, expected_git_commit: str | None, executed_git_commit: str | None, breadcrumbs_path: Path, repo_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    _emit_breadcrumb(breadcrumbs_path, stage="torch_precheck_started", success=True, safe_message="torch precheck start", run_id=run_id)
-    _write_heartbeat(report_root, stage="torch_precheck_started", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="torch precheck start")
-
-    preinstall = _run_json_probe([sys.executable, "-c", _torch_probe_snippet()], timeout=60, label="torch_preinstall")
-    _write_json(report_root / "probe_torch_preinstall.json", preinstall)
-    if not preinstall.get("ok"):
-        exc = RuntimeError("torch_preinstall_failed")
-        _write_failure(report_root, stage="torch_precheck", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=preinstall.get("stdout"), stderr=preinstall.get("stderr"))
-        raise exc
-
-    _emit_breadcrumb(breadcrumbs_path, stage="torch_install_started", success=True, safe_message="torch install start", run_id=run_id)
-    _write_heartbeat(report_root, stage="torch_install_started", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="torch install start")
-    installer = _run_command([sys.executable, "-c", _torch_install_snippet()], timeout=TORCH_INSTALL_TIMEOUT_SECONDS, cwd=repo_root)
-    torch_install = {
-        "ok": installer.returncode == 0,
-        "returncode": installer.returncode,
-        "stdout_tail": _safe_tail(installer.stdout),
-        "stderr_tail": _safe_tail(installer.stderr),
-        "requested_version": TORCH_REQUESTED_VERSION,
-    }
-    _write_json(report_root / "probe_torch_install.json", torch_install)
-    _emit_breadcrumb(breadcrumbs_path, stage="torch_install_complete", success=bool(installer.returncode == 0), safe_message="torch install complete", run_id=run_id)
-    _write_heartbeat(report_root, stage="torch_install_complete", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="torch install complete")
-    if installer.returncode != 0:
-        exc = RuntimeError("torch_install_failed")
-        _write_failure(report_root, stage="torch_install", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=installer.stdout, stderr=installer.stderr)
-        raise exc
-
-    runtime_probe = _run_json_probe([sys.executable, "-c", _torch_probe_snippet()], timeout=60, label="torch_runtime")
-    _write_json(report_root / "probe_torch_runtime.json", runtime_probe)
-    if not runtime_probe.get("ok"):
-        exc = RuntimeError("torch_runtime_failed")
-        _write_failure(report_root, stage="torch_runtime", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=runtime_probe.get("stdout"), stderr=runtime_probe.get("stderr"))
-        raise exc
-
-    cuda_probe = _run_json_probe([sys.executable, "-c", _torch_cuda_validation_snippet()], timeout=60, label="torch_cuda")
-    _write_json(report_root / "probe_torch_cuda_runtime.json", cuda_probe)
-    if not cuda_probe.get("ok"):
-        exc = RuntimeError("torch_cuda_validation_failed")
-        _write_failure(report_root, stage="torch_cuda", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=cuda_probe.get("stdout"), stderr=cuda_probe.get("stderr"))
-        raise exc
-
-    cuda_json = cuda_probe.get("json") or {}
-    if not (cuda_json.get("cuda_available") and cuda_json.get("basic_cuda_tensor_test") and cuda_json.get("capability") == [6, 0] and "sm_60" in (cuda_json.get("arch_list") or [])):
-        exc = RuntimeError("p100_torch_runtime_not_reproducible")
-        _write_failure(report_root, stage="torch_cuda", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=cuda_probe.get("stdout"), stderr=cuda_probe.get("stderr"))
-        raise exc
-
-    return preinstall, torch_install, runtime_probe, cuda_probe
-
-
-def _bnb_import_snippet() -> str:
-    return """
-import json
-import torch
-import bitsandbytes as bnb
-from bitsandbytes import cextension
-
-payload = {
-    "torch_version": torch.__version__,
-    "torch_cuda_version": getattr(torch.version, "cuda", None),
-    "bnb_version": bnb.__version__,
-    "bnb_file": getattr(bnb, "__file__", None),
-    "available_cuda_versions": None,
-    "cuda_backend_active": False,
-    "selected_native_cuda_library": None,
-}
-try:
-    payload["available_cuda_versions"] = list(cextension.get_available_cuda_binary_versions())
-except Exception as exc:
-    payload["available_cuda_versions_error"] = str(exc)
-try:
-    available_versions = payload.get("available_cuda_versions") or []
-    torch_cuda_version = payload.get("torch_cuda_version")
-    payload["cuda_backend_active"] = bool(torch.cuda.is_available() and available_versions and (torch_cuda_version in available_versions or torch_cuda_version is not None))
-except Exception as exc:
-    payload["cuda_backend_error"] = str(exc)
-try:
-    lib = getattr(cextension, "lib", None)
-    payload["selected_native_cuda_library"] = getattr(lib, "_name", None) or getattr(lib, "__file__", None) or None
-except Exception as exc:
-    payload["selected_native_cuda_library_error"] = str(exc)
-print(json.dumps(payload))
-"""
+def _run_torch_preflight(report_root: Path, *, run_id: str, expected_git_commit: str | None, executed_git_commit: str | None, breadcrumbs_path: Path, repo_root: Path) -> dict[str, Any]:
+    torch_result = run_shared_p100_torch_bootstrap(report_root=report_root, repo_root=repo_root, phase_prefix="bnb_compat", write_markers=True)
+    _emit_breadcrumb(breadcrumbs_path, stage="dependency_precheck_complete", success=bool(torch_result.get("verdict") == "P100_TORCH_RUNTIME_PASSED"), safe_message=str(torch_result.get("verdict") or "unknown"), run_id=run_id)
+    _write_heartbeat(report_root, stage="dependency_precheck_complete", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message=str(torch_result.get("verdict") or "unknown"))
+    if not torch_result.get("sm_60_supported") or not torch_result.get("basic_cuda_tensor_test"):
+        raise RuntimeError("PYTORCH_SM60_UNSUPPORTED")
+    return torch_result
 
 
 def run_bnb_compat_cycle(
@@ -476,18 +352,7 @@ def run_bnb_compat_cycle(
     _emit_breadcrumb(breadcrumbs_path, stage="repo_checkout_complete", success=True, safe_message="repo checkout complete", run_id=run_id)
     _write_heartbeat(report_root, stage="repo_checkout_complete", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="repo checkout complete")
 
-    torch_preinstall, torch_install, torch_runtime, torch_cuda = _run_torch_preflight(
-        report_root,
-        run_id=run_id,
-        expected_git_commit=expected_git_commit,
-        executed_git_commit=executed_git_commit,
-        breadcrumbs_path=breadcrumbs_path,
-        repo_root=repo_root,
-    )
-
-    _emit_breadcrumb(breadcrumbs_path, stage="dependency_precheck_started", success=True, safe_message="bnb precheck start", run_id=run_id)
-    _write_heartbeat(report_root, stage="dependency_precheck_started", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="bnb precheck start")
-    _write_json(report_root / "probe_bnb_precheck.json", torch_runtime)
+    torch_result = _run_torch_preflight(report_root, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, breadcrumbs_path=breadcrumbs_path, repo_root=repo_root)
 
     _emit_breadcrumb(breadcrumbs_path, stage="dependency_install_started", success=True, safe_message="bnb install start", run_id=run_id)
     _write_heartbeat(report_root, stage="dependency_install_started", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="bnb install start")
@@ -498,14 +363,15 @@ def run_bnb_compat_cycle(
         "stdout_tail": _safe_tail(installer.stdout),
         "stderr_tail": _safe_tail(installer.stderr),
         "requested_version": BNB_REQUESTED_VERSION,
-        "torch_distribution": None,
+        "torch_distribution_before": torch_result.get("torch_version"),
+        "torch_distribution_after": None,
     }
     try:
         from importlib.metadata import version
 
-        installer_payload["torch_distribution"] = version("torch")
+        installer_payload["torch_distribution_after"] = version("torch")
     except Exception:
-        installer_payload["torch_distribution"] = None
+        installer_payload["torch_distribution_after"] = None
     _write_json(report_root / "probe_bnb_install.json", installer_payload)
     _emit_breadcrumb(breadcrumbs_path, stage="dependency_install_complete", success=bool(installer.returncode == 0), safe_message="bnb install complete", run_id=run_id)
     _write_heartbeat(report_root, stage="dependency_install_complete", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="bnb install complete")
@@ -514,17 +380,10 @@ def run_bnb_compat_cycle(
         _write_failure(report_root, stage="dependency_install_complete", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=installer.stdout, stderr=installer.stderr)
         raise exc
 
-    post_install_torch_probe = _run_json_probe([sys.executable, "-c", _torch_probe_snippet()], timeout=60, label="torch_runtime")
-    _write_json(report_root / "probe_torch_runtime.json", post_install_torch_probe)
-    if not post_install_torch_probe.get("ok"):
-        exc = RuntimeError("torch_runtime_drift_after_bnb_install")
-        _write_failure(report_root, stage="torch_runtime_after_bnb_install", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=post_install_torch_probe.get("stdout"), stderr=post_install_torch_probe.get("stderr"))
-        raise exc
-    post_install_cuda_probe = _run_json_probe([sys.executable, "-c", _torch_cuda_validation_snippet()], timeout=60, label="torch_cuda")
-    _write_json(report_root / "probe_torch_cuda_runtime.json", post_install_cuda_probe)
-    if not post_install_cuda_probe.get("ok"):
-        exc = RuntimeError("torch_cuda_drift_after_bnb_install")
-        _write_failure(report_root, stage="torch_cuda_after_bnb_install", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=post_install_cuda_probe.get("stdout"), stderr=post_install_cuda_probe.get("stderr"))
+    post_install_torch = run_shared_p100_torch_validation(report_root=report_root, phase_prefix="bnb_compat", write_markers=True)
+    if post_install_torch.get("torch_version") != torch_result.get("torch_version"):
+        exc = RuntimeError("TORCH_VERSION_DRIFT")
+        _write_failure(report_root, stage="torch_version_drift", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit)
         raise exc
 
     import_probe = _run_json_probe([sys.executable, "-c", _bnb_import_snippet()], timeout=BNB_RUNTIME_TIMEOUT_SECONDS, label="bnb_import")
@@ -534,40 +393,7 @@ def run_bnb_compat_cycle(
         _write_failure(report_root, stage="bnb_import", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=import_probe.get("stdout"), stderr=import_probe.get("stderr"))
         raise exc
 
-    cuda_probe = _run_json_probe([sys.executable, "-c", _torch_cuda_validation_snippet().replace("import torch\n", "import torch\nimport bitsandbytes as bnb\nfrom bitsandbytes import cextension\n")], timeout=BNB_CUDA_TIMEOUT_SECONDS, label="bnb_cuda")
-    if cuda_probe.get("json") is None:
-        cuda_probe = _run_json_probe(
-            [sys.executable, "-c", """
-import json
-import torch
-import bitsandbytes as bnb
-from bitsandbytes import cextension
-payload = {
-    "cuda_available": bool(torch.cuda.is_available()),
-    "device_name": None,
-    "capability": None,
-    "arch_list": list(torch.cuda.get_arch_list()) if hasattr(torch.cuda, "get_arch_list") else None,
-    "basic_cuda_tensor_test": False,
-    "cuda_backend_active": False,
-    "bnb_version": bnb.__version__,
-}
-if payload["cuda_available"]:
-    payload["device_name"] = torch.cuda.get_device_name(0)
-    payload["capability"] = list(torch.cuda.get_device_capability(0))
-    x = torch.ones((2, 2), device="cuda")
-    y = torch.ones((2, 2), device="cuda")
-    z = x @ y
-    torch.cuda.synchronize()
-    payload["basic_cuda_tensor_test"] = bool(z.sum().item() == 8.0)
-try:
-    payload["cuda_backend_active"] = bool(getattr(cextension, "lib", None) is not None or getattr(cextension, "CUDASetup", None) is not None)
-except Exception as exc:
-    payload["cuda_backend_error"] = str(exc)
-print(json.dumps(payload))
-"""],
-            timeout=BNB_CUDA_TIMEOUT_SECONDS,
-            label="bnb_cuda",
-        )
+    cuda_probe = _run_json_probe([sys.executable, "-c", _bnb_cuda_snippet()], timeout=BNB_CUDA_TIMEOUT_SECONDS, label="bnb_cuda")
     _write_json(report_root / "probe_bnb_cuda.json", cuda_probe)
     if not cuda_probe["ok"]:
         exc = RuntimeError("bitsandbytes_cuda_failed")
@@ -575,15 +401,10 @@ print(json.dumps(payload))
         raise exc
 
     cuda_json = cuda_probe.get("json") or {}
-    cuda_available = bool(cuda_json.get("cuda_available"))
-    capability = tuple(cuda_json.get("capability") or [])
-    arch_list = list(cuda_json.get("arch_list") or [])
-    sm60_supported = capability == (6, 0) and "sm_60" in arch_list
     cuda_backend_active = bool((import_probe.get("json") or {}).get("cuda_backend_active"))
     if not cuda_backend_active:
         verdict = "BITSANDBYTES_CPU_FALLBACK"
-    elif not sm60_supported:
-        verdict = "NF4_P100_UNSUPPORTED"
+        nf4_probe = {"ok": False, "json": None}
     else:
         nf4_probe = _run_json_probe([sys.executable, "-c", _nf4_probe_snippet()], timeout=NF4_TIMEOUT_SECONDS, label="nf4")
         _write_json(report_root / "probe_nf4.json", nf4_probe)
@@ -596,26 +417,25 @@ print(json.dumps(payload))
             verdict = "NF4_RUNTIME_FAILED"
         else:
             verdict = "BNB_NF4_P100_RUNTIME_PASSED"
+
     final_report = BnbCompatCycleReport(
         run_id=run_id,
         expected_git_commit=expected_git_commit,
         executed_git_commit=executed_git_commit,
         workflow_mode=WORKFLOW_MODE,
-        torch_preinstall=torch_preinstall,
-        torch_install=torch_install,
-        torch_runtime=post_install_torch_probe,
-        torch_cuda=post_install_cuda_probe,
+        shared_torch_bootstrap=torch_result,
         gpu=inspect_kaggle_gpu_identity(),
         installer=installer_payload,
         import_probe=import_probe,
         cuda_probe=cuda_probe,
-        nf4_probe=(locals().get("nf4_probe") or {"ok": False, "json": None}),
+        nf4_probe=nf4_probe,
         artifact_paths={
             "probe_torch_preinstall.json": str(report_root / "probe_torch_preinstall.json"),
             "probe_torch_install.json": str(report_root / "probe_torch_install.json"),
             "probe_torch_runtime.json": str(report_root / "probe_torch_runtime.json"),
             "probe_torch_cuda_runtime.json": str(report_root / "probe_torch_cuda_runtime.json"),
-            "probe_bnb_precheck.json": str(report_root / "probe_bnb_precheck.json"),
+            "shared_torch_bootstrap_result.json": str(report_root / "shared_torch_bootstrap_result.json"),
+            "shared_torch_runtime_result.json": str(report_root / "shared_torch_runtime_result.json"),
             "probe_bnb_install.json": str(report_root / "probe_bnb_install.json"),
             "probe_bnb_import.json": str(report_root / "probe_bnb_import.json"),
             "probe_bnb_cuda.json": str(report_root / "probe_bnb_cuda.json"),

@@ -53,12 +53,18 @@ SAFE_OUTPUT_NAMES = {
     "smoke_failure.json",
     "dependency_preflight.json",
     "dependency_install_result.json",
+    "probe_torch_preinstall.json",
     "bnb_compat_report.json",
     "probe_bnb_precheck.json",
     "probe_bnb_install.json",
     "probe_bnb_import.json",
     "probe_bnb_cuda.json",
     "probe_nf4.json",
+    "probe_torch_install.json",
+    "probe_torch_runtime.json",
+    "probe_torch_import_runtime.json",
+    "probe_torch_cuda_runtime.json",
+    "probe_torch_runtime_post_bnb.json",
 }
 
 WINDOWS_EXE_NAME = "kaggle.exe" if os.name == "nt" else "kaggle"
@@ -159,6 +165,10 @@ def _run_command(args: list[str], *, check: bool = True, timeout: int | None = N
     )
 
 
+def _safe_subprocess(args: list[str], *, check: bool = True, timeout: int | None = None, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    return _run_command(args, check=check, timeout=timeout, cwd=cwd)
+
+
 def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
     if not text:
         return None
@@ -235,6 +245,22 @@ def _sdk_kernel_status(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str |
 
 def kaggle_cli_available() -> bool:
     return _kaggle_command_available()
+
+
+def available_commands() -> list[str]:
+    return [
+        "preflight",
+        "push",
+        "run",
+        "status",
+        "outputs",
+        "full-cycle",
+        "smoke-cycle",
+        "torch-compat-cycle",
+        "bnb-compat-cycle",
+        "diagnose",
+        "report",
+    ]
 
 
 def _kaggle_python_available() -> bool:
