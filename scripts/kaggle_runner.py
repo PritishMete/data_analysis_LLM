@@ -47,6 +47,12 @@ SAFE_OUTPUT_NAMES = {
     "smoke_failure.json",
     "dependency_preflight.json",
     "dependency_install_result.json",
+    "bnb_compat_report.json",
+    "probe_bnb_precheck.json",
+    "probe_bnb_install.json",
+    "probe_bnb_import.json",
+    "probe_bnb_cuda.json",
+    "probe_nf4.json",
 }
 
 
@@ -529,7 +535,7 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
             "enable_internet": spec.enable_internet,
         },
         "internet_required": spec.enable_internet,
-        "available_commands": ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle", "torch-compat-cycle"],
+        "available_commands": ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle", "torch-compat-cycle", "bnb-compat-cycle"],
         "ready": bool(kaggle_cli_available() and auth.available and dataset_ok and repo.head),
         "one_time_action": None if auth.available else "configure Kaggle CLI credentials in ~/.kaggle/kaggle.json or KAGGLE_CONFIG_DIR",
     }
@@ -1047,6 +1053,23 @@ def torch_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNot
     }
 
 
+def bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
+    spec = spec or KaggleNotebookSpec(workflow_mode="bnb_compat")
+    resolved_run_id = run_id or generate_run_id(git_commit=get_repo_state().head)
+    stage_root = _resolve_stage_root(stage_root, resolved_run_id)
+    preflight_result = preflight(spec, stage_root=stage_root)
+    if not preflight_result["ready"]:
+        raise KaggleAutomationError(preflight_result.get("one_time_action") or "preflight_failed")
+    run_result = run(spec, stage_root=stage_root, run_id=resolved_run_id)
+    output_result = outputs(spec, stage_root=stage_root)
+    return {
+        "run_id": resolved_run_id,
+        "preflight": preflight_result,
+        "run": run_result,
+        "outputs": output_result,
+    }
+
+
 def diagnose(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
     spec = spec or KaggleNotebookSpec()
     stage_root = _resolve_stage_root(stage_root, run_id)
@@ -1127,6 +1150,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("full-cycle")
     sub.add_parser("smoke-cycle")
     sub.add_parser("torch-compat-cycle")
+    sub.add_parser("bnb-compat-cycle")
     sub.add_parser("diagnose")
     report = sub.add_parser("report")
     report.add_argument("--run-id", required=True)
@@ -1161,6 +1185,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json(smoke_cycle(stage_root=args.stage_root, spec=spec, run_id=args.run_id))
         elif args.command == "torch-compat-cycle":
             _emit_json(torch_compat_cycle(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "torch_compat"}), run_id=args.run_id))
+        elif args.command == "bnb-compat-cycle":
+            _emit_json(bnb_compat_cycle(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "bnb_compat"}), run_id=args.run_id))
         elif args.command == "diagnose":
             _emit_json(diagnose(stage_root=args.stage_root, spec=spec, run_id=args.run_id))
         elif args.command == "report":

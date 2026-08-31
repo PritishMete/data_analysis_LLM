@@ -151,6 +151,7 @@ def test_torch_compat_cycle_available_in_preflight_commands(monkeypatch, tmp_pat
     payload = kaggle_runner.preflight(stage_root=tmp_path / "stage")
 
     assert "torch-compat-cycle" in payload["available_commands"]
+    assert "bnb-compat-cycle" in payload["available_commands"]
 
 
 def test_torch_compat_cycle_sets_workflow_mode(tmp_path, monkeypatch):
@@ -166,6 +167,22 @@ def test_torch_compat_cycle_sets_workflow_mode(tmp_path, monkeypatch):
     result = kaggle_runner.torch_compat_cycle(stage_root=tmp_path / "stage")
 
     assert observed["workflow_mode"] == "torch_compat"
+    assert result["preflight"]["ready"] is True
+
+
+def test_bnb_compat_cycle_sets_workflow_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
+    observed = {}
+
+    monkeypatch.setattr(kaggle_runner, "preflight", lambda spec, stage_root: {"ready": True, "spec": spec.to_dict(), "stage_root": str(stage_root)})
+    monkeypatch.setattr(kaggle_runner, "run", lambda spec, stage_root, run_id=None: observed.setdefault("workflow_mode", spec.workflow_mode) or {"status": "complete"})
+    monkeypatch.setattr(kaggle_runner, "outputs", lambda spec, stage_root: {"downloaded_safe_artifacts": []})
+
+    result = kaggle_runner.bnb_compat_cycle(stage_root=tmp_path / "stage")
+
+    assert observed["workflow_mode"] == "bnb_compat"
     assert result["preflight"]["ready"] is True
 
 
@@ -188,6 +205,12 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
         "smoke_failure.json",
         "dependency_preflight.json",
         "dependency_install_result.json",
+        "bnb_compat_report.json",
+        "probe_bnb_precheck.json",
+        "probe_bnb_install.json",
+        "probe_bnb_import.json",
+        "probe_bnb_cuda.json",
+        "probe_nf4.json",
     }
 
 
