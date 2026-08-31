@@ -285,22 +285,58 @@ def test_run_command_uses_utf8_safe_subprocess(monkeypatch):
     assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
 
 
-def test_kaggle_module_preferred_over_system_cli(monkeypatch):
-    calls = []
+def test_resolve_kaggle_executable_prefers_repo_venv_over_path(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    venv_exe = repo_root / ".venv" / "Scripts" / "kaggle.exe"
+    path_exe = tmp_path / "path" / "kaggle.exe"
+    python_exe = repo_root / "Python313" / "python.exe"
+    venv_exe.parent.mkdir(parents=True, exist_ok=True)
+    path_exe.parent.mkdir(parents=True, exist_ok=True)
+    python_exe.parent.mkdir(parents=True, exist_ok=True)
+    venv_exe.write_text("venv", encoding="utf-8")
+    path_exe.write_text("path", encoding="utf-8")
+    python_exe.write_text("python", encoding="utf-8")
 
-    monkeypatch.setattr(kaggle_runner, "_kaggle_python_available", lambda: True)
-    monkeypatch.setattr(kaggle_runner.shutil, "which", lambda name: "/usr/bin/kaggle")
+    monkeypatch.setattr(kaggle_runner, "REPO_ROOT", repo_root)
+    monkeypatch.setattr(kaggle_runner.sys, "executable", str(python_exe))
+    monkeypatch.setattr(kaggle_runner.shutil, "which", lambda name: str(path_exe))
+
+    assert kaggle_runner._resolve_kaggle_executable() == str(venv_exe)
+
+
+def test_kaggle_auth_uses_access_token_and_resolves_username(monkeypatch, tmp_path):
+    token_dir = tmp_path / ".kaggle"
+    token = token_dir / "access_token.txt"
+    token_dir.mkdir(parents=True, exist_ok=True)
+    token.write_text("secret-token", encoding="utf-8")
+    monkeypatch.setattr(kaggle_runner.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(kaggle_runner, "_discover_username_from_cli", lambda: "jaistudio")
+
+    auth = kaggle_runner.discover_kaggle_auth()
+
+    assert auth.available is True
+    assert auth.source == "access_token"
+    assert auth.username == "jaistudio"
+    assert "secret-token" not in json.dumps(auth.to_dict()).lower()
+
+
+def test_kaggle_command_uses_resolved_executable(monkeypatch, tmp_path):
+    calls = []
+    exe = tmp_path / "Scripts" / "kaggle.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text("kaggle", encoding="utf-8")
+    monkeypatch.setattr(kaggle_runner, "_resolve_kaggle_executable", lambda: str(exe))
     monkeypatch.setattr(kaggle_runner, "_run_command", lambda args, **kwargs: calls.append(args) or _completed("ok"))
 
     result = kaggle_runner._kaggle("kernels", "status", "user/notebook", timeout=5)
 
     assert result.stdout == "ok"
-    assert calls[0][:3] == [kaggle_runner.sys.executable, "-m", "kaggle"]
+    assert calls[0][0] == str(exe)
 
 
 def test_sdk_kernel_status_is_used_for_preflight(monkeypatch, tmp_path):
     monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
-    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "access_token"))
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jaistudio", "/tmp/kaggle.json", "access_token"))
     monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
     monkeypatch.setattr(kaggle_runner, "_sdk_kernel_status", lambda auth, spec: "RUNNING")
     monkeypatch.setattr(kaggle_runner, "_kaggle_checked", lambda *args, **kwargs: _completed("file1\nfile2\n"))
@@ -421,9 +457,10 @@ def test_bounded_kaggle_call_writes_failure_on_timeout(monkeypatch, tmp_path):
 
 
 def test_diagnose_reports_heartbeat_and_postmortem(monkeypatch, tmp_path):
-    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "access_token"))
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jaistudio", "/tmp/kaggle.json", "access_token"))
     monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
     monkeypatch.setattr(kaggle_runner, "_status_payload", lambda spec, stage_root: {"status": "RUNNING"})
+    monkeypatch.setattr(kaggle_runner, "resolve_kaggle_runtime", lambda: {"python_executable": "python.exe", "kaggle_package_available": True, "kaggle_executable": "kaggle.exe", "kaggle_cli_available": True, "auth_available": True, "auth_source": "access_token", "auth_username_resolved": True, "kernel_ref": "jaistudio/data-analysis-llm-semantic-extractor", "kernel_ref_resolved": True})
     heartbeat_path = kaggle_runner._write_runner_heartbeat(
         phase="poll_iteration",
         kernel_ref="jiban/data-analysis-llm-semantic-extractor",
@@ -439,7 +476,37 @@ def test_diagnose_reports_heartbeat_and_postmortem(monkeypatch, tmp_path):
 
     assert result["auth"]["available"] is True
     assert result["expected_commit"] == "abc123"
+    assert result["kernel_ref"] == "jaistudio/data-analysis-llm-semantic-extractor"
+    assert result["kernel_ref_resolved"] is True
     assert result["runner_heartbeat"]["phase"] == "poll_iteration"
+
+
+def test_preflight_and_diagnose_report_resolved_kaggle_runtime(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jaistudio", "/tmp/kaggle/access_token.txt", "access_token"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
+    monkeypatch.setattr(kaggle_runner, "resolve_kaggle_runtime", lambda: {
+        "python_executable": "C:\\repo\\.venv\\Scripts\\python.exe",
+        "kaggle_package_available": True,
+        "kaggle_executable": "C:\\repo\\.venv\\Scripts\\kaggle.exe",
+        "kaggle_cli_available": True,
+        "auth_available": True,
+        "auth_source": "access_token",
+        "auth_username_resolved": True,
+        "kernel_ref": "jaistudio/data-analysis-llm-semantic-extractor",
+        "kernel_ref_resolved": True,
+    })
+    monkeypatch.setattr(kaggle_runner, "_sdk_kernel_status", lambda auth, spec: "RUNNING")
+    monkeypatch.setattr(kaggle_runner, "_kaggle_checked", lambda *args, **kwargs: _completed("ok"))
+
+    preflight_result = kaggle_runner.preflight(stage_root=tmp_path / "stage")
+    diagnose_result = kaggle_runner.diagnose(stage_root=tmp_path / "stage")
+
+    assert preflight_result["python_executable"].endswith("python.exe")
+    assert preflight_result["kaggle_executable"].endswith("kaggle.exe")
+    assert preflight_result["kernel_ref"] == "jaistudio/data-analysis-llm-semantic-extractor"
+    assert preflight_result["kernel_ref_resolved"] is True
+    assert diagnose_result["kernel_ref"] == "jaistudio/data-analysis-llm-semantic-extractor"
+    assert diagnose_result["kaggle_cli_available"] is True
 
 
 def test_training_package_import_is_lazy_for_benchmark(monkeypatch):
