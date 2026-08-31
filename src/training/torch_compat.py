@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +37,13 @@ def ensure_torch_dynamo_compatibility() -> TorchCompatibilityReport:
                 python_eval_frame = getattr(getattr(torch, "_dynamo", None), "eval_frame", None)
                 if python_eval_frame is not None and not hasattr(python_eval_frame, "skip_code"):
                     setattr(python_eval_frame, "skip_code", getattr(eval_frame, "skip_code"))
+                module_name = "torch._C._dynamo.eval_frame"
+                module = sys.modules.get(module_name)
+                if module is None:
+                    module = types.ModuleType(module_name)
+                    sys.modules[module_name] = module
+                if not hasattr(module, "skip_code"):
+                    setattr(module, "skip_code", getattr(eval_frame, "skip_code"))
             except Exception:
                 pass
             return TorchCompatibilityReport(torch_imported=True, skip_code_present_before=True, skip_code_patch_applied=False)
@@ -47,6 +56,13 @@ def ensure_torch_dynamo_compatibility() -> TorchCompatibilityReport:
             python_eval_frame = getattr(getattr(torch, "_dynamo", None), "eval_frame", None)
             if python_eval_frame is not None and not hasattr(python_eval_frame, "skip_code"):
                 setattr(python_eval_frame, "skip_code", _skip_code)
+            module_name = "torch._C._dynamo.eval_frame"
+            module = sys.modules.get(module_name)
+            if module is None:
+                module = types.ModuleType(module_name)
+                sys.modules[module_name] = module
+            if not hasattr(module, "skip_code"):
+                setattr(module, "skip_code", _skip_code)
         except Exception:
             pass
         return TorchCompatibilityReport(torch_imported=True, skip_code_present_before=False, skip_code_patch_applied=True)

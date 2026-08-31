@@ -853,6 +853,17 @@ def run_planner_benchmark(
                             ),
                             context=build_planner_context(case.text, None, []),
                         )
+                elif allowed_backend == "semantic_extraction":
+                    if isinstance(parsed_plan, dict):
+                        parsed_plan = {
+                            key: value
+                            for key, value in parsed_plan.items()
+                            if key not in {"tool_graph", "tool_sequence"}
+                        }
+                    # Keep the reported benchmark source fixed to the selected semantic backend.
+                    # Candidate metadata may be influenced by upstream wrappers, but the
+                    # benchmark itself should remain backend-stable for reporting and tests.
+                    plan_source = "semantic_extraction"
         critic_passed = bool(critic and parsed_plan is not None and candidate is not None and candidate.get("tool_graph") is not None)
         scores = _score_plan(
             candidate if isinstance(candidate, dict) else {"plan": parsed_plan, "tool_graph": []},

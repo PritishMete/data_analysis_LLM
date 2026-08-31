@@ -208,6 +208,21 @@ def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
             return None
 
         setattr(eval_frame, "skip_code", _skip_code)
+        try:
+            python_eval_frame = getattr(getattr(torch_module, "_dynamo", None), "eval_frame", None)
+            if python_eval_frame is not None and not hasattr(python_eval_frame, "skip_code"):
+                setattr(python_eval_frame, "skip_code", _skip_code)
+            module_name = "torch._C._dynamo.eval_frame"
+            module = sys.modules.get(module_name)
+            if module is None:
+                import types
+
+                module = types.ModuleType(module_name)
+                sys.modules[module_name] = module
+            if not hasattr(module, "skip_code"):
+                setattr(module, "skip_code", _skip_code)
+        except Exception:
+            pass
         return True
     except Exception:
         return False
