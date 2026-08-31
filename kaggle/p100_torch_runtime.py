@@ -16,6 +16,10 @@ TORCH_RUNTIME_TIMEOUT_SECONDS = 120
 TORCH_CUDA_TIMEOUT_SECONDS = 120
 SHARED_TORCH_BOOTSTRAP_RESULT_JSON = "shared_torch_bootstrap_result.json"
 SHARED_TORCH_RUNTIME_RESULT_JSON = "shared_torch_runtime_result.json"
+TORCH_PREINSTALL_INSPECTION_JSON = "TORCH_PREINSTALL_INSPECTION_JSON"
+TORCH_INSTALL_RESULT_JSON = "TORCH_INSTALL_RESULT_JSON"
+TORCH_POSTINSTALL_RUNTIME_JSON = "TORCH_POSTINSTALL_RUNTIME_JSON"
+TORCH_POSTINSTALL_CUDA_JSON = "TORCH_POSTINSTALL_CUDA_JSON"
 
 
 def _write_json(path: Path, payload: Any) -> Path:
@@ -50,6 +54,38 @@ import subprocess, sys
 cmd = [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--force-reinstall", "--no-cache-dir", "--index-url", "{TORCH_INDEX_URL}", *{TORCH_PACKAGES!r}]
 result = subprocess.run(cmd, check=False)
 raise SystemExit(result.returncode)
+"""
+
+
+def _torch_preinstall_inspection_snippet() -> str:
+    return """
+import json
+import importlib.metadata as metadata
+
+payload = {
+    "torch_distribution": None,
+    "torch_module_version": None,
+    "torch_cuda_version": None,
+    "torch_location": None,
+    "default_torch_appears_p100_incompatible": None,
+    "inspect_only": True,
+}
+try:
+    import torch
+    payload["torch_module_version"] = getattr(torch, "__version__", None)
+    payload["torch_cuda_version"] = getattr(getattr(torch, "version", None), "cuda", None)
+    payload["torch_location"] = getattr(torch, "__file__", None)
+    try:
+        payload["default_torch_appears_p100_incompatible"] = not bool(torch.cuda.is_available()) or tuple(torch.cuda.get_device_capability(0)) != (6, 0) if torch.cuda.is_available() else True
+    except Exception:
+        payload["default_torch_appears_p100_incompatible"] = True
+except Exception as exc:
+    payload["torch_import_error"] = str(exc)
+try:
+    payload["torch_distribution"] = metadata.version("torch")
+except Exception as exc:
+    payload["torch_distribution_error"] = str(exc)
+print(json.dumps(payload))
 """
 
 
@@ -135,6 +171,12 @@ def _classify_torch_probe_failure(runtime_probe: dict[str, Any]) -> str:
     return "TORCH_RUNTIME_FAILED"
 
 
+def _classify_preinstall_inspection(preinstall_probe: dict[str, Any]) -> str | None:
+    if not preinstall_probe.get("ok"):
+        return "TORCH_PREINSTALL_INSPECTION_FAILED"
+    return None
+
+
 def run_shared_p100_torch_bootstrap(
     *,
     report_root: Path,
@@ -150,11 +192,12 @@ def run_shared_p100_torch_bootstrap(
         "torch_cuda_timeout_seconds": TORCH_CUDA_TIMEOUT_SECONDS,
     }
 
-    preinstall = _run_json_probe([sys.executable, "-c", _torch_probe_snippet()], timeout=TORCH_RUNTIME_TIMEOUT_SECONDS, label=f"{phase_prefix}_preinstall")
+    preinstall = _run_json_probe([sys.executable, "-c", _torch_preinstall_inspection_snippet()], timeout=TORCH_RUNTIME_TIMEOUT_SECONDS, label=f"{phase_prefix}_preinstall")
     _write_json(report_root / "probe_torch_preinstall.json", preinstall)
+    _write_json(report_root / TORCH_PREINSTALL_INSPECTION_JSON, preinstall)
     bootstrap_result["preinstall"] = preinstall
     if not preinstall.get("ok"):
-        raise RuntimeError(_classify_torch_probe_failure(preinstall))
+        raise RuntimeError(_classify_preinstall_inspection(preinstall) or "TORCH_PREINSTALL_INSPECTION_FAILED")
 
     installer = _run_command([sys.executable, "-c", _torch_install_snippet()], timeout=TORCH_INSTALL_TIMEOUT_SECONDS, cwd=repo_root)
     install_payload = {
@@ -171,18 +214,21 @@ def run_shared_p100_torch_bootstrap(
     except Exception:
         install_payload["torch_distribution"] = None
     _write_json(report_root / "probe_torch_install.json", install_payload)
+    _write_json(report_root / TORCH_INSTALL_RESULT_JSON, install_payload)
     bootstrap_result["install"] = install_payload
     if installer.returncode != 0:
         raise RuntimeError("TORCH_INSTALL_FAILED")
 
     runtime_probe = _run_json_probe([sys.executable, "-c", _torch_probe_snippet()], timeout=TORCH_RUNTIME_TIMEOUT_SECONDS, label=f"{phase_prefix}_runtime")
     _write_json(report_root / "probe_torch_runtime.json", runtime_probe)
+    _write_json(report_root / TORCH_POSTINSTALL_RUNTIME_JSON, runtime_probe)
     bootstrap_result["runtime"] = runtime_probe
     if not runtime_probe.get("ok"):
         raise RuntimeError(_classify_torch_probe_failure(runtime_probe))
 
     cuda_probe = _run_json_probe([sys.executable, "-c", _torch_cuda_validation_snippet()], timeout=TORCH_CUDA_TIMEOUT_SECONDS, label=f"{phase_prefix}_cuda")
     _write_json(report_root / "probe_torch_cuda_runtime.json", cuda_probe)
+    _write_json(report_root / TORCH_POSTINSTALL_CUDA_JSON, cuda_probe)
     bootstrap_result["cuda"] = cuda_probe
     if not cuda_probe.get("ok"):
         raise RuntimeError("PYTORCH_CUDA_FAILED")
@@ -226,11 +272,13 @@ def run_shared_p100_torch_validation(
 ) -> dict[str, Any]:
     validation = _run_json_probe([sys.executable, "-c", _torch_probe_snippet()], timeout=TORCH_RUNTIME_TIMEOUT_SECONDS, label=f"{phase_prefix}_runtime")
     _write_json(report_root / "probe_torch_runtime.json", validation)
+    _write_json(report_root / TORCH_POSTINSTALL_RUNTIME_JSON, validation)
     if not validation.get("ok"):
         raise RuntimeError(_classify_torch_probe_failure(validation))
 
     cuda_probe = _run_json_probe([sys.executable, "-c", _torch_cuda_validation_snippet()], timeout=TORCH_CUDA_TIMEOUT_SECONDS, label=f"{phase_prefix}_cuda")
     _write_json(report_root / "probe_torch_cuda_runtime.json", cuda_probe)
+    _write_json(report_root / TORCH_POSTINSTALL_CUDA_JSON, cuda_probe)
     if not cuda_probe.get("ok"):
         raise RuntimeError("PYTORCH_CUDA_FAILED")
 

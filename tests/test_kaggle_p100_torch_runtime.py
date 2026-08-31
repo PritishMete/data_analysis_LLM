@@ -36,6 +36,12 @@ def test_skip_code_probe_failure_maps_to_torch_dynamo_binary_mismatch():
     assert p100_torch_runtime._classify_torch_probe_failure({"stdout": "skip_code missing"}) == "TORCH_DYNAMO_BINARY_MISMATCH"
 
 
+def test_preinstall_inspection_is_non_terminal_for_incompatible_default_torch():
+    payload = {"ok": True, "json": {"default_torch_appears_p100_incompatible": True, "inspect_only": True}}
+
+    assert p100_torch_runtime._classify_preinstall_inspection(payload) is None
+
+
 def test_bnb_install_snippet_uses_no_deps():
     assert "--no-deps" in bnb_compat_cycle._installer_snippet()
 
@@ -49,3 +55,7 @@ def test_shared_torch_bootstrap_writes_runtime_markers_without_bnb(monkeypatch, 
     assert report["verdict"] == "P100_TORCH_RUNTIME_PASSED"
     assert (tmp_path / "shared_torch_bootstrap_result.json").exists()
     assert (tmp_path / "shared_torch_runtime_result.json").exists()
+    assert (tmp_path / p100_torch_runtime.TORCH_PREINSTALL_INSPECTION_JSON).exists()
+    assert (tmp_path / p100_torch_runtime.TORCH_INSTALL_RESULT_JSON).exists()
+    assert (tmp_path / p100_torch_runtime.TORCH_POSTINSTALL_RUNTIME_JSON).exists()
+    assert (tmp_path / p100_torch_runtime.TORCH_POSTINSTALL_CUDA_JSON).exists()
