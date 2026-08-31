@@ -32,6 +32,7 @@ from .bootstrap import (
 
 COMPATIBILITY_REPORT: Any | None = None
 RUNNER_METADATA_NAME = "runner_metadata.json"
+PROBE_REPORT_DIRNAME = "reports"
 
 
 def _load_semantic_rows(semantic_root: Path) -> list[dict[str, Any]]:
@@ -113,6 +114,13 @@ def _safe_traceback_tail(exc: BaseException, *, limit: int = 25) -> str:
     lines = list(tb.format())
     safe_lines = lines[-limit:]
     return "".join(safe_lines)
+
+
+def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
+    if not text:
+        return None
+    parts = text.splitlines()
+    return "\n".join(parts[-lines:])
 
 
 def _safe_commit_hash(repo_root: Path | None = None) -> str | None:
@@ -205,8 +213,43 @@ def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
         return False
 
 
-def _dependency_probe_snippets() -> tuple[str, str]:
-    torch_snippet = """
+def _dependency_probe_snippets() -> dict[str, str]:
+    compat_snippet = """
+import json
+import pathlib
+import sys
+repo_root = pathlib.Path.cwd()
+if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
+    repo_root = repo_root.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+from src.training.torch_compat import ensure_torch_dynamo_compatibility
+before = False
+after = False
+try:
+    import torch
+    dynamo_eval_frame = getattr(getattr(torch, "_C", None), "_dynamo", None)
+    eval_frame = getattr(dynamo_eval_frame, "eval_frame", None) if dynamo_eval_frame is not None else None
+    before = bool(eval_frame is not None and hasattr(eval_frame, "skip_code"))
+except Exception:
+    before = False
+report = ensure_torch_dynamo_compatibility()
+try:
+    import torch
+    dynamo_eval_frame = getattr(getattr(torch, "_C", None), "_dynamo", None)
+    eval_frame = getattr(dynamo_eval_frame, "eval_frame", None) if dynamo_eval_frame is not None else None
+    after = bool(eval_frame is not None and hasattr(eval_frame, "skip_code"))
+except Exception:
+    after = False
+payload = {
+    "torch_imported": report.torch_imported,
+    "skip_code_present_before": report.skip_code_present_before if report.skip_code_present_before is not None else before,
+    "skip_code_patch_applied": report.skip_code_patch_applied,
+    "skip_code_present_after": after,
+}
+print(json.dumps(payload))
+"""
+    torch_import_snippet = """
 import json
 import pathlib
 import sys
@@ -226,6 +269,36 @@ payload = {
 if payload["available"]:
     payload["device_name"] = torch.cuda.get_device_name(0)
     payload["capability"] = list(torch.cuda.get_device_capability(0))
+print(json.dumps(payload))
+"""
+    torch_cuda_snippet = """
+import json
+import pathlib
+import sys
+repo_root = pathlib.Path.cwd()
+if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
+    repo_root = repo_root.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+from src.training.torch_compat import ensure_torch_dynamo_compatibility
+ensure_torch_dynamo_compatibility()
+import torch
+payload = {
+    "available": bool(torch.cuda.is_available()),
+    "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+    "capability": list(torch.cuda.get_device_capability(0)) if torch.cuda.is_available() else None,
+    "arch_list": torch.cuda.get_arch_list() if hasattr(torch.cuda, "get_arch_list") else None,
+}
+if payload["available"]:
+    try:
+        a = torch.ones((2, 2), device="cuda")
+        b = torch.ones((2, 2), device="cuda")
+        c = a @ b
+        torch.cuda.synchronize()
+        payload["basic_cuda_tensor_test"] = bool(c.sum().item() == 8.0)
+    except Exception as exc:
+        payload["basic_cuda_tensor_test"] = False
+        payload["tensor_error"] = str(exc)
 print(json.dumps(payload))
 """
     bitsandbytes_snippet = """
@@ -256,21 +329,138 @@ except Exception as exc:
     payload["cuda_specs_error"] = str(exc)
 print(json.dumps(payload))
 """
-    return torch_snippet, bitsandbytes_snippet
+    nf4_snippet = """
+import json
+import pathlib
+import sys
+repo_root = pathlib.Path.cwd()
+if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
+    repo_root = repo_root.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+from src.training.torch_compat import ensure_torch_dynamo_compatibility
+ensure_torch_dynamo_compatibility()
+from bitsandbytes import cextension
+payload = {"nf4_capability_available": False}
+try:
+    specs = cextension.get_cuda_specs()
+    highest = list(specs.highest_compute_capability) if specs.highest_compute_capability is not None else None
+    payload["nf4_capability_available"] = bool(highest and tuple(highest) >= (6, 0))
+    payload["cuda_specs"] = {
+        "highest_compute_capability": highest,
+        "cuda_version_string": specs.cuda_version_string,
+        "cuda_version_tuple": list(specs.cuda_version_tuple) if specs.cuda_version_tuple is not None else None,
+    }
+except Exception as exc:
+    payload["error"] = str(exc)
+print(json.dumps(payload))
+"""
+    return {
+        "compat": compat_snippet,
+        "torch_import": torch_import_snippet,
+        "torch_cuda": torch_cuda_snippet,
+        "bitsandbytes": bitsandbytes_snippet,
+        "nf4": nf4_snippet,
+    }
 
 
-def _run_python_probe(snippet: str, *, timeout: int, phase: str) -> subprocess.CompletedProcess[str]:
-    return _run_command([sys.executable, "-c", snippet], timeout=timeout, check=False)
+def _run_python_probe(snippet: str, *, timeout: int, phase: str, label: str) -> dict[str, Any]:
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", snippet],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+    timed_out = False
+    stdout = ""
+    stderr = ""
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        stdout, stderr = proc.communicate()
+    payload: dict[str, Any] = {
+        "label": label,
+        "phase": phase,
+        "parent_pid": os.getpid(),
+        "child_pid": proc.pid,
+        "returncode": proc.returncode,
+        "signal": None,
+        "timed_out": timed_out,
+        "stdout": (stdout or "").strip() or None,
+        "stderr": (stderr or "").strip() or None,
+        "ok": not timed_out and proc.returncode == 0,
+    }
+    if payload["stdout"]:
+        try:
+            payload["json"] = json.loads(str(payload["stdout"]))
+        except Exception:
+            payload["json"] = None
+    return payload
+
+
+def _classify_probe_result(*, label: str, probe: dict[str, Any]) -> str:
+    if probe.get("ok"):
+        return "OK"
+    stderr = str(probe.get("stderr") or probe.get("stdout") or "").lower()
+    if label == "compat":
+        if "skip_code" in stderr:
+            return "IMPORT_ORDER"
+        return "BOOTSTRAP"
+    if label in {"torch_import", "torch_cuda"}:
+        return "PYTORCH_CUDA"
+    if label == "bitsandbytes":
+        if "ops.cu" in stderr:
+            return "BITSANDBYTES"
+        return "DEPENDENCY"
+    if label == "nf4":
+        return "NF4"
+    return "DEPENDENCY"
+
+
+def _write_probe_artifact(report_root: Path, *, probe_name: str, probe: dict[str, Any], classification: str) -> Path:
+    report_dir = report_root / PROBE_REPORT_DIRNAME
+    report_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "probe_name": probe_name,
+        "success": bool(probe.get("ok")),
+        "parent_pid": probe.get("parent_pid"),
+        "child_pid": probe.get("child_pid"),
+        "return_code": probe.get("returncode"),
+        "signal": probe.get("signal"),
+        "timed_out": bool(probe.get("timed_out")),
+        "stdout_tail": _safe_tail(probe.get("stdout"), lines=40),
+        "stderr_tail": _safe_tail(probe.get("stderr"), lines=40),
+        "classification": classification,
+    }
+    if probe.get("json") is not None:
+        payload["json"] = probe["json"]
+    path = report_dir / f"{probe_name}.json"
+    return _write_json(path, payload)
 
 
 def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_path: Path) -> dict[str, Any]:
     _write_smoke_heartbeat(report_root, stage="dependency_compatibility_preflight")
     _emit_smoke_stage(breadcrumbs_path, stage="dependency_compatibility_preflight_started", success=True, safe_message="preflight start")
     gpu_identity = inspect_kaggle_gpu_identity()
-    torch_snippet, bitsandbytes_snippet = _dependency_probe_snippets()
-    torch_probe = _safe_probe_result(_run_python_probe(torch_snippet, timeout=60, phase="dependency_compatibility_preflight"), label="torch")
-    bnb_probe = _safe_probe_result(_run_python_probe(bitsandbytes_snippet, timeout=60, phase="dependency_compatibility_preflight"), label="bitsandbytes")
-    preflight = build_kaggle_dependency_plan(gpu_identity=gpu_identity, torch_probe=torch_probe, bitsandbytes_probe=bnb_probe)
+    probes = _dependency_probe_snippets()
+    compat_probe = _run_python_probe(probes["compat"], timeout=60, phase="dependency_compatibility_preflight", label="compat")
+    torch_import_probe = _run_python_probe(probes["torch_import"], timeout=60, phase="dependency_compatibility_preflight", label="torch_import")
+    torch_cuda_probe = _run_python_probe(probes["torch_cuda"], timeout=60, phase="dependency_compatibility_preflight", label="torch_cuda")
+    bnb_probe = _run_python_probe(probes["bitsandbytes"], timeout=60, phase="dependency_compatibility_preflight", label="bitsandbytes")
+    nf4_probe = _run_python_probe(probes["nf4"], timeout=60, phase="dependency_compatibility_preflight", label="nf4")
+    _write_probe_artifact(report_root, probe_name="probe_compat_shim", probe=compat_probe, classification=_classify_probe_result(label="compat", probe=compat_probe))
+    _write_probe_artifact(report_root, probe_name="probe_torch_import_runtime", probe=torch_import_probe, classification=_classify_probe_result(label="torch_import", probe=torch_import_probe))
+    _write_probe_artifact(report_root, probe_name="probe_torch_cuda_runtime", probe=torch_cuda_probe, classification=_classify_probe_result(label="torch_cuda", probe=torch_cuda_probe))
+    _write_probe_artifact(report_root, probe_name="probe_bitsandbytes_runtime", probe=bnb_probe, classification=_classify_probe_result(label="bitsandbytes", probe=bnb_probe))
+    _write_probe_artifact(report_root, probe_name="probe_nf4_runtime", probe=nf4_probe, classification=_classify_probe_result(label="nf4", probe=nf4_probe))
+    preflight = build_kaggle_dependency_plan(gpu_identity=gpu_identity, torch_probe=torch_cuda_probe, bitsandbytes_probe=bnb_probe)
     write_dependency_preflight_report(report_root, preflight)
     _emit_smoke_stage(
         breadcrumbs_path,
@@ -280,8 +470,11 @@ def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_pa
     )
     return {
         "gpu_identity": gpu_identity,
-        "torch_probe": torch_probe,
+        "compat_probe": compat_probe,
+        "torch_import_probe": torch_import_probe,
+        "torch_cuda_probe": torch_cuda_probe,
         "bitsandbytes_probe": bnb_probe,
+        "nf4_probe": nf4_probe,
         "preflight": preflight.to_dict(),
     }
 

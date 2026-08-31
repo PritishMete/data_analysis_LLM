@@ -440,11 +440,45 @@ def test_torch_dynamo_compatibility_patch_adds_missing_skip_code():
 
 
 def test_dependency_probe_snippets_add_repo_root_to_sys_path():
-    torch_snippet, bitsandbytes_snippet = _dependency_probe_snippets()
-    for snippet in (torch_snippet, bitsandbytes_snippet):
+    snippets = _dependency_probe_snippets()
+    for snippet in snippets.values():
         assert "pathlib.Path.cwd()" in snippet
         assert "sys.path.insert(0, str(repo_root))" in snippet
         assert "from src.training.torch_compat import ensure_torch_dynamo_compatibility" in snippet
+
+
+def test_dependency_compatibility_preflight_writes_isolated_probe_artifacts(tmp_path, monkeypatch):
+    probes = {
+        "compat": {"ok": True, "parent_pid": 11, "child_pid": 22, "returncode": 0, "signal": None, "timed_out": False, "stdout": '{"torch_imported": true}', "stderr": "", "json": {"torch_imported": True}},
+        "torch_import": {"ok": True, "parent_pid": 11, "child_pid": 23, "returncode": 0, "signal": None, "timed_out": False, "stdout": '{"version": "2.6.0+cu124", "cuda": "12.4", "available": true}', "stderr": "", "json": {"version": "2.6.0+cu124", "cuda": "12.4", "available": True}},
+        "torch_cuda": {"ok": True, "parent_pid": 11, "child_pid": 24, "returncode": 0, "signal": None, "timed_out": False, "stdout": '{"available": true, "device_name": "Tesla P100-PCIE-16GB", "capability": [6, 0], "arch_list": ["sm_60"], "basic_cuda_tensor_test": true}', "stderr": "", "json": {"available": True, "device_name": "Tesla P100-PCIE-16GB", "capability": [6, 0], "arch_list": ["sm_60"], "basic_cuda_tensor_test": True}},
+        "bitsandbytes": {"ok": True, "parent_pid": 11, "child_pid": 25, "returncode": 0, "signal": None, "timed_out": False, "stdout": '{"version": "0.43.3", "available_cuda_versions": ["12.4"], "cuda_specs": {"highest_compute_capability": [6, 0], "cuda_version_string": "12.4", "cuda_version_tuple": [12, 4]}}', "stderr": "", "json": {"version": "0.43.3", "available_cuda_versions": ["12.4"], "cuda_specs": {"highest_compute_capability": [6, 0], "cuda_version_string": "12.4", "cuda_version_tuple": [12, 4]}}},
+        "nf4": {"ok": True, "parent_pid": 11, "child_pid": 26, "returncode": 0, "signal": None, "timed_out": False, "stdout": '{"nf4_capability_available": true, "cuda_specs": {"highest_compute_capability": [6, 0], "cuda_version_string": "12.4", "cuda_version_tuple": [12, 4]}}', "stderr": "", "json": {"nf4_capability_available": True, "cuda_specs": {"highest_compute_capability": [6, 0], "cuda_version_string": "12.4", "cuda_version_tuple": [12, 4]}}},
+    }
+
+    monkeypatch.setattr("kaggle.run_semantic_training._dependency_probe_snippets", lambda: {
+        "compat": "compat",
+        "torch_import": "torch_import",
+        "torch_cuda": "torch_cuda",
+        "bitsandbytes": "bitsandbytes",
+        "nf4": "nf4",
+    })
+    monkeypatch.setattr("kaggle.run_semantic_training._run_python_probe", lambda snippet, *, timeout, phase, label: probes[label])
+
+    result = __import__("kaggle.run_semantic_training", fromlist=["_run_dependency_compatibility_preflight"])._run_dependency_compatibility_preflight(  # type: ignore[attr-defined]
+        report_root=tmp_path,
+        breadcrumbs_path=tmp_path / "smoke_breadcrumbs.jsonl",
+    )
+
+    for name in [
+        "probe_compat_shim.json",
+        "probe_torch_import_runtime.json",
+        "probe_torch_cuda_runtime.json",
+        "probe_bitsandbytes_runtime.json",
+        "probe_nf4_runtime.json",
+    ]:
+        assert (tmp_path / "reports" / name).exists()
+    assert result["preflight"]["compatibility_passed"] is True
 
 
 def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
