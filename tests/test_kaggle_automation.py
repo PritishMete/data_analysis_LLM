@@ -417,3 +417,24 @@ def test_torch_compat_bootstrap_is_idempotent_and_preserves_real_skip_code(monke
     assert second.skip_code_present_before is True
     assert second.skip_code_patch_applied is False
     assert fake_torch._C._dynamo.eval_frame.skip_code() == "real"
+
+
+def test_torch_compat_bootstrap_mirrors_skip_code_to_python_eval_frame(monkeypatch):
+    import types
+    import sys
+    from src.training.torch_compat import ensure_torch_dynamo_compatibility
+
+    c_eval_frame = types.SimpleNamespace()
+    python_eval_frame = types.SimpleNamespace()
+    fake_torch = types.SimpleNamespace(
+        _C=types.SimpleNamespace(_dynamo=types.SimpleNamespace(eval_frame=c_eval_frame)),
+        _dynamo=types.SimpleNamespace(eval_frame=python_eval_frame),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    report = ensure_torch_dynamo_compatibility()
+
+    assert report.skip_code_patch_applied is True
+    assert callable(fake_torch._C._dynamo.eval_frame.skip_code)
+    assert callable(fake_torch._dynamo.eval_frame.skip_code)
+    assert fake_torch._C._dynamo.eval_frame.skip_code is fake_torch._dynamo.eval_frame.skip_code
