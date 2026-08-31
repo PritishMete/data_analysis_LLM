@@ -34,6 +34,8 @@ RUNNER_FAILURE_PATH = DEFAULT_STAGE_ROOT / "runner_failure.json"
 RUNNER_METADATA_NAME = "runner_metadata.json"
 REMOTE_IDENTITY_NAME = "remote_identity.json"
 RETRIEVAL_REPORT_NAME = "retrieval_report.json"
+DEFAULT_OUTPUTS_TIMEOUT_SECONDS = 600
+DEFAULT_OUTPUTS_RETRY_COUNT = 1
 SAFE_OUTPUT_NAMES = {
     "final_report.json",
     "semantic_metrics.json",
@@ -781,14 +783,44 @@ def outputs(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAUL
     stage_root = _resolve_stage_root(stage_root, run_id)
     stage = ensure_stage_paths(stage_root)
     kernel_ref = kaggle_kernel_ref(auth, spec)
-    result = _kaggle_checked("kernels", "output", kernel_ref, "-p", str(stage.download_dir), timeout=180, phase="outputs_started", kernel_ref=kernel_ref, stage_root=stage_root)
-    downloaded = [path.name for path in stage.download_dir.rglob("*") if path.is_file() and path.name in SAFE_OUTPUT_NAMES]
-    return {
-        "notebook_ref": kernel_ref,
-        "download_dir": str(stage.download_dir),
-        "downloaded_safe_artifacts": sorted(downloaded),
-        "stdout": _safe_cli_output(result),
-    }
+    timeout_seconds = int(os.environ.get("KAGGLE_OUTPUTS_TIMEOUT_SECONDS", str(DEFAULT_OUTPUTS_TIMEOUT_SECONDS)))
+    retry_count = int(os.environ.get("KAGGLE_OUTPUTS_RETRY_COUNT", str(DEFAULT_OUTPUTS_RETRY_COUNT)))
+    attempts: list[dict[str, Any]] = []
+    last_error: dict[str, Any] | None = None
+    for attempt_index in range(max(1, retry_count + 1)):
+        try:
+            result = _kaggle_checked(
+                "kernels",
+                "output",
+                kernel_ref,
+                "-p",
+                str(stage.download_dir),
+                timeout=timeout_seconds,
+                phase="outputs_started",
+                kernel_ref=kernel_ref,
+                stage_root=stage_root,
+            )
+            downloaded = [path.name for path in stage.download_dir.rglob("*") if path.is_file() and path.name in SAFE_OUTPUT_NAMES]
+            return {
+                "notebook_ref": kernel_ref,
+                "download_dir": str(stage.download_dir),
+                "downloaded_safe_artifacts": sorted(downloaded),
+                "stdout": _safe_cli_output(result),
+                "timeout_seconds": timeout_seconds,
+                "attempts": attempts + [{"attempt": attempt_index + 1, "status": "success"}],
+            }
+        except subprocess.TimeoutExpired as exc:
+            last_error = {
+                "attempt": attempt_index + 1,
+                "status": "timeout",
+                "timeout_seconds": timeout_seconds,
+                "sanitized_message": str(exc),
+            }
+            attempts.append(last_error)
+            if attempt_index < retry_count:
+                continue
+            break
+    raise KaggleAutomationError(json.dumps({"phase": "outputs_started", "timeout_seconds": timeout_seconds, "attempts": attempts, "error": last_error}, sort_keys=True))
 
 
 def _read_tail(path: Path, *, lines: int = 100) -> str | None:
