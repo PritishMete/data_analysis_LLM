@@ -22,6 +22,10 @@ else:
     from .import_trace import write_import_trace
 
 
+def _workflow_mode() -> str:
+    return str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "smoke").strip().lower()
+
+
 def _write_json(path: Path, payload: Any) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -80,10 +84,17 @@ def main(argv: list[str] | None = None) -> int:
     if git_commit:
         os.environ["KAGGLE_EXECUTED_SOURCE_COMMIT"] = git_commit
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="before_project_training_import")
-    from kaggle.run_semantic_training import run_notebook_flow
-    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
+    workflow_mode = _workflow_mode()
+    if workflow_mode == "torch_compat":
+        from kaggle.torch_compat_cycle import run_torch_compat_cycle
 
-    result = run_notebook_flow(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root)
+        write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
+        result = run_torch_compat_cycle(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root, bootstrap_pid=args.bootstrap_pid)
+    else:
+        from kaggle.run_semantic_training import run_notebook_flow
+
+        write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
+        result = run_notebook_flow(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root)
     result["bootstrap_pid"] = args.bootstrap_pid
     result["training_pid"] = training_pid
     result["fresh_process_verified"] = args.bootstrap_pid is not None and args.bootstrap_pid != training_pid

@@ -553,3 +553,8 @@ def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_pat
 def test_execute_smoke_training_supports_standalone_script_import():
     result = runpy.run_path(str(Path("kaggle/execute_smoke_training.py").resolve()), run_name="execute_smoke_training_script")
     assert result["__name__"] == "execute_smoke_training_script"
+
+
+def test_torch_compat_cycle_supports_standalone_script_import():
+    result = runpy.run_path(str(Path("kaggle/torch_compat_cycle.py").resolve()), run_name="torch_compat_cycle_script")
+    assert result["__name__"] == "torch_compat_cycle_script"
