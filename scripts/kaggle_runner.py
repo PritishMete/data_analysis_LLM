@@ -11,8 +11,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from kagglesdk import KaggleClient, KaggleEnv
-from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionStatusRequest
+try:  # pragma: no cover - optional in local test environments
+    from kagglesdk import KaggleClient, KaggleEnv
+    from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionStatusRequest
+except ModuleNotFoundError:  # pragma: no cover
+    KaggleClient = None  # type: ignore[assignment]
+    KaggleEnv = None  # type: ignore[assignment]
+    ApiGetKernelSessionStatusRequest = None  # type: ignore[assignment]
 
 if __package__ in {None, ""}:
     REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +52,12 @@ SAFE_OUTPUT_NAMES = {
     "smoke_failure.json",
     "dependency_preflight.json",
     "dependency_install_result.json",
+    "probe_torch_preinstall.json",
+    "probe_torch_install.json",
+    "probe_torch_runtime.json",
+    "probe_torch_import_runtime.json",
+    "probe_torch_cuda_runtime.json",
+    "probe_torch_runtime_post_bnb.json",
     "bnb_compat_report.json",
     "probe_bnb_precheck.json",
     "probe_bnb_install.json",
@@ -54,6 +65,25 @@ SAFE_OUTPUT_NAMES = {
     "probe_bnb_cuda.json",
     "probe_nf4.json",
 }
+
+
+def available_commands() -> list[str]:
+    return ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle", "torch-compat-cycle", "bnb-compat-cycle", "diagnose"]
+
+
+def _current_commit() -> str | None:
+    return get_repo_state().head
+
+
+def _safe_subprocess(command: list[str], *, timeout: int = 120, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=str(cwd) if cwd else None,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
 
 
 class KaggleAutomationError(RuntimeError):
@@ -172,6 +202,8 @@ def _normalize_status_text(status: Any | None) -> str | None:
 
 def _sdk_kernel_status(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str | None:
     if not auth.available or not auth.username:
+        return None
+    if KaggleClient is None or KaggleEnv is None or ApiGetKernelSessionStatusRequest is None:
         return None
     client = KaggleClient(KaggleEnv.PROD, username=auth.username)
     request = ApiGetKernelSessionStatusRequest()
@@ -1053,7 +1085,9 @@ def torch_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNot
     }
 
 
-def bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
+def bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None, runtime_dir: Path | None = None) -> dict[str, Any]:
+    if runtime_dir is not None:
+        stage_root = runtime_dir
     spec = spec or KaggleNotebookSpec(workflow_mode="bnb_compat")
     resolved_run_id = run_id or generate_run_id(git_commit=get_repo_state().head)
     stage_root = _resolve_stage_root(stage_root, resolved_run_id)
@@ -1068,6 +1102,10 @@ def bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNoteb
         "run": run_result,
         "outputs": output_result,
     }
+
+
+def run_bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None, runtime_dir: Path | None = None) -> dict[str, Any]:
+    return bnb_compat_cycle(stage_root=stage_root, spec=spec, run_id=run_id, runtime_dir=runtime_dir)
 
 
 def diagnose(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
