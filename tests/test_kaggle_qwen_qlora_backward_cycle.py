@@ -36,26 +36,26 @@ def test_backward_cycle_proves_trainable_lora_and_frozen_base():
     assert "trainable_parameters" in SOURCE
 
 
-def test_smoke_is_synthetic_short_and_does_not_export_artifacts():
+def test_smoke_uses_deterministic_corpus_subsets_and_saves_only_adapter():
+    assert cycle.TRAIN_EXAMPLES == 32
+    assert cycle.VALIDATION_EXAMPLES == 8
     assert cycle.MAX_SMOKE_SEQUENCE_LENGTH <= 128
-    assert "_synthetic_example" in SOURCE
-    assert '"train_data_used": False' in SOURCE
-    assert '"validation_data_used": False' in SOURCE
-    assert '"test_data_used": False' in SOURCE
-    assert "save_pretrained" not in SOURCE
-    assert "save_pretrained" not in SOURCE
+    assert "_load_smoke_dataset" in SOURCE
+    assert "_safe_target_hash" in SOURCE
+    assert '"test_split_accessed": False' in SOURCE
+    assert "save_pretrained" in SOURCE
     assert "torch.save" not in SOURCE
     assert "Trainer(" not in SOURCE
     assert "adapter_model" not in SOURCE
 
 
 def test_exactly_one_backward_and_optimizer_step_are_required():
-    assert SOURCE.count("loss.backward()") == 1
-    assert SOURCE.count("optimizer.step()") == 1
-    assert '"optimizer_step_count": 1' in SOURCE
-    assert "LORA_GRADIENT_MISSING" in SOURCE
-    assert "LORA_GRADIENT_NONFINITE" in SOURCE
-    assert "LORA_GRADIENT_ZERO" in SOURCE
+    assert "GRADIENT_ACCUMULATION = 8" in SOURCE
+    assert "OPTIMIZER_STEPS = 4" in SOURCE
+    assert "microbatch_index % GRADIENT_ACCUMULATION" in SOURCE
+    assert "len(training_steps)" in SOURCE
+    assert "TRAINING_LOSS_NONFINITE" in SOURCE
+    assert "TRAINING_GRADIENT_NONFINITE" in SOURCE
     assert "LORA_PARAMETER_UNCHANGED" in SOURCE
 
 
@@ -65,9 +65,13 @@ def test_required_observability_markers_exist():
         "KBIT_PREPARATION_RESULT_JSON",
         "LORA_ATTACHMENT_RESULT_JSON",
         "LORA_PARAMETER_RESULT_JSON",
-        "QLORA_FORWARD_RESULT_JSON",
-        "QLORA_BACKWARD_RESULT_JSON",
-        "QLORA_OPTIMIZER_RESULT_JSON",
+        "TRAINING_DATASET_RESULT_JSON",
+        "TRAINING_PRIVACY_RESULT_JSON",
+        "PRETRAIN_VALIDATION_RESULT_JSON",
+        "TRAINING_STEP_RESULT_JSON",
+        "POSTTRAIN_VALIDATION_RESULT_JSON",
+        "ADAPTER_SAVE_RESULT_JSON",
+        "ADAPTER_RELOAD_RESULT_JSON",
         "QLORA_MEMORY_RESULT_JSON",
         "QLORA_FINAL_RESULT_JSON",
     ):
