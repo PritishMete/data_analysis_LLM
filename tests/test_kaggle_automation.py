@@ -45,6 +45,8 @@ def test_push_run_status_and_outputs_use_official_cli(monkeypatch, tmp_path):
         calls.append(args)
         if args[:2] == ("kernels", "status"):
             return _completed("complete")
+        if args[:2] == ("kernels", "logs"):
+            return _completed('RUN_IDENTITY_JSON={"run_id":"abc123-20260830T000000Z-test","expected_commit":"abc123","executed_commit":"abc123","started_at":1}')
         if args[:2] == ("kernels", "output"):
             download_dir = Path(args[args.index("-p") + 1])
             download_dir.mkdir(parents=True, exist_ok=True)
@@ -61,8 +63,9 @@ def test_push_run_status_and_outputs_use_official_cli(monkeypatch, tmp_path):
     monkeypatch.setattr(kaggle_runner, "_run_command", lambda *args, **kwargs: _completed("pytest ok"))
 
     spec = kaggle_runner.KaggleNotebookSpec()
+    run_id = "abc123-20260830T000000Z-test"
     push_result = kaggle_runner.push(spec, stage_root=tmp_path / "stage")
-    run_result = kaggle_runner.run(spec, stage_root=tmp_path / "stage", poll_seconds=0)
+    run_result = kaggle_runner.run(spec, stage_root=tmp_path / "stage", poll_seconds=0, run_id=run_id, expected_commit="abc123")
     output_result = kaggle_runner.outputs(spec, stage_root=tmp_path / "stage")
 
     assert push_result["notebook_ref"] == "jiban/data-analysis-llm-semantic-extractor"
@@ -92,6 +95,8 @@ def test_smoke_cycle_skips_local_tests_and_runs_kaggle(monkeypatch, tmp_path):
         calls.append(args)
         if args[:2] == ("kernels", "status"):
             return _completed("complete")
+        if args[:2] == ("kernels", "logs"):
+            return _completed('RUN_IDENTITY_JSON={"run_id":"abc123-20260830T000000Z-test","expected_commit":"abc123","executed_commit":"abc123","started_at":1}')
         if args[:2] == ("kernels", "output"):
             download_dir = Path(args[args.index("-p") + 1])
             download_dir.mkdir(parents=True, exist_ok=True)
@@ -107,6 +112,7 @@ def test_smoke_cycle_skips_local_tests_and_runs_kaggle(monkeypatch, tmp_path):
     monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
     monkeypatch.setattr(kaggle_runner, "_kaggle", fake_kaggle)
     monkeypatch.setattr(kaggle_runner, "_run_command", lambda *args, **kwargs: _completed("should not run tests"))
+    monkeypatch.setattr(kaggle_runner, "generate_run_id", lambda **_: "abc123-20260830T000000Z-test")
 
     result = kaggle_runner.smoke_cycle(stage_root=tmp_path / "stage")
 
@@ -123,6 +129,8 @@ def test_run_writes_preflight_heartbeat_progress(monkeypatch, tmp_path):
     def fake_kaggle(*args, **kwargs):
         if args[:2] == ("kernels", "status"):
             return _completed("complete")
+        if args[:2] == ("kernels", "logs"):
+            return _completed('RUN_IDENTITY_JSON={"run_id":"abc123-20260830T000000Z-test","expected_commit":"abc123","executed_commit":"abc123","started_at":1}')
         if args[:2] == ("kernels", "output"):
             download_dir = Path(kwargs.get("cwd", tmp_path / "stage"))
             download_dir.mkdir(parents=True, exist_ok=True)
@@ -131,6 +139,7 @@ def test_run_writes_preflight_heartbeat_progress(monkeypatch, tmp_path):
 
     monkeypatch.setattr(kaggle_runner, "_kaggle", fake_kaggle)
     monkeypatch.setattr(kaggle_runner, "_run_command", lambda *args, **kwargs: _completed("ok"))
+    monkeypatch.setattr(kaggle_runner, "generate_run_id", lambda **_: "abc123-20260830T000000Z-test")
 
     result = kaggle_runner.run(stage_root=tmp_path / "stage", poll_seconds=0, timeout_seconds=1)
 

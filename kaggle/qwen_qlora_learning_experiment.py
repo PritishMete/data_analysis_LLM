@@ -64,7 +64,9 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def _marker(name: str, payload: dict[str, Any]) -> None:
-    print(f"{name}={json.dumps(payload, sort_keys=True)}", flush=True)
+    enriched = dict(payload)
+    enriched.setdefault("run_id", os.environ.get("KAGGLE_SMOKE_RUN_ID"))
+    print(f"{name}={json.dumps(enriched, sort_keys=True)}", flush=True)
 
 
 def _hash(value: Any) -> str:

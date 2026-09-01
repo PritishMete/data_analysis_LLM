@@ -29,3 +29,14 @@ def test_bnb_cycle_dispatch_can_be_stubbed(tmp_path, monkeypatch):
     report = kaggle_runner.bnb_compat_cycle(stage_root=tmp_path)
     assert report["preflight"]["ready"] is True
 
+
+def test_fresh_run_requires_matching_identity_and_commit():
+    marker = "RUN_IDENTITY_JSON={\"run_id\": \"run-a\", \"expected_commit\": \"abc\", \"executed_commit\": \"abc\", \"started_at\": 1}"
+    assert kaggle_runner.fresh_run_proven(marker, run_id="run-a", expected_commit="abc")
+    assert not kaggle_runner.fresh_run_proven(marker, run_id="old-run", expected_commit="abc")
+    assert not kaggle_runner.fresh_run_proven(marker, run_id="run-a", expected_commit="def")
+
+
+def test_terminal_status_without_fresh_marker_is_not_proof():
+    assert kaggle_runner.parse_run_identity_marker("complete", run_id="run-a", expected_commit="abc") is None
+

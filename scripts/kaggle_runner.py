@@ -234,6 +234,33 @@ def _safe_cli_output(result: subprocess.CompletedProcess[str]) -> str:
     return text.strip()
 
 
+def parse_run_identity_marker(text: str | None, *, run_id: str, expected_commit: str | None) -> dict[str, Any] | None:
+    """Return a matching remote identity marker, never accepting stale output."""
+    if not text:
+        return None
+    for line in text.splitlines():
+        if not line.startswith("RUN_IDENTITY_JSON="):
+            continue
+        try:
+            payload = json.loads(line.split("=", 1)[1])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if payload.get("run_id") != run_id:
+            continue
+        if expected_commit and payload.get("expected_commit") != expected_commit:
+            continue
+        if expected_commit and payload.get("executed_commit") != expected_commit:
+            continue
+        if not payload.get("started_at"):
+            continue
+        return payload
+    return None
+
+
+def fresh_run_proven(text: str | None, *, run_id: str, expected_commit: str | None) -> bool:
+    return parse_run_identity_marker(text, run_id=run_id, expected_commit=expected_commit) is not None
+
+
 def _normalize_status_text(status: Any | None) -> str | None:
     if status is None:
         return None
@@ -818,6 +845,7 @@ def run(
     deadline = time.time() + timeout_seconds
     polls = 0
     status_text = None
+    identity_marker: dict[str, Any] | None = None
     _write_runner_heartbeat(
         phase="execute_started",
         kernel_ref=kernel_ref,
@@ -842,7 +870,41 @@ def run(
         )
         result = _kaggle_checked("kernels", "status", kernel_ref, timeout=min(60, poll_seconds + 15), phase="poll_started", kernel_ref=kernel_ref, expected_commit=get_repo_state().head, start_time=start_time, last_status=status_text or current.get("status"), stage_root=stage_root)
         status_text = _safe_cli_output(result)
-        if any(token in status_text.lower() for token in ("complete", "error", "failed", "killed", "cancelled", "cancelled")):
+        if any(token in status_text.lower() for token in ("complete", "error", "failed", "killed", "cancelled")):
+            log_result = _kaggle_checked(
+                "kernels", "logs", kernel_ref,
+                timeout=60,
+                phase="logs_started",
+                kernel_ref=kernel_ref,
+                expected_commit=expected_commit or get_repo_state().head,
+                run_id=resolved_run_id,
+                start_time=start_time,
+                last_status=status_text,
+                stage_root=stage_root,
+            )
+            log_text = _safe_cli_output(log_result)
+            ensure_stage_paths(stage_root).logs_dir.joinpath("remote.log").write_text(log_text, encoding="utf-8")
+            identity_marker = parse_run_identity_marker(
+                log_text,
+                run_id=resolved_run_id,
+                expected_commit=expected_commit or get_repo_state().head,
+            )
+            if identity_marker is None:
+                exc = KaggleAutomationError("ORCHESTRATION_FAILURE:fresh_run_unproven")
+                _write_runner_failure(
+                    phase="terminal_status_received",
+                    command="kaggle kernels logs",
+                    exc=exc,
+                    timeout_seconds=60,
+                    kernel_ref=kernel_ref,
+                    expected_commit=expected_commit or get_repo_state().head,
+                    run_id=resolved_run_id,
+                    elapsed_seconds=round(time.perf_counter() - start_time, 2),
+                    stdout=log_text,
+                    last_status=status_text,
+                    stage_root=stage_root,
+                )
+                raise exc
             _write_runner_heartbeat(
                 phase="terminal_status_received",
                 kernel_ref=kernel_ref,
@@ -850,7 +912,7 @@ def run(
                 run_id=resolved_run_id,
                 elapsed_seconds=round(time.perf_counter() - start_time, 2),
                 last_status=status_text,
-                safe_message=status_text,
+                safe_message="fresh run identity verified",
                 stage_root=stage_root,
             )
             break
@@ -924,6 +986,8 @@ def run(
         "push": push_result,
         "status": status_text,
         "polls": polls,
+        "fresh_execution_verified": identity_marker is not None,
+        "run_identity": identity_marker,
     }
 
 
