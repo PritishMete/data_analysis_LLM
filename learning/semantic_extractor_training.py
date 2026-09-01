@@ -9,7 +9,42 @@ from .models import stable_hash
 from .training_export import ALLOWED_LOGICAL_STRUCTURES, SAFE_HEX_RE, SAFE_TOKEN_RE, TrainingExportBundle, _shape_signature
 
 
-ALLOWED_SEMANTIC_INTENTS = {"filter", "analytics", "cleaning", "operation", "sentiment"}
+# Semantic extraction supports the canonical planner vocabulary.  Keeping this
+# list explicit prevents arbitrary labels while avoiding loss of valid planner
+# capabilities during canonical-to-semantic conversion.
+ALLOWED_SEMANTIC_INTENTS = {
+    "filter",
+    "sort",
+    "aggregate",
+    "rank",
+    "pivot",
+    "normalize",
+    "categorize",
+    "clean",
+    "cleaning",
+    "summarize",
+    "summary",
+    "detect_missing",
+    "detect_duplicates",
+    "detect_outliers",
+    "compare",
+    "trend",
+    "correlate",
+    "segment",
+    "analyze",
+    "analytics",
+    "operation",
+    "sentiment",
+    "benchmark",
+    "churn_watch",
+    "distribution",
+    "escalation",
+    "hospitality",
+    "quality_audit",
+    "retention",
+    "risk_review",
+    "staffing",
+}
 ALLOWED_SEMANTIC_OUTPUT_KEYS = {
     "intent",
     "semantic_bindings",

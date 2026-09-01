@@ -67,3 +67,10 @@ def test_experiment_command_is_wired():
 
     assert "qwen-qlora-learning-experiment-cycle" in kaggle_runner.build_parser().format_help()
     assert kaggle_runner.qwen_qlora_learning_experiment_cycle.__name__ == "qwen_qlora_learning_experiment_cycle"
+
+
+def test_corpus_audit_command_is_wired_without_training():
+    from scripts import kaggle_runner
+
+    assert "semantic-corpus-audit-cycle" in kaggle_runner.build_parser().format_help()
+    assert "qwen" not in Path("kaggle/semantic_corpus_audit_cycle.py").read_text(encoding="utf-8").lower()

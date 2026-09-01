@@ -168,3 +168,9 @@ def test_semantic_metrics_cover_expected_fields():
     assert metrics["intent_accuracy"] == 1.0
     assert metrics["binding_accuracy"] == 1.0
     assert metrics["semantic_schema_valid_rate"] == 1.0
+
+
+def test_canonical_planner_intents_are_supported_by_semantic_targets():
+    assert {"aggregate", "compare", "trend", "benchmark", "risk_review"}.issubset(
+        __import__("learning.semantic_extractor_training", fromlist=["ALLOWED_SEMANTIC_INTENTS"]).ALLOWED_SEMANTIC_INTENTS
+    )

@@ -254,6 +254,7 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
             "learning_experiment_validation_metrics.json",
             "learning_experiment_report.json",
             "learning_experiment_final_result.json",
+            "semantic_corpus_audit.json",
         }
 
 

@@ -253,7 +253,7 @@ def _score(metrics: dict[str, Any]) -> float:
 
 def _failure(root: Path, stage: str, exc: BaseException, run_id: str, expected: str | None, executed: str | None) -> None:
     import traceback
-    _write_json(root / "smoke_failure.json", {"run_id": run_id, "stage": stage, "exception_type": type(exc).__name__, "sanitized_message": str(exc).replace("\n", " ")[:1000], "traceback_tail": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:]), "package_versions": {name: _version(name) for name in ("torch", "bitsandbytes", "transformers", "tokenizers", "accelerate", "peft")}, "expected_git_commit": expected, "executed_git_commit": executed})
+    _write_json(root / "smoke_failure.json", {"run_id": run_id, "stage": stage, "exception_type": type(exc).__name__, "sanitized_message": str(exc).replace("\n", " ")[:1000], "traceback_tail": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:]), "package_versions": {name: _version(name) for name in ("torch", "bitsandbytes", "transformers", "tokenizers", "accelerate", "peft")}, "expected_git_commit": expected, "executed_git_commit": executed, "training_completed": False, "classification": "INSUFFICIENT_SEMANTIC_TRAINING_EXAMPLES" if stage in {"dataset", "subset_selection", "conversion", "privacy", "eligibility"} else "SEMANTIC_CORPUS_TOO_SMALL"})
 
 
 def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expected_git_commit: str | None, source_root: Path) -> dict[str, Any]:
