@@ -46,9 +46,40 @@ def test_bnb_install_snippet_uses_no_deps():
     assert "--no-deps" in bnb_compat_cycle._installer_snippet()
 
 
+def test_cuda_requirements_come_from_torch_metadata_without_cuda12(monkeypatch):
+    class Distribution:
+        requires = [
+            "nvidia-cuda-runtime-cu11==11.8.89",
+            "nvidia-cublas-cu11==11.11.3.6 ; platform_system == 'Linux'",
+            "nvidia-cuda-runtime-cu12==12.8.0",
+            "typing-extensions>=4.8",
+        ]
+
+    monkeypatch.setattr(p100_torch_runtime.metadata, "distribution", lambda name: Distribution())
+    assert p100_torch_runtime._torch_cuda_requirements() == [
+        "nvidia-cublas-cu11==11.11.3.6",
+        "nvidia-cuda-runtime-cu11==11.8.89",
+    ]
+
+
+def test_cuda_library_paths_distinguish_required_sonames(monkeypatch, tmp_path):
+    class Distribution:
+        def locate_file(self, _name):
+            return tmp_path
+
+    (tmp_path / "libcudart.so.11.0").write_bytes(b"")
+    (tmp_path / "libcublas.so.11").write_bytes(b"")
+    (tmp_path / "libcusparse.so.11").write_bytes(b"")
+    monkeypatch.setattr(p100_torch_runtime, "_torch_cuda_requirements", lambda: ["nvidia-cuda-runtime-cu11==11.8.89"])
+    monkeypatch.setattr(p100_torch_runtime.metadata, "distribution", lambda _name: Distribution())
+    paths = p100_torch_runtime._cuda_library_paths()
+    assert paths["libcudart"] and paths["libcublas"] and paths["libcusparse"]
+
+
 def test_shared_torch_bootstrap_writes_runtime_markers_without_bnb(monkeypatch, tmp_path):
     monkeypatch.setattr(p100_torch_runtime, "_run_json_probe", lambda *args, **kwargs: {"ok": True, "json": {"torch_version": "2.5.1+cu118", "torch_cuda_version": "11.8", "gpu_available": True, "gpu_name": "Tesla P100-PCIE-16GB", "compute_capability": [6, 0], "arch_list": ["sm_60"], "skip_code_available": True, "basic_cuda_tensor_test": True}, "stdout": "{}"})
     monkeypatch.setattr(p100_torch_runtime, "_run_command", lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    monkeypatch.setattr(p100_torch_runtime, "_prepare_cuda_runtime", lambda *args, **kwargs: {"classification": "CUDA_RUNTIME_READY", "torch_version_before": "2.5.1+cu118", "torch_version_after": "2.5.1+cu118"})
 
     report = p100_torch_runtime.run_shared_p100_torch_bootstrap(report_root=tmp_path, repo_root=tmp_path, phase_prefix="test", write_markers=True)
 

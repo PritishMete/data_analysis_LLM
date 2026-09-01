@@ -68,6 +68,11 @@ SAFE_OUTPUT_NAMES = {
     "bnb_native_diagnostic_report.json",
     "probe_bnb_native_load.json",
     "probe_bnb_cuda_dependency.json",
+    "cuda_dependency_inspection.json",
+    "TORCH_PREINSTALL_INSPECTION_JSON",
+    "TORCH_INSTALL_RESULT_JSON",
+    "TORCH_POSTINSTALL_RUNTIME_JSON",
+    "TORCH_POSTINSTALL_CUDA_JSON",
 }
 
 

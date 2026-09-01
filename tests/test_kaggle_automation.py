@@ -218,9 +218,14 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
             "probe_bnb_cuda.json",
             "probe_nf4.json",
             "bnb_native_diagnostic_report.json",
-            "probe_bnb_native_load.json",
-            "probe_bnb_cuda_dependency.json",
-        }
+        "probe_bnb_native_load.json",
+        "probe_bnb_cuda_dependency.json",
+        "cuda_dependency_inspection.json",
+        "TORCH_PREINSTALL_INSPECTION_JSON",
+        "TORCH_INSTALL_RESULT_JSON",
+        "TORCH_POSTINSTALL_RUNTIME_JSON",
+        "TORCH_POSTINSTALL_CUDA_JSON",
+    }
 
 
 def test_status_error_triggers_postmortem_download(monkeypatch, tmp_path):

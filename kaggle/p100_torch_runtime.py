@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import ctypes
+import importlib.metadata as metadata
 import os
 import subprocess
 import sys
@@ -32,6 +34,117 @@ def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
     if not text:
         return None
     return "\n".join(text.splitlines()[-lines:])
+
+
+def _torch_cuda_requirements() -> list[str]:
+    """Read the exact NVIDIA requirements declared by the pinned Torch wheel."""
+    try:
+        requirements = metadata.distribution("torch").requires or []
+    except metadata.PackageNotFoundError:
+        return []
+    result: list[str] = []
+    for requirement in requirements:
+        candidate = str(requirement).split(";", 1)[0].strip()
+        if candidate.lower().startswith("nvidia-") and "-cu11" in candidate.lower():
+            if candidate not in result:
+                result.append(candidate)
+    return sorted(result)
+
+
+def _cuda_library_paths() -> dict[str, list[str]]:
+    names = {"libcudart": "libcudart.so", "libcublas": "libcublas.so", "libcusparse": "libcusparse.so"}
+    found = {key: [] for key in names}
+    for requirement in _torch_cuda_requirements():
+        package_name = requirement.split("==", 1)[0].strip()
+        try:
+            root = Path(metadata.distribution(package_name).locate_file(""))
+        except metadata.PackageNotFoundError:
+            continue
+        for path in root.rglob("*.so*"):
+            for key, prefix in names.items():
+                if path.name.startswith(prefix) and str(path) not in found[key]:
+                    found[key].append(str(path))
+    return found
+
+
+def _prepare_cuda_runtime(report_root: Path) -> dict[str, Any]:
+    requirements = _torch_cuda_requirements()
+    before = None
+    try:
+        before = metadata.version("torch")
+    except metadata.PackageNotFoundError:
+        pass
+    installed_before = {req.split("==", 1)[0]: _version_or_none(req.split("==", 1)[0]) for req in requirements}
+    missing = [req for req in requirements if installed_before.get(req.split("==", 1)[0]) is None]
+    install_result: dict[str, Any] = {"attempted": bool(missing), "requirements": missing, "returncode": 0}
+    if missing:
+        result = _run_command(
+            [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir", "--no-deps", *missing],
+            timeout=TORCH_INSTALL_TIMEOUT_SECONDS,
+        )
+        install_result.update({"returncode": result.returncode, "stdout_tail": _safe_tail(result.stdout), "stderr_tail": _safe_tail(result.stderr)})
+        if result.returncode != 0:
+            install_result["classification"] = "CUDA_RUNTIME_DEPENDENCY_INSTALL_FAILED"
+    after = None
+    try:
+        after = metadata.version("torch")
+    except metadata.PackageNotFoundError:
+        pass
+    if before and after != before:
+        raise RuntimeError("TORCH_VERSION_DRIFT")
+    paths = _cuda_library_paths()
+    directories = sorted({str(Path(path).parent) for values in paths.values() for path in values})
+    existing = os.environ.get("LD_LIBRARY_PATH", "")
+    entries = [entry for entry in directories if entry]
+    if existing:
+        entries.extend(part for part in existing.split(os.pathsep) if part and part not in entries)
+    os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(entries)
+    loads: dict[str, Any] = {}
+    for key, values in paths.items():
+        loads[key] = {"path": values[0] if values else None, "passed": False, "error": None}
+        if values:
+            try:
+                ctypes.CDLL(values[0])
+                loads[key]["passed"] = True
+            except OSError as exc:
+                loads[key]["error"] = str(exc)[:500]
+    if install_result.get("returncode") != 0:
+        classification = "CUDA_RUNTIME_DEPENDENCY_INSTALL_FAILED"
+    elif any(not item["path"] for item in loads.values()):
+        classification = "CUDA_LIBRARY_NOT_INSTALLED"
+    elif any(not item["passed"] for item in loads.values()):
+        classification = "CUDA_RUNTIME_LIBRARY_LOAD_FAILED"
+    else:
+        classification = "CUDA_RUNTIME_READY"
+    payload = {
+        "torch_version_before": before,
+        "torch_version_after": after,
+        "torch_cuda_requirements": requirements,
+        "installed_nvidia_packages": {req.split("==", 1)[0]: _version_or_none(req.split("==", 1)[0]) for req in requirements},
+        "missing_before_install": missing,
+        "install": install_result,
+        "library_paths": paths,
+        "ld_library_path_entries": entries,
+        "library_loads": loads,
+        "classification": classification,
+    }
+    _write_json(report_root / "cuda_dependency_inspection.json", payload)
+    _marker("CUDA_DEPENDENCY_INSPECTION_JSON", payload)
+    _marker("CUDA_DEPENDENCY_INSTALL_JSON", install_result)
+    _marker("CUDA_LIBRARY_PATH_JSON", {"entries": entries})
+    _marker("CUDA_LIBRARY_LOAD_JSON", loads)
+    return payload
+
+
+def _version_or_none(name: str) -> str | None:
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _marker(name: str, payload: Any) -> None:
+    print(f"{name}={json.dumps(payload, sort_keys=True)}", flush=True)
 
 
 def _run_command(command: list[str], *, timeout: int, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -218,6 +331,11 @@ def run_shared_p100_torch_bootstrap(
     bootstrap_result["install"] = install_payload
     if installer.returncode != 0:
         raise RuntimeError("TORCH_INSTALL_FAILED")
+
+    cuda_runtime = _prepare_cuda_runtime(report_root)
+    bootstrap_result["cuda_runtime"] = cuda_runtime
+    if cuda_runtime["classification"] != "CUDA_RUNTIME_READY":
+        raise RuntimeError(cuda_runtime["classification"])
 
     runtime_probe = _run_json_probe([sys.executable, "-c", _torch_probe_snippet()], timeout=TORCH_RUNTIME_TIMEOUT_SECONDS, label=f"{phase_prefix}_runtime")
     _write_json(report_root / "probe_torch_runtime.json", runtime_probe)

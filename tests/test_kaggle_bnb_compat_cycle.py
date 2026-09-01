@@ -56,6 +56,7 @@ def test_bnb_cycle_writes_isolated_artifacts_and_verdict(tmp_path, monkeypatch):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(p100_torch_runtime, "_run_command", fake_run_command)
+    monkeypatch.setattr(p100_torch_runtime, "_prepare_cuda_runtime", lambda *args, **kwargs: {"classification": "CUDA_RUNTIME_READY", "torch_version_before": "2.5.1+cu118", "torch_version_after": "2.5.1+cu118"})
     probes = {
         "bnb_compat_preinstall": {"ok": True, "json": {"torch_version": "2.5.1+cu118", "torch_cuda_version": "11.8", "gpu_available": True, "gpu_name": "Tesla P100-PCIE-16GB", "compute_capability": [6, 0], "arch_list": ["sm_60"], "skip_code_available": True}, "stdout": "{}"},
         "bnb_compat_runtime": {"ok": True, "json": {"torch_version": "2.5.1+cu118", "torch_cuda_version": "11.8", "gpu_available": True, "gpu_name": "Tesla P100-PCIE-16GB", "compute_capability": [6, 0], "arch_list": ["sm_60"], "skip_code_available": True}, "stdout": "{}"},
@@ -89,6 +90,7 @@ def test_bnb_cycle_marks_cpu_fallback_when_backend_inactive(tmp_path, monkeypatc
     monkeypatch.setattr(bnb_compat_cycle, "resolve_executed_source_commit", lambda **kwargs: {"executed_source_commit": "a" * 40, "source_identity_method": "git_rev_parse", "source_identity_verified": True})
     monkeypatch.setattr(bnb_compat_cycle, "write_source_identity", lambda *args, **kwargs: Path(tmp_path / "source_identity_resolved.json"))
     monkeypatch.setattr(p100_torch_runtime, "_run_command", lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    monkeypatch.setattr(p100_torch_runtime, "_prepare_cuda_runtime", lambda *args, **kwargs: {"classification": "CUDA_RUNTIME_READY", "torch_version_before": "2.5.1+cu118", "torch_version_after": "2.5.1+cu118"})
     monkeypatch.setattr(
         p100_torch_runtime,
         "_run_json_probe",
