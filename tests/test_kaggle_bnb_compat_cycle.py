@@ -57,6 +57,8 @@ def test_bnb_cycle_writes_isolated_artifacts_and_verdict(tmp_path, monkeypatch):
 
     monkeypatch.setattr(p100_torch_runtime, "_run_command", fake_run_command)
     monkeypatch.setattr(p100_torch_runtime, "_prepare_cuda_runtime", lambda *args, **kwargs: {"classification": "CUDA_RUNTIME_READY", "torch_version_before": "2.5.1+cu118", "torch_version_after": "2.5.1+cu118"})
+    markers = []
+    monkeypatch.setattr(bnb_compat_cycle, "_emit_probe_result", lambda marker, payload: markers.append(marker))
     probes = {
         "bnb_compat_preinstall": {"ok": True, "json": {"torch_version": "2.5.1+cu118", "torch_cuda_version": "11.8", "gpu_available": True, "gpu_name": "Tesla P100-PCIE-16GB", "compute_capability": [6, 0], "arch_list": ["sm_60"], "skip_code_available": True}, "stdout": "{}"},
         "bnb_compat_runtime": {"ok": True, "json": {"torch_version": "2.5.1+cu118", "torch_cuda_version": "11.8", "gpu_available": True, "gpu_name": "Tesla P100-PCIE-16GB", "compute_capability": [6, 0], "arch_list": ["sm_60"], "skip_code_available": True}, "stdout": "{}"},
@@ -83,6 +85,15 @@ def test_bnb_cycle_writes_isolated_artifacts_and_verdict(tmp_path, monkeypatch):
     assert (tmp_path / "smoke_runs" / "abc123-20260831T000000Z-test" / "probe_bnb_cuda.json").exists()
     assert (tmp_path / "smoke_runs" / "abc123-20260831T000000Z-test" / "probe_nf4.json").exists()
     assert (tmp_path / "smoke_runs" / "abc123-20260831T000000Z-test" / "bnb_compat_report.json").exists()
+    assert (tmp_path / "smoke_runs" / "abc123-20260831T000000Z-test" / "bnb_terminal_summary.json").exists()
+    assert markers == [
+        "BNB_INSTALL_RESULT_JSON",
+        "TORCH_POSTINSTALL_RESULT_JSON",
+        "BNB_IMPORT_RESULT_JSON",
+        "BNB_CUDA_RESULT_JSON",
+        "NF4_RESULT_JSON",
+        "BNB_FINAL_RESULT_JSON",
+    ]
 
 
 def test_bnb_cycle_marks_cpu_fallback_when_backend_inactive(tmp_path, monkeypatch):

@@ -73,6 +73,7 @@ SAFE_OUTPUT_NAMES = {
     "TORCH_INSTALL_RESULT_JSON",
     "TORCH_POSTINSTALL_RUNTIME_JSON",
     "TORCH_POSTINSTALL_CUDA_JSON",
+    "bnb_terminal_summary.json",
 }
 
 

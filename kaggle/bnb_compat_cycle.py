@@ -307,6 +307,33 @@ def _run_json_probe(command: list[str], *, timeout: int, label: str) -> dict[str
     return payload
 
 
+def _emit_probe_result(marker: str, payload: dict[str, Any]) -> None:
+    print(f"{marker}={json.dumps(payload, sort_keys=True)}", flush=True)
+
+
+def _write_terminal_summary(
+    report_root: Path,
+    *,
+    run_id: str,
+    executed_commit: str | None,
+    completed_stages: list[str],
+    first_failed_stage: str | None,
+    classification: str | None,
+    final_verdict: str | None,
+) -> Path:
+    return _write_json(
+        report_root / "bnb_terminal_summary.json",
+        {
+            "run_id": run_id,
+            "executed_commit": executed_commit,
+            "completed_stages": completed_stages,
+            "first_failed_stage": first_failed_stage,
+            "classification": classification,
+            "final_verdict": final_verdict,
+        },
+    )
+
+
 def _run_torch_preflight(report_root: Path, *, run_id: str, expected_git_commit: str | None, executed_git_commit: str | None, breadcrumbs_path: Path, repo_root: Path) -> dict[str, Any]:
     torch_result = run_shared_p100_torch_bootstrap(report_root=report_root, repo_root=repo_root, phase_prefix="bnb_compat", write_markers=True)
     _emit_breadcrumb(breadcrumbs_path, stage="dependency_precheck_complete", success=bool(torch_result.get("verdict") == "P100_TORCH_RUNTIME_PASSED"), safe_message=str(torch_result.get("verdict") or "unknown"), run_id=run_id)
@@ -316,7 +343,7 @@ def _run_torch_preflight(report_root: Path, *, run_id: str, expected_git_commit:
     return torch_result
 
 
-def run_bnb_compat_cycle(
+def _run_bnb_compat_cycle_impl(
     *,
     output_root: Path,
     run_id: str,
@@ -373,6 +400,7 @@ def run_bnb_compat_cycle(
     except Exception:
         installer_payload["torch_distribution_after"] = None
     _write_json(report_root / "probe_bnb_install.json", installer_payload)
+    _emit_probe_result("BNB_INSTALL_RESULT_JSON", installer_payload)
     _emit_breadcrumb(breadcrumbs_path, stage="dependency_install_complete", success=bool(installer.returncode == 0), safe_message="bnb install complete", run_id=run_id)
     _write_heartbeat(report_root, stage="dependency_install_complete", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message="bnb install complete")
     if installer.returncode != 0:
@@ -381,6 +409,7 @@ def run_bnb_compat_cycle(
         raise exc
 
     post_install_torch = run_shared_p100_torch_validation(report_root=report_root, phase_prefix="bnb_compat", write_markers=True)
+    _emit_probe_result("TORCH_POSTINSTALL_RESULT_JSON", post_install_torch)
     if post_install_torch.get("torch_version") != torch_result.get("torch_version"):
         exc = RuntimeError("TORCH_VERSION_DRIFT")
         _write_failure(report_root, stage="torch_version_drift", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit)
@@ -388,6 +417,7 @@ def run_bnb_compat_cycle(
 
     import_probe = _run_json_probe([sys.executable, "-c", _bnb_import_snippet()], timeout=BNB_RUNTIME_TIMEOUT_SECONDS, label="bnb_import")
     _write_json(report_root / "probe_bnb_import.json", import_probe)
+    _emit_probe_result("BNB_IMPORT_RESULT_JSON", import_probe)
     if not import_probe["ok"]:
         exc = RuntimeError("bitsandbytes_import_failed")
         _write_failure(report_root, stage="bnb_import", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=import_probe.get("stdout"), stderr=import_probe.get("stderr"))
@@ -395,6 +425,7 @@ def run_bnb_compat_cycle(
 
     cuda_probe = _run_json_probe([sys.executable, "-c", _bnb_cuda_snippet()], timeout=BNB_CUDA_TIMEOUT_SECONDS, label="bnb_cuda")
     _write_json(report_root / "probe_bnb_cuda.json", cuda_probe)
+    _emit_probe_result("BNB_CUDA_RESULT_JSON", cuda_probe)
     if not cuda_probe["ok"]:
         exc = RuntimeError("bitsandbytes_cuda_failed")
         _write_failure(report_root, stage="bnb_cuda", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=cuda_probe.get("stdout"), stderr=cuda_probe.get("stderr"))
@@ -408,6 +439,7 @@ def run_bnb_compat_cycle(
     else:
         nf4_probe = _run_json_probe([sys.executable, "-c", _nf4_probe_snippet()], timeout=NF4_TIMEOUT_SECONDS, label="nf4")
         _write_json(report_root / "probe_nf4.json", nf4_probe)
+        _emit_probe_result("NF4_RESULT_JSON", nf4_probe)
         if not nf4_probe["ok"]:
             exc = RuntimeError("nf4_runtime_failed")
             _write_failure(report_root, stage="nf4", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=nf4_probe.get("stdout"), stderr=nf4_probe.get("stderr"))
@@ -444,9 +476,49 @@ def run_bnb_compat_cycle(
         verdict=verdict,
     ).to_dict()
     _write_json(report_root / "bnb_compat_report.json", final_report)
+    _emit_probe_result("BNB_FINAL_RESULT_JSON", final_report)
+    _write_terminal_summary(
+        report_root,
+        run_id=run_id,
+        executed_commit=executed_git_commit,
+        completed_stages=["preinstall_inspection", "torch_install", "cuda_runtime", "torch_postinstall", "bnb_install", "bnb_import", "bnb_cuda", "nf4", "terminal_summary"],
+        first_failed_stage=None,
+        classification=None,
+        final_verdict=verdict,
+    )
     _emit_breadcrumb(breadcrumbs_path, stage="bnb_compat_complete", success=True, safe_message=verdict, run_id=run_id)
     _write_heartbeat(report_root, stage="bnb_compat_complete", run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, safe_message=verdict)
     return final_report
+
+
+def run_bnb_compat_cycle(
+    *,
+    output_root: Path,
+    run_id: str,
+    expected_git_commit: str | None,
+    source_root: Path,
+    bootstrap_pid: int | None = None,
+) -> dict[str, Any]:
+    report_root = ensure_run_root(run_id, base_root=output_root / "smoke_runs")
+    try:
+        return _run_bnb_compat_cycle_impl(
+            output_root=output_root,
+            run_id=run_id,
+            expected_git_commit=expected_git_commit,
+            source_root=source_root,
+            bootstrap_pid=bootstrap_pid,
+        )
+    except Exception as exc:
+        _write_terminal_summary(
+            report_root,
+            run_id=run_id,
+            executed_commit=None,
+            completed_stages=[],
+            first_failed_stage=str(exc),
+            classification=str(exc),
+            final_verdict=str(exc),
+        )
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
