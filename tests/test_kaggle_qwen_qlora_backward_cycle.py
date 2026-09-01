@@ -16,6 +16,13 @@ def test_backward_cycle_preserves_proven_runtime_and_pins_peft():
     assert "torch" in SOURCE and "bitsandbytes" in SOURCE
 
 
+def test_training_smoke_command_is_wired_to_the_same_cycle():
+    from scripts import kaggle_runner
+
+    assert kaggle_runner.qwen_qlora_training_smoke_cycle.__name__ == "qwen_qlora_training_smoke_cycle"
+    assert "qwen-qlora-training-smoke-cycle" in kaggle_runner.build_parser().format_help()
+
+
 def test_lora_configuration_is_explicit_and_targets_qwen_projections():
     assert "r=16" in SOURCE
     assert "lora_alpha=32" in SOURCE

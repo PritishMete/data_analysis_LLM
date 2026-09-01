@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
 
         write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
         result = run_qwen_nf4_load_cycle(output_root=output_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root)
-    elif workflow_mode == "qwen_qlora_backward":
+    elif workflow_mode in {"qwen_qlora_backward", "qwen_qlora_training_smoke"}:
         from kaggle.qwen_qlora_backward_cycle import run_qwen_qlora_backward_cycle
 
         write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")

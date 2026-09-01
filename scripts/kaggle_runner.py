@@ -1247,6 +1247,11 @@ def qwen_qlora_backward_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: Ka
     return {"run_id": resolved_run_id, "preflight": preflight_result, "run": run_result, "outputs": output_result}
 
 
+def qwen_qlora_training_smoke_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
+    spec = spec or KaggleNotebookSpec(workflow_mode="qwen_qlora_training_smoke")
+    return qwen_qlora_backward_cycle(stage_root=stage_root, spec=spec, run_id=run_id)
+
+
 def run_bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None, runtime_dir: Path | None = None) -> dict[str, Any]:
     return bnb_compat_cycle(stage_root=stage_root, spec=spec, run_id=run_id, runtime_dir=runtime_dir)
 
@@ -1340,6 +1345,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("bnb-compat-cycle")
     sub.add_parser("qwen-nf4-load-cycle")
     sub.add_parser("qwen-qlora-backward-cycle")
+    sub.add_parser("qwen-qlora-training-smoke-cycle")
     sub.add_parser("bnb-native-diagnose")
     sub.add_parser("diagnose")
     report = sub.add_parser("report")
@@ -1381,6 +1387,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json(qwen_nf4_load_cycle(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "qwen_nf4_load"}), run_id=args.run_id))
         elif args.command == "qwen-qlora-backward-cycle":
             _emit_json(qwen_qlora_backward_cycle(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "qwen_qlora_backward"}), run_id=args.run_id))
+        elif args.command == "qwen-qlora-training-smoke-cycle":
+            _emit_json(qwen_qlora_training_smoke_cycle(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "qwen_qlora_training_smoke"}), run_id=args.run_id))
         elif args.command == "bnb-native-diagnose":
             _emit_json(bnb_native_diagnose(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "bnb_native_diagnose"}), run_id=args.run_id))
         elif args.command == "diagnose":
