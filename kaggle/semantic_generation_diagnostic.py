@@ -6,8 +6,11 @@ optimizer, backward, or training operation.  All prompts are synthetic.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata as metadata
 import json
 import math
+import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -22,11 +25,27 @@ from .qwen_qlora_learning_experiment import (
     _target_output,
     _version,
 )
-from .qwen_nf4_load_cycle import _install_missing_dependencies, _memory
+from .qwen_nf4_load_cycle import _memory
 from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, resolve_executed_source_commit, write_source_identity
 
 
 DIAGNOSTIC_BUDGETS = (192, 256, 384)
+EXPECTED_DEPENDENCY_VERSIONS = {
+    "torch": "2.5.1+cu118",
+    "transformers": "4.46.3",
+    "tokenizers": "0.20.3",
+    "accelerate": "1.13.0",
+    "bitsandbytes": "0.43.3",
+    "peft": "0.13.2",
+}
+GENERATION_DEPENDENCIES = (
+    ("transformers", "transformers==4.46.3"),
+    ("tokenizers", "tokenizers==0.20.3"),
+    ("accelerate", "accelerate==1.13.0"),
+    ("peft", "peft==0.13.2"),
+    ("huggingface_hub", "huggingface_hub==0.26.2"),
+)
+DEPENDENCY_TIMEOUT_SECONDS = 600
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -36,6 +55,112 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _marker(name: str, payload: dict[str, Any]) -> None:
     print(f"{name}={json.dumps(payload, sort_keys=True)}", flush=True)
+
+
+def _version(name: str) -> str | None:
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _redact_safe_text(value: str | None) -> str | None:
+    text = value or ""
+    for token in ("token", "password", "secret", "api_key", "access_key", "authorization"):
+        import re
+        text = re.sub(rf"(?i)({token})\s*([:=])\s*[^\s]+", r"\1\2[REDACTED]", text)
+    return text
+
+
+def _safe_tail(value: str | None, lines: int = 40) -> str | None:
+    return _redact_safe_text("\n".join((value or "").splitlines()[-lines:])) or None
+
+
+def _run_dependency_install(package: str, requirement: str) -> dict[str, Any]:
+    command = ["<python>", "-m", "pip", "install", "--no-deps", requirement]
+    try:
+        result = subprocess.run(
+            [os.sys.executable, "-m", "pip", "install", "--no-deps", requirement],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=DEPENDENCY_TIMEOUT_SECONDS,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        return {
+            "package": package,
+            "requirement": requirement,
+            "command": command,
+            "returncode": result.returncode,
+            "stdout_tail": _safe_tail(result.stdout),
+            "stderr_tail": _safe_tail(result.stderr),
+            "timed_out": False,
+            "classification": None if result.returncode == 0 else f"{package.upper()}_INSTALL_FAILED",
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "package": package,
+            "requirement": requirement,
+            "command": command,
+            "returncode": None,
+            "stdout_tail": _safe_tail(exc.stdout),
+            "stderr_tail": _safe_tail(exc.stderr),
+            "timed_out": True,
+            "timeout_seconds": DEPENDENCY_TIMEOUT_SECONDS,
+            "classification": f"{package.upper()}_INSTALL_FAILED",
+        }
+
+
+def _install_generation_dependencies(*, import_checker: Any = None) -> dict[str, Any]:
+    before = {name: _version(name) for name in EXPECTED_DEPENDENCY_VERSIONS}
+    commands = []
+    for package, requirement in GENERATION_DEPENDENCIES:
+        if before.get(package) != EXPECTED_DEPENDENCY_VERSIONS.get(package):
+            result = _run_dependency_install(package, requirement)
+            commands.append(result)
+            if result.get("classification"):
+                after = {name: _version(name) for name in EXPECTED_DEPENDENCY_VERSIONS}
+                return {
+                    "ok": False,
+                    "classification": result["classification"],
+                    "versions_before": before,
+                    "versions": after,
+                    "install_commands": commands,
+                    "torch_version": after.get("torch"),
+                    "torch_cuda": None,
+                    "requested_versions": EXPECTED_DEPENDENCY_VERSIONS,
+                }
+    after = {name: _version(name) for name in EXPECTED_DEPENDENCY_VERSIONS}
+    drift = [name for name, expected in EXPECTED_DEPENDENCY_VERSIONS.items() if after.get(name) != expected]
+    import_failures = []
+    import_checker = import_checker or __import__
+    for module in ("torch", "transformers", "tokenizers", "accelerate", "bitsandbytes", "peft"):
+        try:
+            import_checker(module)
+        except Exception as exc:
+            import_failures.append({"module": module, "exception_type": type(exc).__name__, "message": _redact_safe_text(str(exc))})
+    classification = "DEPENDENCY_IMPORT_FAILED" if import_failures else "DEPENDENCY_VERSION_MISMATCH" if drift else None
+    torch_cuda = None
+    try:
+        import torch
+        torch_cuda = getattr(torch.version, "cuda", None)
+    except Exception:
+        pass
+    return {
+        "ok": not drift and not import_failures,
+        "classification": classification,
+        "versions_before": before,
+        "versions": after,
+        "install_commands": commands,
+        "requested_versions": EXPECTED_DEPENDENCY_VERSIONS,
+        "torch_version": after.get("torch"),
+        "torch_cuda": torch_cuda,
+        "import_failures": import_failures,
+        "torch_unchanged": before.get("torch") == after.get("torch"),
+        "bitsandbytes_unchanged": before.get("bitsandbytes") == after.get("bitsandbytes"),
+    }
 
 
 def _synthetic_rows() -> list[dict[str, Any]]:
@@ -153,7 +278,7 @@ def _failure(root: Path, stage: str, exc: BaseException, *, expected: str | None
     cuda_state = {}
     if torch_module is not None and getattr(torch_module, "cuda", None) is not None and torch_module.cuda.is_available():
         cuda_state = _memory(torch_module)
-    _write_json(root / "smoke_failure.json", {"stage": stage, "exception_type": type(exc).__name__, "sanitized_message": str(exc).replace("\n", " ")[:1000], "traceback_tail": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-10:]), "expected_git_commit": expected, "executed_git_commit": executed, "package_versions": {name: _version(name) for name in ("torch", "transformers", "tokenizers", "bitsandbytes")}, "cuda_state": cuda_state, "test_split_accessed": False})
+    _write_json(root / "smoke_failure.json", {"stage": stage, "exception_type": type(exc).__name__, "sanitized_message": _redact_safe_text(str(exc).replace("\n", " "))[:1000], "traceback_tail": _redact_safe_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-10:])), "expected_git_commit": expected, "executed_git_commit": executed, "package_versions": {name: _version(name) for name in ("torch", "transformers", "tokenizers", "accelerate", "bitsandbytes", "peft")}, "cuda_state": cuda_state, "test_split_accessed": False})
 
 
 def run_semantic_generation_diagnostic(*, output_root: Path, run_id: str, expected_git_commit: str | None, source_root: Path) -> dict[str, Any]:
@@ -168,8 +293,9 @@ def run_semantic_generation_diagnostic(*, output_root: Path, run_id: str, expect
         if expected_git_commit and executed != expected_git_commit:
             raise RuntimeError("stale_kaggle_checkout")
         stage = "dependencies"
-        dependencies = _install_missing_dependencies()
+        dependencies = _install_generation_dependencies()
         _write_json(root / "generation_diagnostic_dependencies.json", dependencies)
+        _marker("MODEL_DEPENDENCY_RESULT_JSON", dependencies)
         if not dependencies.get("ok"):
             raise RuntimeError(str(dependencies.get("classification") or "MODEL_DEPENDENCY_INSTALL_FAILED"))
         stage = "model_load"
