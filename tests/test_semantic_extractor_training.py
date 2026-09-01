@@ -159,7 +159,9 @@ def test_semantic_metrics_cover_expected_fields():
             "predicate_graph": {"logical_structure": "AND"},
             "aggregation": {"required": True},
             "ranking": {"required": False},
+            "limit": 5,
             "requires_fallback": False,
+            "confidence": 1.0,
         }
     ]
     expected = [dict(predicted[0])]
@@ -168,6 +170,50 @@ def test_semantic_metrics_cover_expected_fields():
     assert metrics["intent_accuracy"] == 1.0
     assert metrics["binding_accuracy"] == 1.0
     assert metrics["semantic_schema_valid_rate"] == 1.0
+
+
+def test_semantic_metrics_scores_invalid_predictions_without_crashing():
+    valid = {
+        "intent": "filter",
+        "semantic_bindings": {"intent_hint": "filter"},
+        "predicate_graph": {"logical_structure": "AND"},
+        "aggregation": {"required": True},
+        "ranking": {"required": False},
+        "limit": 5,
+        "requires_fallback": False,
+        "confidence": 1.0,
+    }
+    metrics = semantic_metrics([None, "", {}, [], "not json", valid], [valid] * 6)
+
+    assert metrics["intent_accuracy"] == 1.0 / 6.0
+    assert metrics["semantic_schema_valid_rate"] == 1.0 / 6.0
+    assert metrics["prediction_none_count"] == 1
+    assert metrics["empty_output_count"] == 1
+    assert metrics["parse_failure_count"] == 1
+    assert metrics["schema_failure_count"] == 2
+    assert metrics["valid_prediction_count"] == 1
+
+
+def test_sixteen_invalid_predictions_produce_zero_metrics():
+    expected = [{
+        "intent": "filter",
+        "semantic_bindings": {"intent_hint": "filter"},
+        "predicate_graph": {"logical_structure": "AND"},
+        "aggregation": {"required": True},
+        "ranking": {"required": False},
+        "limit": 5,
+        "requires_fallback": False,
+        "confidence": 1.0,
+    }] * 16
+    metrics = semantic_metrics([None] * 16, expected)
+
+    assert metrics["intent_accuracy"] == 0.0
+    assert metrics["binding_accuracy"] == 0.0
+    assert metrics["predicate_coverage"] == 0.0
+    assert metrics["logical_structure_accuracy"] == 0.0
+    assert metrics["fallback_accuracy"] == 0.0
+    assert metrics["semantic_schema_valid_rate"] == 0.0
+    assert metrics["prediction_none_count"] == 16
 
 
 def test_canonical_planner_intents_are_supported_by_semantic_targets():

@@ -228,7 +228,10 @@ def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_modu
         if int(generated.shape[-1] - encoded["input_ids"].shape[-1]) >= GENERATION_MAX_NEW_TOKENS:
             truncated += 1
         expected_output = _target_output(row)
-        predictions.append(prediction or {})
+        if prediction is None:
+            predictions.append("" if not decoded.strip() else None)
+        else:
+            predictions.append(prediction)
         expected.append(expected_output)
         if diagnostics and len(samples) < 4:
             reasons = []
@@ -255,7 +258,13 @@ def _score(metrics: dict[str, Any]) -> float:
 
 def _failure(root: Path, stage: str, exc: BaseException, run_id: str, expected: str | None, executed: str | None) -> None:
     import traceback
-    _write_json(root / "smoke_failure.json", {"run_id": run_id, "stage": stage, "exception_type": type(exc).__name__, "sanitized_message": str(exc).replace("\n", " ")[:1000], "traceback_tail": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:]), "package_versions": {name: _version(name) for name in ("torch", "bitsandbytes", "transformers", "tokenizers", "accelerate", "peft")}, "expected_git_commit": expected, "executed_git_commit": executed, "training_completed": False, "classification": "INSUFFICIENT_SEMANTIC_TRAINING_EXAMPLES" if stage in {"dataset", "subset_selection", "conversion", "privacy", "eligibility"} else "SEMANTIC_CORPUS_TOO_SMALL"})
+    classification = {
+        "pretrain_evaluation": "PRETRAIN_EVALUATION_FAILED",
+        "validation_generation": "VALIDATION_GENERATION_FAILED",
+        "validation_parse": "VALIDATION_PARSE_FAILED",
+        "semantic_schema": "SEMANTIC_SCHEMA_INVALID",
+    }.get(stage, "ORCHESTRATION_FAILURE")
+    _write_json(root / "smoke_failure.json", {"run_id": run_id, "stage": stage, "exception_type": type(exc).__name__, "sanitized_message": str(exc).replace("\n", " ")[:1000], "traceback_tail": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:]), "package_versions": {name: _version(name) for name in ("torch", "bitsandbytes", "transformers", "tokenizers", "accelerate", "peft")}, "expected_git_commit": expected, "executed_git_commit": executed, "training_completed": False, "classification": classification})
 
 
 def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expected_git_commit: str | None, source_root: Path) -> dict[str, Any]:
@@ -321,6 +330,7 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         tokenization = {"max_sequence_length": MAX_SEQUENCE_LENGTH, "max_target_tokens": max_target_tokens, "generation_max_new_tokens": max(GENERATION_MAX_NEW_TOKENS, max_target_tokens + 16), "audit_samples": audits[:4], "supervised_labeling_verified": True, "truncated_training_examples": sum(item["input_tokens"] >= MAX_SEQUENCE_LENGTH for item in audits)}
         _write_json(root / "learning_experiment_tokenization_result.json", tokenization)
         _marker("LEARNING_EXPERIMENT_TOKENIZATION_RESULT_JSON", tokenization)
+        stage = "pretrain_evaluation"
         evaluations: dict[str, Any] = {"step_0": _evaluate(model, tokenizer, validation_rows, torch, diagnostics=True)}
         _write_json(root / "learning_experiment_validation_metrics.json", evaluations)
         optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=LEARNING_RATE)
@@ -328,6 +338,7 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         steps: list[dict[str, Any]] = []
         best_step, best_score = 0, _score(evaluations["step_0"])
         adapter_root = root / "adapters"
+        stage = "training"
         for index, encoded in enumerate(encoded_train, start=1):
             if index == 1:
                 optimizer.zero_grad(set_to_none=True)

@@ -277,10 +277,44 @@ def build_semantic_readiness_report(targets: list[SemanticExtractorTarget]) -> S
     )
 
 
-def semantic_metrics(predicted: list[dict[str, Any]], expected: list[dict[str, Any]]) -> dict[str, float]:
+def _validate_prediction_output(value: Any) -> tuple[bool, str]:
+    if value is None:
+        return False, "PREDICTION_NONE"
+    if isinstance(value, str):
+        return (False, "EMPTY_OUTPUT") if not value.strip() else (False, "JSON_PARSE_FAILED")
+    if not isinstance(value, dict):
+        return False, "NON_OBJECT_OUTPUT"
+    if set(value) != ALLOWED_SEMANTIC_OUTPUT_KEYS:
+        return False, "SEMANTIC_SCHEMA_INVALID"
+    envelope = {
+        "source_kind": "experience",
+        "source_id": "0" * 64,
+        "split": "validation",
+        "family_fingerprint": "0" * 64,
+        "input": {"semantic_roles": []},
+        "output": value,
+        "metadata": {},
+    }
+    valid, _ = validate_semantic_target(envelope)
+    return (True, "VALID_SEMANTIC_OUTPUT") if valid else (False, "SEMANTIC_SCHEMA_INVALID")
+
+
+def _validate_expected_output(value: Any) -> None:
+    valid, reason = _validate_prediction_output(value)
+    if not valid:
+        raise ValueError(f"invalid_expected_target:{reason}")
+
+
+def semantic_metrics(predicted: list[Any], expected: list[dict[str, Any]]) -> dict[str, Any]:
     total = max(1, len(expected))
     intent_hits = binding_hits = predicate_hits = logical_hits = aggregation_hits = ranking_hits = fallback_hits = schema_hits = 0
+    reason_counts: Counter[str] = Counter()
     for pred, exp in zip(predicted, expected):
+        _validate_expected_output(exp)
+        valid, reason = _validate_prediction_output(pred)
+        reason_counts[reason] += 1
+        if not valid:
+            continue
         if pred.get("intent") == exp.get("intent"):
             intent_hits += 1
         if pred.get("semantic_bindings") == exp.get("semantic_bindings"):
@@ -295,9 +329,8 @@ def semantic_metrics(predicted: list[dict[str, Any]], expected: list[dict[str, A
             ranking_hits += 1
         if bool(pred.get("requires_fallback")) == bool(exp.get("requires_fallback")):
             fallback_hits += 1
-        if set(pred.keys()) <= ALLOWED_SEMANTIC_OUTPUT_KEYS:
-            schema_hits += 1
-    return {
+        schema_hits += 1
+    result: dict[str, Any] = {
         "intent_accuracy": intent_hits / total,
         "binding_accuracy": binding_hits / total,
         "predicate_coverage": predicate_hits / total,
@@ -307,3 +340,12 @@ def semantic_metrics(predicted: list[dict[str, Any]], expected: list[dict[str, A
         "fallback_accuracy": fallback_hits / total,
         "semantic_schema_valid_rate": schema_hits / total,
     }
+    result.update({
+        "prediction_reason_counts": dict(sorted(reason_counts.items())),
+        "prediction_none_count": reason_counts["PREDICTION_NONE"],
+        "empty_output_count": reason_counts["EMPTY_OUTPUT"],
+        "parse_failure_count": reason_counts["JSON_PARSE_FAILED"],
+        "schema_failure_count": reason_counts["SEMANTIC_SCHEMA_INVALID"] + reason_counts["NON_OBJECT_OUTPUT"],
+        "valid_prediction_count": reason_counts["VALID_SEMANTIC_OUTPUT"],
+    })
+    return result
