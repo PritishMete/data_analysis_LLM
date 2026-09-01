@@ -234,9 +234,18 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
         "model_load_result.json",
         "model_device_result.json",
         "model_memory_result.json",
-        "model_forward_result.json",
-        "qwen_nf4_load_report.json",
-    }
+            "model_forward_result.json",
+            "qwen_nf4_load_report.json",
+            "peft_dependency_result.json",
+            "kbit_preparation_result.json",
+            "lora_attachment_result.json",
+            "lora_parameter_result.json",
+            "qlora_forward_result.json",
+            "qlora_backward_result.json",
+            "qlora_optimizer_result.json",
+            "qlora_memory_result.json",
+            "qlora_backward_report.json",
+        }
 
 
 def test_status_error_triggers_postmortem_download(monkeypatch, tmp_path):
