@@ -12,14 +12,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .bnb_compat_cycle import (
-    BNB_REQUESTED_VERSION,
-    TORCH_CU118_INDEX_URL,
-    TORCH_CU118_PACKAGES,
-    TORCH_CU118_VERSION,
+from .bnb_compat_cycle import BNB_REQUESTED_VERSION
+from .p100_torch_runtime import (
+    TORCH_INDEX_URL as TORCH_CU118_INDEX_URL,
+    TORCH_PACKAGES as TORCH_CU118_PACKAGES,
+    TORCH_REQUESTED_VERSION as TORCH_CU118_VERSION,
+    _run_json_probe,
     _safe_tail,
-    _torch_install_snippet,
-    _torch_state_probe,
+    run_shared_p100_torch_bootstrap,
 )
 from .bootstrap import ensure_kaggle_paths, inspect_kaggle_gpu_identity
 from .run_context import ensure_run_root, resolve_executed_source_commit, write_source_identity
@@ -113,30 +113,15 @@ def run_bnb_native_diagnose(*, output_root: Path, run_id: str, expected_git_comm
     if expected_git_commit and executed_commit != expected_git_commit:
         raise RuntimeError("stale_kaggle_checkout")
 
-    preinstall = _torch_state_probe()
-    _write_json(run_root / "probe_torch_preinstall.json", preinstall)
-    install = _run([sys.executable, "-c", _torch_install_snippet()], timeout=INSTALL_TIMEOUT_SECONDS)
-    install_payload = {
-        "requested_version": TORCH_CU118_VERSION,
-        "requested_cuda_index": TORCH_CU118_INDEX_URL,
-        "requested_packages": TORCH_CU118_PACKAGES,
-        "returncode": install.returncode,
-        "ok": install.returncode == 0,
-        "stdout_tail": _safe_tail(install.stdout),
-        "stderr_tail": _safe_tail(install.stderr),
-        "torch_distribution": _version("torch"),
-    }
-    _write_json(run_root / "probe_torch_install.json", install_payload)
-    _marker("TORCH_INSTALL_RESULT_JSON", install_payload)
-    if install.returncode != 0:
-        raise RuntimeError("torch_install_failed")
-
-    runtime = _torch_state_probe()
-    _write_json(run_root / "probe_torch_runtime.json", runtime)
+    torch_bootstrap = run_shared_p100_torch_bootstrap(report_root=run_root, repo_root=source_root, phase_prefix="bnb_native")
+    _marker("TORCH_PREINSTALL_INSPECTION_JSON", torch_bootstrap.get("preinstall", {}))
+    _marker("TORCH_INSTALL_RESULT_JSON", torch_bootstrap.get("install", {}))
+    _marker("TORCH_POSTINSTALL_RUNTIME_JSON", torch_bootstrap.get("runtime", {}))
+    _marker("TORCH_POSTINSTALL_CUDA_JSON", torch_bootstrap.get("cuda", {}))
+    runtime = torch_bootstrap.get("runtime") or {}
     runtime_json = runtime.get("json") or {}
-    _marker("TORCH_RUNTIME_RESULT_JSON", runtime_json)
-    if not runtime.get("ok") or runtime_json.get("torch_version") != "2.5.1+cu118" or not runtime_json.get("sm_60_supported") or not runtime_json.get("basic_cuda_tensor_test"):
-        raise RuntimeError("p100_torch_runtime_failed")
+    if torch_bootstrap.get("verdict") != "P100_TORCH_RUNTIME_PASSED":
+        raise RuntimeError(str(torch_bootstrap.get("verdict") or "p100_torch_runtime_failed"))
 
     install_bnb = _run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir", "--no-deps", f"bitsandbytes=={BNB_REQUESTED_VERSION}"], timeout=INSTALL_TIMEOUT_SECONDS)
     bnb_install = {

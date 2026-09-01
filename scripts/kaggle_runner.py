@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata as metadata
 import argparse
 import json
 import os
@@ -11,10 +12,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-try:  # pragma: no cover - optional in local test environments
+try:
     from kagglesdk import KaggleClient, KaggleEnv
     from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionStatusRequest
-except ModuleNotFoundError:  # pragma: no cover
+except Exception:  # pragma: no cover - optional in local test env
     KaggleClient = None  # type: ignore[assignment]
     KaggleEnv = None  # type: ignore[assignment]
     ApiGetKernelSessionStatusRequest = None  # type: ignore[assignment]
@@ -65,14 +66,9 @@ SAFE_OUTPUT_NAMES = {
     "probe_bnb_cuda.json",
     "probe_nf4.json",
     "bnb_native_diagnostic_report.json",
-    "probe_bnb_import.json",
     "probe_bnb_native_load.json",
     "probe_bnb_cuda_dependency.json",
 }
-
-
-def available_commands() -> list[str]:
-    return ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle", "torch-compat-cycle", "bnb-compat-cycle", "bnb-native-diagnose", "diagnose"]
 
 
 def _current_commit() -> str | None:
@@ -88,6 +84,8 @@ def _safe_subprocess(command: list[str], *, timeout: int = 120, cwd: Path | None
         text=True,
         timeout=timeout,
     )
+
+WINDOWS_EXE_NAME = "kaggle.exe" if os.name == "nt" else "kaggle"
 
 
 class KaggleAutomationError(RuntimeError):
@@ -185,6 +183,10 @@ def _run_command(args: list[str], *, check: bool = True, timeout: int | None = N
     )
 
 
+def _safe_subprocess(args: list[str], *, check: bool = True, timeout: int | None = None, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    return _run_command(args, check=check, timeout=timeout, cwd=cwd)
+
+
 def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
     if not text:
         return None
@@ -204,10 +206,48 @@ def _normalize_status_text(status: Any | None) -> str | None:
     return str(value)
 
 
+def _current_python_executable() -> str:
+    return str(Path(sys.executable).resolve())
+
+
+def _resolve_kaggle_executable() -> str | None:
+    candidates: list[Path] = []
+    python_path = Path(sys.executable).resolve()
+    candidates.append(python_path.parent / WINDOWS_EXE_NAME)
+    candidates.append(python_path.parent / "Scripts" / WINDOWS_EXE_NAME)
+    candidates.append(REPO_ROOT / ".venv" / "Scripts" / WINDOWS_EXE_NAME)
+    candidates.append(REPO_ROOT / "venv" / "Scripts" / WINDOWS_EXE_NAME)
+    which_path = shutil.which("kaggle")
+    if which_path:
+        candidates.append(Path(which_path))
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _kaggle_module_available() -> bool:
+    try:
+        metadata.distribution("kaggle")
+        return True
+    except Exception:
+        return False
+
+
+def _kaggle_command_available() -> bool:
+    return _resolve_kaggle_executable() is not None
+
+
 def _sdk_kernel_status(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str | None:
-    if not auth.available or not auth.username:
-        return None
-    if KaggleClient is None or KaggleEnv is None or ApiGetKernelSessionStatusRequest is None:
+    if not auth.available or not auth.username or KaggleClient is None or KaggleEnv is None or ApiGetKernelSessionStatusRequest is None:
         return None
     client = KaggleClient(KaggleEnv.PROD, username=auth.username)
     request = ApiGetKernelSessionStatusRequest()
@@ -222,7 +262,24 @@ def _sdk_kernel_status(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str |
 
 
 def kaggle_cli_available() -> bool:
-    return shutil.which("kaggle") is not None or _kaggle_python_available()
+    return _kaggle_command_available()
+
+
+def available_commands() -> list[str]:
+    return [
+        "preflight",
+        "push",
+        "run",
+        "status",
+        "outputs",
+        "full-cycle",
+        "smoke-cycle",
+        "torch-compat-cycle",
+        "bnb-compat-cycle",
+        "bnb-native-diagnose",
+        "diagnose",
+        "report",
+    ]
 
 
 def _kaggle_python_available() -> bool:
@@ -272,10 +329,11 @@ def discover_kaggle_auth() -> KaggleAuthState:
 
 
 def _discover_username_from_cli() -> str | None:
-    if not _kaggle_python_available() and shutil.which("kaggle") is None:
+    kaggle_exe = _resolve_kaggle_executable()
+    if kaggle_exe is None:
         return None
     try:
-        result = _kaggle("config", "view", timeout=30)
+        result = _run_command([kaggle_exe, "config", "view"], timeout=30, cwd=str(Path.home()))
         text = result.stdout or ""
         for line in text.splitlines():
             lower = line.lower()
@@ -456,11 +514,27 @@ def kaggle_kernel_ref(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str:
 
 
 def _kaggle(*args: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    if _kaggle_python_available():
-        return _run_command([sys.executable, "-m", "kaggle", *args], timeout=timeout, cwd=str(Path.home()))
-    if shutil.which("kaggle") is not None:
-        return _run_command(["kaggle", *args], timeout=timeout)
+    kaggle_exe = _resolve_kaggle_executable()
+    if kaggle_exe is not None:
+        return _run_command([kaggle_exe, *args], timeout=timeout, cwd=str(Path.home()))
     raise KaggleAutomationError("kaggle_cli_missing")
+
+
+def resolve_kaggle_runtime() -> dict[str, Any]:
+    auth = discover_kaggle_auth()
+    executable = _resolve_kaggle_executable()
+    notebook_ref = kaggle_kernel_ref(auth, KaggleNotebookSpec())
+    return {
+        "python_executable": _current_python_executable(),
+        "kaggle_package_available": _kaggle_module_available(),
+        "kaggle_executable": executable,
+        "kaggle_cli_available": executable is not None,
+        "auth_available": auth.available,
+        "auth_source": auth.source,
+        "auth_username_resolved": bool(auth.username),
+        "kernel_ref": notebook_ref,
+        "kernel_ref_resolved": bool(auth.username),
+    }
 
 
 def _kaggle_checked(
@@ -513,6 +587,7 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
     auth = discover_kaggle_auth()
     repo = get_repo_state()
     stage = ensure_stage_paths(stage_root)
+    runtime = resolve_kaggle_runtime()
     notebook_ref = kaggle_kernel_ref(auth, spec)
     notebook_exists = None
     notebook_error = None
@@ -554,12 +629,16 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
         except Exception as exc:
             dataset_error = str(exc)
     preflight_payload = {
-        "cli_available": kaggle_cli_available(),
+        "python_executable": runtime["python_executable"],
+        "kaggle_package_available": runtime["kaggle_package_available"],
+        "kaggle_executable": runtime["kaggle_executable"],
+        "cli_available": runtime["kaggle_cli_available"],
         "auth": auth.to_dict(),
         "repo": repo.to_dict(),
         "spec": spec.to_dict(),
         "paths": stage.to_dict(),
         "kernel_ref": notebook_ref,
+        "kernel_ref_resolved": runtime["kernel_ref_resolved"],
         "kernel_status": notebook_status,
         "kernel_exists": notebook_exists,
         "kernel_error": notebook_error,
@@ -571,8 +650,8 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
             "enable_internet": spec.enable_internet,
         },
         "internet_required": spec.enable_internet,
-        "available_commands": ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle", "torch-compat-cycle", "bnb-compat-cycle"],
-        "ready": bool(kaggle_cli_available() and auth.available and dataset_ok and repo.head),
+        "available_commands": available_commands(),
+        "ready": bool(kaggle_cli_available() and auth.available and dataset_ok and repo.head and auth.username),
         "one_time_action": None if auth.available else "configure Kaggle CLI credentials in ~/.kaggle/kaggle.json or KAGGLE_CONFIG_DIR",
     }
     return preflight_payload
@@ -1089,9 +1168,7 @@ def torch_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNot
     }
 
 
-def bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None, runtime_dir: Path | None = None) -> dict[str, Any]:
-    if runtime_dir is not None:
-        stage_root = runtime_dir
+def bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
     spec = spec or KaggleNotebookSpec(workflow_mode="bnb_compat")
     resolved_run_id = run_id or generate_run_id(git_commit=get_repo_state().head)
     stage_root = _resolve_stage_root(stage_root, resolved_run_id)
@@ -1130,6 +1207,7 @@ def diagnose(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec 
     auth = discover_kaggle_auth()
     repo = get_repo_state()
     stage = ensure_stage_paths(stage_root)
+    runtime = resolve_kaggle_runtime()
     kernel_ref = kaggle_kernel_ref(auth, spec)
     status_result: dict[str, Any] | None = None
     status_error: str | None = None
@@ -1139,8 +1217,13 @@ def diagnose(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec 
         status_error = str(exc)
     return {
         "auth": auth.to_dict(),
+        "python_executable": runtime["python_executable"],
+        "kaggle_package_available": runtime["kaggle_package_available"],
+        "kaggle_executable": runtime["kaggle_executable"],
+        "kaggle_cli_available": runtime["kaggle_cli_available"],
         "repo": repo.to_dict(),
         "kernel_ref": kernel_ref,
+        "kernel_ref_resolved": runtime["kernel_ref_resolved"],
         "status_result": status_result,
         "status_error": status_error,
         "runner_heartbeat": _read_runner_heartbeat(stage_root),
@@ -1252,7 +1335,8 @@ def main(argv: list[str] | None = None) -> int:
             raise KaggleAutomationError(f"unsupported_command:{args.command}")
         return 0
     except KaggleAutomationError as exc:
-        _emit_json({"ok": False, "error": str(exc), "command": args.command, "dataset_ref": spec.dataset_ref, "kernel_ref": spec.notebook_ref(discover_kaggle_auth().username)})
+        runtime = resolve_kaggle_runtime()
+        _emit_json({"ok": False, "error": str(exc), "command": args.command, "dataset_ref": spec.dataset_ref, "kernel_ref": runtime["kernel_ref"], "kernel_ref_resolved": runtime["kernel_ref_resolved"]})
         return 2
 
 
