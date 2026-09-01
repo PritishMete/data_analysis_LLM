@@ -64,11 +64,15 @@ SAFE_OUTPUT_NAMES = {
     "probe_bnb_import.json",
     "probe_bnb_cuda.json",
     "probe_nf4.json",
+    "bnb_native_diagnostic_report.json",
+    "probe_bnb_import.json",
+    "probe_bnb_native_load.json",
+    "probe_bnb_cuda_dependency.json",
 }
 
 
 def available_commands() -> list[str]:
-    return ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle", "torch-compat-cycle", "bnb-compat-cycle", "diagnose"]
+    return ["preflight", "push", "run", "status", "outputs", "full-cycle", "smoke-cycle", "torch-compat-cycle", "bnb-compat-cycle", "bnb-native-diagnose", "diagnose"]
 
 
 def _current_commit() -> str | None:
@@ -1104,6 +1108,18 @@ def bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNoteb
     }
 
 
+def bnb_native_diagnose(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
+    spec = spec or KaggleNotebookSpec(workflow_mode="bnb_native_diagnose")
+    resolved_run_id = run_id or generate_run_id(git_commit=get_repo_state().head)
+    stage_root = _resolve_stage_root(stage_root, resolved_run_id)
+    preflight_result = preflight(spec, stage_root=stage_root)
+    if not preflight_result["ready"]:
+        raise KaggleAutomationError(preflight_result.get("one_time_action") or "preflight_failed")
+    run_result = run(spec, stage_root=stage_root, run_id=resolved_run_id)
+    output_result = outputs(spec, stage_root=stage_root, run_id=resolved_run_id)
+    return {"run_id": resolved_run_id, "preflight": preflight_result, "run": run_result, "outputs": output_result}
+
+
 def run_bnb_compat_cycle(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None, runtime_dir: Path | None = None) -> dict[str, Any]:
     return bnb_compat_cycle(stage_root=stage_root, spec=spec, run_id=run_id, runtime_dir=runtime_dir)
 
@@ -1189,6 +1205,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("smoke-cycle")
     sub.add_parser("torch-compat-cycle")
     sub.add_parser("bnb-compat-cycle")
+    sub.add_parser("bnb-native-diagnose")
     sub.add_parser("diagnose")
     report = sub.add_parser("report")
     report.add_argument("--run-id", required=True)
@@ -1225,6 +1242,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json(torch_compat_cycle(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "torch_compat"}), run_id=args.run_id))
         elif args.command == "bnb-compat-cycle":
             _emit_json(bnb_compat_cycle(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "bnb_compat"}), run_id=args.run_id))
+        elif args.command == "bnb-native-diagnose":
+            _emit_json(bnb_native_diagnose(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "bnb_native_diagnose"}), run_id=args.run_id))
         elif args.command == "diagnose":
             _emit_json(diagnose(stage_root=args.stage_root, spec=spec, run_id=args.run_id))
         elif args.command == "report":

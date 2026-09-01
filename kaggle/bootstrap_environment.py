@@ -181,6 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_pid = os.getpid()
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="bootstrap_started")
     _write_json_helper(report_root / "runner_metadata.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "timestamp": time.time()})
+    if str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "").strip().lower() == "bnb_native_diagnose":
+        # The native diagnostic owns its isolated Torch/BNB setup and must not
+        # inspect datasets or import the general training dependency graph.
+        _write_json_helper(report_root / "dependency_install_result.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "diagnostic_bootstrap": True, "dataset_used": False})
+        return 0
     repo_dataset = resolve_canonical_dataset_root()
     dataset_dir = Path(repo_dataset["root"]) if repo_dataset.get("root") else None
     if dataset_dir is None:

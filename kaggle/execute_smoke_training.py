@@ -90,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
 
         write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
         result = run_torch_compat_cycle(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root, bootstrap_pid=args.bootstrap_pid)
+    elif workflow_mode == "bnb_native_diagnose":
+        from kaggle.bnb_native_diagnose import run_bnb_native_diagnose
+
+        write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
+        result = run_bnb_native_diagnose(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root)
     elif workflow_mode == "bnb_compat":
         from kaggle.bnb_compat_cycle import run_bnb_compat_cycle
 

@@ -11,6 +11,7 @@ def test_available_commands_include_bnb_cycle():
     assert "diagnose" in commands
     assert "bnb-compat-cycle" in commands
     assert "torch-compat-cycle" in commands
+    assert "bnb-native-diagnose" in commands
 
 
 def test_diagnose_writes_snapshot(tmp_path, monkeypatch):

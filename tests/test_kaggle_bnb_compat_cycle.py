@@ -3,6 +3,35 @@ from __future__ import annotations
 from pathlib import Path
 
 from kaggle import bnb_compat_cycle
+from kaggle import bnb_native_diagnose
+
+
+def test_native_diagnose_derives_cuda_library_name():
+    assert bnb_native_diagnose._cuda_tag("11.8") == "cuda118"
+    assert bnb_native_diagnose._cuda_tag("12.8") == "cuda128"
+    assert bnb_native_diagnose._cuda_tag(None) is None
+
+
+def test_native_diagnose_distinguishes_missing_library_and_native_failure():
+    assert bnb_native_diagnose._classify(
+        expected_exists=False, native_load={"passed": False}, dependency={"resolved": False}, selected=None, backend_active=False
+    ) == "BITSANDBYTES_CUDA_LIBRARY_MISSING"
+    assert bnb_native_diagnose._classify(
+        expected_exists=True, native_load={"passed": False}, dependency={"resolved": True}, selected=None, backend_active=False
+    ) == "BITSANDBYTES_NATIVE_LIBRARY_LOAD_FAILED"
+
+
+def test_native_diagnose_classifies_dependency_failure():
+    assert bnb_native_diagnose._classify(
+        expected_exists=True, native_load={"passed": True}, dependency={"resolved": False}, selected="lib.so", backend_active=True
+    ) == "BITSANDBYTES_CUDA_DEPENDENCY_MISSING"
+
+
+def test_native_diagnose_enumerates_only_native_files(tmp_path):
+    (tmp_path / "libbitsandbytes_cpu.so").write_bytes(b"")
+    (tmp_path / "libbitsandbytes_cuda118.so").write_bytes(b"")
+    (tmp_path / "README.txt").write_bytes(b"")
+    assert bnb_native_diagnose._native_libraries(tmp_path) == ["libbitsandbytes_cpu.so", "libbitsandbytes_cuda118.so"]
 
 
 def test_torch_install_snippet_targets_cu118_and_forces_reinstall():
@@ -148,4 +177,3 @@ def test_bnb_cycle_marks_cpu_fallback_when_backend_inactive(tmp_path, monkeypatc
     )
 
     assert report["verdict"] == "BITSANDBYTES_CPU_FALLBACK"
-

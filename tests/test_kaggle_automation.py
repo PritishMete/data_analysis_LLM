@@ -215,9 +215,12 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
         "probe_bnb_precheck.json",
         "probe_bnb_install.json",
         "probe_bnb_import.json",
-        "probe_bnb_cuda.json",
-        "probe_nf4.json",
-    }
+            "probe_bnb_cuda.json",
+            "probe_nf4.json",
+            "bnb_native_diagnostic_report.json",
+            "probe_bnb_native_load.json",
+            "probe_bnb_cuda_dependency.json",
+        }
 
 
 def test_status_error_triggers_postmortem_download(monkeypatch, tmp_path):
