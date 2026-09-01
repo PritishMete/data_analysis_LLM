@@ -229,6 +229,13 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
         "bnb_internal_state.json",
         "bnb_native_symbols.json",
         "bnb_real_cuda_operation.json",
+        "model_dependency_result.json",
+        "tokenizer_result.json",
+        "model_load_result.json",
+        "model_device_result.json",
+        "model_memory_result.json",
+        "model_forward_result.json",
+        "qwen_nf4_load_report.json",
     }
 
 

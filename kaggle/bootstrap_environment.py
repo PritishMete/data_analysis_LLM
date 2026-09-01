@@ -181,6 +181,9 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_pid = os.getpid()
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="bootstrap_started")
     _write_json_helper(report_root / "runner_metadata.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "timestamp": time.time()})
+    if str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "").strip().lower() == "qwen_nf4_load":
+        _write_json_helper(report_root / "dependency_install_result.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "model_load_bootstrap": True, "dataset_used": False})
+        return 0
     if str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "").strip().lower() == "bnb_native_diagnose":
         # The native diagnostic owns its isolated Torch/BNB setup and must not
         # inspect datasets or import the general training dependency graph.
