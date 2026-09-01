@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from kaggle import qwen_qlora_learning_experiment as experiment
@@ -56,9 +57,29 @@ def test_generation_is_deterministic_and_bounded_by_target_audit():
 
 def test_parser_distinguishes_generation_outcomes():
     assert experiment._parse_prediction_diagnostic("", generated_tokens=0, max_new_tokens=10)[1] == "NO_GENERATION"
-    assert experiment._parse_prediction_diagnostic('{"intent":', generated_tokens=10, max_new_tokens=10)[1] == "TRUNCATED_JSON"
+    assert experiment._parse_prediction_diagnostic('{"intent":', generated_tokens=10, max_new_tokens=10)[1] == "INCOMPLETE_JSON"
+    assert experiment._parse_prediction_diagnostic('{"intent":', generated_tokens=10, max_new_tokens=10, termination_reason="MAX_NEW_TOKENS_REACHED")[1] == "MAX_NEW_TOKENS_REACHED"
     assert experiment._parse_prediction_diagnostic("not json", generated_tokens=2, max_new_tokens=10)[1] == "MALFORMED_JSON"
     assert experiment._parse_prediction_diagnostic("[]", generated_tokens=2, max_new_tokens=10)[1] == "NON_OBJECT_JSON"
+
+
+def test_balanced_json_extractor_handles_nested_objects_and_braces_in_strings():
+    text = 'prefix {"predicate_graph":{"operator":"AND"},"note":"brace } and \\\"quote"} trailing garbage'
+    assert experiment._extract_first_json_object(text) == text[text.index("{") : -len(" trailing garbage")]
+
+
+def test_generation_termination_reason_is_based_on_actual_completion_tokens():
+    assert experiment._generation_termination_reason([1, 2, 151645], generated_tokens=3, max_new_tokens=3, eos_token_id=151645) == "EOS"
+    assert experiment._generation_termination_reason([1, 2, 3], generated_tokens=3, max_new_tokens=3, eos_token_id=151645) == "MAX_NEW_TOKENS_REACHED"
+    assert experiment._generation_termination_reason([], generated_tokens=0, max_new_tokens=3, eos_token_id=151645) == "NO_GENERATION"
+
+
+def test_complete_first_json_object_survives_trailing_text():
+    value = {"intent": "filter", "semantic_bindings": {}, "predicate_graph": {}, "aggregation": {}, "ranking": {}, "limit": None, "requires_fallback": False, "confidence": 1.0}
+    text = json.dumps(value) + " trailing prose"
+    parsed, classification = experiment._parse_prediction_diagnostic(text, generated_tokens=20, max_new_tokens=192, termination_reason="OTHER_STOPPING_CRITERION")
+    assert parsed == value
+    assert classification == "VALID_SEMANTIC_OUTPUT"
 
 
 def test_generation_budget_exceeds_audited_target_with_margin():

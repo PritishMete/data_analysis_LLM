@@ -80,7 +80,51 @@ def _prompt(row: dict[str, Any]) -> str:
     return "Extract the semantic analytics contract. Return JSON only with exactly these keys: intent, semantic_bindings, predicate_graph, aggregation, ranking, limit, requires_fallback, confidence. INPUT=" + json.dumps(row.get("input") or {}, sort_keys=True, separators=(",", ":")) + " OUTPUT="
 
 
-def _parse_prediction_diagnostic(text: str, *, generated_tokens: int, max_new_tokens: int) -> tuple[dict[str, Any] | None, str]:
+def _extract_first_json_object(text: str) -> str | None:
+    """Return the first balanced JSON object without repairing its content."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _generation_termination_reason(completion_ids: Any, *, generated_tokens: int, max_new_tokens: int, eos_token_id: Any) -> str:
+    if generated_tokens <= 0:
+        return "NO_GENERATION"
+    eos_ids = {int(eos_token_id)} if isinstance(eos_token_id, int) else {int(value) for value in (eos_token_id or [])}
+    try:
+        last_token = int(completion_ids[-1])
+    except (IndexError, TypeError, ValueError):
+        last_token = None
+    if last_token in eos_ids:
+        return "EOS"
+    if generated_tokens >= max_new_tokens:
+        return "MAX_NEW_TOKENS_REACHED"
+    return "OTHER_STOPPING_CRITERION"
+
+
+def _parse_prediction_diagnostic(text: str, *, generated_tokens: int, max_new_tokens: int, termination_reason: str | None = None) -> tuple[dict[str, Any] | None, str]:
     if not text.strip():
         return None, "NO_GENERATION"
     try:
@@ -89,13 +133,17 @@ def _parse_prediction_diagnostic(text: str, *, generated_tokens: int, max_new_to
         parsed = None
     if parsed is not None and not isinstance(parsed, dict):
         return None, "NON_OBJECT_JSON"
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return None, "TRUNCATED_JSON" if generated_tokens >= max_new_tokens else "MALFORMED_JSON"
+    object_text = _extract_first_json_object(text)
+    if object_text is None:
+        if termination_reason == "MAX_NEW_TOKENS_REACHED":
+            return None, "MAX_NEW_TOKENS_REACHED"
+        return None, "INCOMPLETE_JSON" if text.lstrip().startswith("{") else "MALFORMED_JSON"
     try:
-        value = json.loads(text[start : end + 1])
+        value = json.loads(object_text)
     except Exception:
-        return None, "TRUNCATED_JSON" if generated_tokens >= max_new_tokens else "MALFORMED_JSON"
+        if termination_reason == "MAX_NEW_TOKENS_REACHED":
+            return None, "MAX_NEW_TOKENS_REACHED"
+        return None, "INCOMPLETE_JSON"
     if not isinstance(value, dict):
         return None, "NON_OBJECT_JSON"
     if set(value) != ALLOWED_SEMANTIC_OUTPUT_KEYS:
@@ -225,10 +273,20 @@ def _install_peft() -> dict[str, Any]:
 
 
 def _tokenize_supervised(tokenizer: Any, row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+    import torch
+
     prompt_ids = tokenizer(_prompt(row), add_special_tokens=True, truncation=False)["input_ids"]
     target_text = json.dumps(_target_output(row), sort_keys=True, separators=(",", ":"))
-    full = tokenizer(_prompt(row) + target_text, return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH, padding=False)
+    full = tokenizer(_prompt(row) + target_text, return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH - 1, padding=False)
     input_ids = full["input_ids"]
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_token_id is None:
+        raise RuntimeError("TARGET_EOS_TOKEN_MISSING")
+    eos = input_ids.new_tensor([[int(eos_token_id)]])
+    input_ids = torch.cat((input_ids, eos), dim=-1)
+    full["input_ids"] = input_ids
+    if "attention_mask" in full:
+        full["attention_mask"] = torch.cat((full["attention_mask"], full["attention_mask"].new_ones((1, 1))), dim=-1)
     prompt_count = min(len(prompt_ids), int(input_ids.shape[-1]))
     labels = input_ids.clone()
     labels[:, :prompt_count] = -100
@@ -240,6 +298,8 @@ def _tokenize_supervised(tokenizer: Any, row: dict[str, Any]) -> tuple[dict[str,
         "target_tokens": supervised,
         "masked_label_count": prompt_count,
         "supervised_label_count": supervised,
+        "target_eos_present": True,
+        "target_eos_supervised": int(labels[0, -1].item()) == int(eos_token_id),
     }
 
 
@@ -254,15 +314,17 @@ def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_modu
         encoded = tokenizer(_prompt(row), return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH).to("cuda:0")
         with torch_module.inference_mode():
             generated = model.generate(**encoded, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
-        decoded = tokenizer.decode(generated[0][encoded["input_ids"].shape[-1] :], skip_special_tokens=True)
-        generated_tokens = int(generated.shape[-1] - encoded["input_ids"].shape[-1])
-        prediction, parse_classification = _parse_prediction_diagnostic(decoded, generated_tokens=generated_tokens, max_new_tokens=max_new_tokens)
+        completion_ids = generated[0][encoded["input_ids"].shape[-1] :]
+        decoded = tokenizer.decode(completion_ids, skip_special_tokens=True)
+        generated_tokens = int(completion_ids.shape[-1])
+        termination_reason = _generation_termination_reason(completion_ids, generated_tokens=generated_tokens, max_new_tokens=max_new_tokens, eos_token_id=tokenizer.eos_token_id)
+        prediction, parse_classification = _parse_prediction_diagnostic(decoded, generated_tokens=generated_tokens, max_new_tokens=max_new_tokens, termination_reason=termination_reason)
         classification_counts[parse_classification] = classification_counts.get(parse_classification, 0) + 1
         if not decoded.strip():
             empty_outputs += 1
         if prediction is None:
             parse_failures += 1
-        if generated_tokens >= max_new_tokens:
+        if termination_reason == "MAX_NEW_TOKENS_REACHED":
             truncated += 1
         expected_output = _target_output(row)
         if prediction is None:
@@ -280,7 +342,7 @@ def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_modu
                 reasons.append("binding_mismatch")
             elif prediction.get("predicate_graph") != expected_output.get("predicate_graph"):
                 reasons.append("predicate_mismatch")
-            samples.append({"example_id": _safe_target_hash(row), "expected_intent": expected_output.get("intent"), "predicted_intent": (prediction or {}).get("intent"), "target_parse_success": True, "prediction_parse_success": prediction is not None, "expected_structure": _structure_summary(expected_output), "predicted_structure": _structure_summary(prediction), "metric_failure_reasons": reasons})
+            samples.append({"example_id": _safe_target_hash(row), "expected_intent": expected_output.get("intent"), "predicted_intent": (prediction or {}).get("intent"), "target_parse_success": True, "prediction_parse_success": prediction is not None, "expected_structure": _structure_summary(expected_output), "predicted_structure": _structure_summary(prediction), "metric_failure_reasons": reasons, "termination_reason": termination_reason, "input_tokens": int(encoded["input_ids"].shape[-1]), "total_output_tokens": int(generated.shape[-1]), "new_tokens": generated_tokens, "completion_characters": len(decoded)})
     metrics = semantic_metrics(predictions, expected)
     metrics.update({"generation_parse_failure_count": parse_failures, "empty_output_count": empty_outputs, "truncated_prediction_count": truncated})
     if diagnostics:
@@ -444,7 +506,7 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         with torch.inference_mode():
             reload_model.generate(**reload_inputs, max_new_tokens=tokenization["generation_max_new_tokens"], do_sample=False, pad_token_id=pad_id, eos_token_id=eos_id)
         all_eval_metrics = list(evaluations.values()) + [train_sanity]
-        has_truncation = any(int(item.get("truncated_prediction_count", 0)) > 0 or int(item.get("parser_classification_counts", {}).get("TRUNCATED_JSON", 0)) > 0 for item in all_eval_metrics)
+        has_truncation = any(int(item.get("truncated_prediction_count", 0)) > 0 or int(item.get("parser_classification_counts", {}).get("MAX_NEW_TOKENS_REACHED", 0)) > 0 for item in all_eval_metrics)
         has_complete_invalid = any(int(item.get("valid_prediction_count", 0)) == 0 and not int(item.get("truncated_prediction_count", 0)) and int(item.get("schema_failure_count", 0)) > 0 for item in all_eval_metrics)
         improved = any(_score(evaluations[f"step_{step}"]) > _score(evaluations["step_0"]) and evaluations[f"step_{step}"]["semantic_schema_valid_rate"] >= evaluations["step_0"]["semantic_schema_valid_rate"] for step in validation_steps[1:])
         verdict = "GENERATION_TRUNCATION_FOUND" if has_truncation else ("SEMANTIC_PARSER_BUG_FOUND" if has_complete_invalid else ("SEMANTIC_LEARNING_SIGNAL_CONFIRMED" if improved else "MODEL_NOT_LEARNING"))
