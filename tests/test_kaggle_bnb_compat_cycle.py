@@ -64,7 +64,7 @@ def test_bnb_cycle_writes_isolated_artifacts_and_verdict(tmp_path, monkeypatch):
         "bnb_compat_runtime": {"ok": True, "json": {"torch_version": "2.5.1+cu118", "torch_cuda_version": "11.8", "gpu_available": True, "gpu_name": "Tesla P100-PCIE-16GB", "compute_capability": [6, 0], "arch_list": ["sm_60"], "skip_code_available": True}, "stdout": "{}"},
         "bnb_compat_cuda": {"ok": True, "json": {"cuda_available": True, "device_name": "Tesla P100-PCIE-16GB", "capability": [6, 0], "arch_list": ["sm_60"], "basic_cuda_tensor_test": True, "synchronize": True}, "stdout": "{}"},
         "bnb_import": {"ok": True, "json": {"torch_version": "2.5.1+cu118", "torch_cuda_version": "11.8", "bnb_version": "0.43.3", "bnb_file": "/tmp/bnb.py", "available_cuda_versions": ["11.8"], "cuda_backend_active": True, "selected_native_cuda_library": "/tmp/libbitsandbytes_cuda118.so"}, "stdout": "{}"},
-        "bnb_cuda": {"ok": True, "json": {"cuda_available": True, "device_name": "Tesla P100-PCIE-16GB", "capability": [6, 0], "arch_list": ["sm_60"], "basic_cuda_tensor_test": True, "cuda_backend_active": True}, "stdout": "{}"},
+        "bnb_cuda": {"ok": True, "json": {"cuda_available": True, "device_name": "Tesla P100-PCIE-16GB", "capability": [6, 0], "arch_list": ["sm_60"], "basic_cuda_tensor_test": True, "real_bnb_cuda_operation": True, "real_bnb_cuda_device": "cuda:0"}, "stdout": "{}"},
         "nf4": {"ok": True, "json": {"nf4_initialization": True, "nf4_quantization": True, "nf4_dequantization": True, "nf4_cuda": True, "nf4_capability_available": True}, "stdout": "{}"},
     }
     monkeypatch.setattr(p100_torch_runtime, "_run_json_probe", lambda command, *, timeout, label: probes[label])
@@ -90,7 +90,11 @@ def test_bnb_cycle_writes_isolated_artifacts_and_verdict(tmp_path, monkeypatch):
         "BNB_INSTALL_RESULT_JSON",
         "TORCH_POSTINSTALL_RESULT_JSON",
         "BNB_IMPORT_RESULT_JSON",
+        "BNB_INTERNAL_STATE_JSON",
+        "BNB_NATIVE_SYMBOLS_JSON",
         "BNB_CUDA_RESULT_JSON",
+        "BNB_REAL_CUDA_OPERATION_JSON",
+        "NF4_RESULT_JSON",
         "NF4_RESULT_JSON",
         "BNB_FINAL_RESULT_JSON",
     ]
@@ -144,6 +148,7 @@ def test_bnb_cycle_marks_cpu_fallback_when_backend_inactive(tmp_path, monkeypatc
             "capability": [6, 0],
             "arch_list": ["sm_60"],
             "basic_cuda_tensor_test": True,
+            "real_bnb_cuda_operation": False,
         },
         "stdout": "{}",
     })

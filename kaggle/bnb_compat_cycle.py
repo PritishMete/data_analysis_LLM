@@ -186,7 +186,10 @@ raise SystemExit(result.returncode)
 
 def _bnb_import_snippet() -> str:
     return """
+import ctypes
 import json
+import os
+from pathlib import Path
 import torch
 import bitsandbytes as bnb
 from bitsandbytes import cextension
@@ -199,6 +202,11 @@ payload = {
     "available_cuda_versions": None,
     "cuda_backend_active": False,
     "selected_native_cuda_library": None,
+    "compiled_with_cuda": getattr(cextension, "COMPILED_WITH_CUDA", None),
+    "lib_type": type(getattr(cextension, "lib", None)).__name__,
+    "native_library_loaded": False,
+    "required_cuda_symbols": {},
+    "diagnostic_first_error": None,
 }
 try:
     payload["available_cuda_versions"] = list(cextension.get_available_cuda_binary_versions())
@@ -213,8 +221,20 @@ except Exception as exc:
 try:
     lib = getattr(cextension, "lib", None)
     payload["selected_native_cuda_library"] = getattr(lib, "_name", None) or getattr(lib, "__file__", None) or None
+    selected = payload["selected_native_cuda_library"]
+    if selected and Path(str(selected)).exists():
+        native = ctypes.CDLL(str(selected), mode=getattr(ctypes, "RTLD_GLOBAL", 0))
+        payload["native_library_loaded"] = True
+        symbols = ("cadam32bit_grad_fp32", "cget_col_row_stats", "cquantize_blockwise_fp16_nf4", "cdequantize_blockwise_fp16_nf4")
+        payload["required_cuda_symbols"] = {name: bool(getattr(native, name, None)) for name in symbols}
 except Exception as exc:
     payload["selected_native_cuda_library_error"] = str(exc)
+try:
+    diagnostic = getattr(getattr(cextension, "CUDASetup", None), "get_instance", lambda: None)()
+    if diagnostic is not None and hasattr(diagnostic, "generate_instructions"):
+        diagnostic.generate_instructions()
+except Exception as exc:
+    payload["diagnostic_first_error"] = str(exc)[:500]
 print(json.dumps(payload))
 """
 
@@ -224,7 +244,7 @@ def _bnb_cuda_snippet() -> str:
 import json
 import torch
 import bitsandbytes as bnb
-from bitsandbytes import cextension
+import bitsandbytes.functional as F
 
 payload = {
     "cuda_available": bool(torch.cuda.is_available()),
@@ -232,7 +252,9 @@ payload = {
     "capability": None,
     "arch_list": list(torch.cuda.get_arch_list()) if hasattr(torch.cuda, "get_arch_list") else None,
     "basic_cuda_tensor_test": False,
-    "cuda_backend_active": False,
+    "real_bnb_cuda_operation": False,
+    "real_bnb_cuda_device": None,
+    "real_bnb_cuda_error": None,
     "bnb_version": bnb.__version__,
 }
 if payload["cuda_available"]:
@@ -244,9 +266,18 @@ if payload["cuda_available"]:
     torch.cuda.synchronize()
     payload["basic_cuda_tensor_test"] = bool(z.sum().item() == 8.0)
 try:
-    payload["cuda_backend_active"] = bool(getattr(cextension, "lib", None) is not None or getattr(cextension, "CUDASetup", None) is not None)
+    if payload["cuda_available"]:
+        tensor = torch.tensor([[0.25, -1.0], [2.5, 3.0]], device="cuda", dtype=torch.float16)
+        quantized = F.quantize_4bit(tensor, quant_type="nf4")
+        if isinstance(quantized, (tuple, list)):
+            dequantized = F.dequantize_4bit(*quantized)
+        else:
+            dequantized = F.dequantize_4bit(quantized)
+        torch.cuda.synchronize()
+        payload["real_bnb_cuda_operation"] = bool(getattr(dequantized, "is_cuda", False))
+        payload["real_bnb_cuda_device"] = str(dequantized.device)
 except Exception as exc:
-    payload["cuda_backend_error"] = str(exc)
+    payload["real_bnb_cuda_error"] = str(exc)[:1000]
 print(json.dumps(payload))
 """
 
@@ -418,6 +449,12 @@ def _run_bnb_compat_cycle_impl(
     import_probe = _run_json_probe([sys.executable, "-c", _bnb_import_snippet()], timeout=BNB_RUNTIME_TIMEOUT_SECONDS, label="bnb_import")
     _write_json(report_root / "probe_bnb_import.json", import_probe)
     _emit_probe_result("BNB_IMPORT_RESULT_JSON", import_probe)
+    _emit_probe_result("BNB_INTERNAL_STATE_JSON", import_probe.get("json") or {})
+    _emit_probe_result("BNB_NATIVE_SYMBOLS_JSON", {
+        "selected_native_cuda_library": (import_probe.get("json") or {}).get("selected_native_cuda_library"),
+        "native_library_loaded": (import_probe.get("json") or {}).get("native_library_loaded"),
+        "required_cuda_symbols": (import_probe.get("json") or {}).get("required_cuda_symbols", {}),
+    })
     if not import_probe["ok"]:
         exc = RuntimeError("bitsandbytes_import_failed")
         _write_failure(report_root, stage="bnb_import", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=import_probe.get("stdout"), stderr=import_probe.get("stderr"))
@@ -426,14 +463,15 @@ def _run_bnb_compat_cycle_impl(
     cuda_probe = _run_json_probe([sys.executable, "-c", _bnb_cuda_snippet()], timeout=BNB_CUDA_TIMEOUT_SECONDS, label="bnb_cuda")
     _write_json(report_root / "probe_bnb_cuda.json", cuda_probe)
     _emit_probe_result("BNB_CUDA_RESULT_JSON", cuda_probe)
+    _emit_probe_result("BNB_REAL_CUDA_OPERATION_JSON", cuda_probe.get("json") or {})
     if not cuda_probe["ok"]:
         exc = RuntimeError("bitsandbytes_cuda_failed")
         _write_failure(report_root, stage="bnb_cuda", exc=exc, run_id=run_id, expected_git_commit=expected_git_commit, executed_git_commit=executed_git_commit, stdout=cuda_probe.get("stdout"), stderr=cuda_probe.get("stderr"))
         raise exc
 
     cuda_json = cuda_probe.get("json") or {}
-    cuda_backend_active = bool((import_probe.get("json") or {}).get("cuda_backend_active"))
-    if not cuda_backend_active:
+    real_bnb_cuda_operation = bool((cuda_json or {}).get("real_bnb_cuda_operation"))
+    if not real_bnb_cuda_operation:
         verdict = "BITSANDBYTES_CPU_FALLBACK"
         nf4_probe = {"ok": False, "json": None}
     else:
@@ -449,6 +487,7 @@ def _run_bnb_compat_cycle_impl(
             verdict = "NF4_RUNTIME_FAILED"
         else:
             verdict = "BNB_NF4_P100_RUNTIME_PASSED"
+    _emit_probe_result("NF4_RESULT_JSON", nf4_probe)
 
     final_report = BnbCompatCycleReport(
         run_id=run_id,
@@ -476,6 +515,13 @@ def _run_bnb_compat_cycle_impl(
         verdict=verdict,
     ).to_dict()
     _write_json(report_root / "bnb_compat_report.json", final_report)
+    _write_json(report_root / "bnb_internal_state.json", import_probe.get("json") or {})
+    _write_json(report_root / "bnb_native_symbols.json", {
+        "selected_native_cuda_library": (import_probe.get("json") or {}).get("selected_native_cuda_library"),
+        "native_library_loaded": (import_probe.get("json") or {}).get("native_library_loaded"),
+        "required_cuda_symbols": (import_probe.get("json") or {}).get("required_cuda_symbols", {}),
+    })
+    _write_json(report_root / "bnb_real_cuda_operation.json", cuda_json)
     _emit_probe_result("BNB_FINAL_RESULT_JSON", final_report)
     _write_terminal_summary(
         report_root,

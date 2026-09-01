@@ -226,6 +226,9 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
         "TORCH_POSTINSTALL_RUNTIME_JSON",
         "TORCH_POSTINSTALL_CUDA_JSON",
         "bnb_terminal_summary.json",
+        "bnb_internal_state.json",
+        "bnb_native_symbols.json",
+        "bnb_real_cuda_operation.json",
     }
 
 
