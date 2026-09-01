@@ -245,6 +245,15 @@ def test_build_kernel_metadata_and_safe_outputs(monkeypatch):
             "qlora_optimizer_result.json",
             "qlora_memory_result.json",
             "qlora_backward_report.json",
+            "learning_experiment_dataset_result.json",
+            "learning_experiment_privacy_result.json",
+            "semantic_contract_audit.json",
+            "learning_experiment_peft_result.json",
+            "learning_experiment_lora_result.json",
+            "learning_experiment_tokenization_result.json",
+            "learning_experiment_validation_metrics.json",
+            "learning_experiment_report.json",
+            "learning_experiment_final_result.json",
         }
 
 
