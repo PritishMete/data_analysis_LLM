@@ -49,8 +49,8 @@ def test_bnb_install_snippet_uses_no_deps():
 def test_cuda_requirements_come_from_torch_metadata_without_cuda12(monkeypatch):
     class Distribution:
         requires = [
-            "nvidia-cuda-runtime-cu11==11.8.89",
-            "nvidia-cublas-cu11==11.11.3.6 ; platform_system == 'Linux'",
+            "nvidia-cuda-runtime-cu11 (==11.8.89)",
+            "nvidia-cublas-cu11 (==11.11.3.6) ; platform_system == 'Windows'",
             "nvidia-cuda-runtime-cu12==12.8.0",
             "typing-extensions>=4.8",
         ]

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from packaging.requirements import InvalidRequirement, Requirement
 from pathlib import Path
 from typing import Any
 
@@ -36,31 +37,61 @@ def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
     return "\n".join(text.splitlines()[-lines:])
 
 
-def _torch_cuda_requirements() -> list[str]:
-    """Read the exact NVIDIA requirements declared by the pinned Torch wheel."""
+def _torch_cuda_requirement_records() -> list[dict[str, Any]]:
+    """Parse applicable CUDA 11 requirements from Torch metadata."""
     try:
-        requirements = metadata.distribution("torch").requires or []
+        requirements = getattr(metadata.distribution("torch"), "requires", None) or []
     except metadata.PackageNotFoundError:
         return []
-    result: list[str] = []
+    result: list[dict[str, Any]] = []
     for requirement in requirements:
-        candidate = str(requirement).split(";", 1)[0].strip()
-        if candidate.lower().startswith("nvidia-") and "-cu11" in candidate.lower():
-            if candidate not in result:
-                result.append(candidate)
-    return sorted(result)
+        try:
+            parsed = Requirement(str(requirement))
+        except InvalidRequirement as exc:
+            if str(requirement).lower().startswith("nvidia-") and "-cu11" in str(requirement).lower():
+                raise RuntimeError("CUDA_DEPENDENCY_PARSE_FAILED") from exc
+            continue
+        if not parsed.name.lower().startswith("nvidia-") or "-cu11" not in parsed.name.lower():
+            continue
+        if parsed.marker is not None and not parsed.marker.evaluate():
+            continue
+        record = {
+            "name": parsed.name,
+            "specifier": str(parsed.specifier),
+            "requirement": parsed.name + str(parsed.specifier),
+            "marker": str(parsed.marker) if parsed.marker is not None else None,
+        }
+        if record not in result:
+            result.append(record)
+    return sorted(result, key=lambda item: item["name"].lower())
+
+
+def _torch_cuda_requirements() -> list[str]:
+    """Return normalized, marker-filtered install requirements for CUDA 11."""
+    return [record["requirement"] for record in _torch_cuda_requirement_records()]
 
 
 def _cuda_library_paths() -> dict[str, list[str]]:
     names = {"libcudart": "libcudart.so", "libcublas": "libcublas.so", "libcusparse": "libcusparse.so"}
     found = {key: [] for key in names}
-    for requirement in _torch_cuda_requirements():
-        package_name = requirement.split("==", 1)[0].strip()
+    records = _torch_cuda_requirement_records()
+    if not records:
+        records = []
+        for requirement in _torch_cuda_requirements():
+            parsed = Requirement(requirement)
+            records.append({"name": parsed.name, "specifier": str(parsed.specifier), "requirement": requirement})
+    for record in records:
+        package_name = record["name"]
         try:
-            root = Path(metadata.distribution(package_name).locate_file(""))
+            distribution = metadata.distribution(package_name)
         except metadata.PackageNotFoundError:
             continue
-        for path in root.rglob("*.so*"):
+        files = getattr(distribution, "files", None) or []
+        candidates = [Path(distribution.locate_file(file)) for file in files if str(file).lower().endswith(".so") or ".so." in str(file).lower()]
+        if not candidates:
+            root = Path(distribution.locate_file(""))
+            candidates = list(root.rglob("*.so*"))
+        for path in candidates:
             for key, prefix in names.items():
                 if path.name.startswith(prefix) and str(path) not in found[key]:
                     found[key].append(str(path))
@@ -68,14 +99,15 @@ def _cuda_library_paths() -> dict[str, list[str]]:
 
 
 def _prepare_cuda_runtime(report_root: Path) -> dict[str, Any]:
-    requirements = _torch_cuda_requirements()
+    requirement_records = _torch_cuda_requirement_records()
+    requirements = [record["requirement"] for record in requirement_records]
     before = None
     try:
         before = metadata.version("torch")
     except metadata.PackageNotFoundError:
         pass
-    installed_before = {req.split("==", 1)[0]: _version_or_none(req.split("==", 1)[0]) for req in requirements}
-    missing = [req for req in requirements if installed_before.get(req.split("==", 1)[0]) is None]
+    installed_before = {record["name"]: _version_or_none(record["name"]) for record in requirement_records}
+    missing = [record["requirement"] for record in requirement_records if not _installed_satisfies(record)]
     install_result: dict[str, Any] = {"attempted": bool(missing), "requirements": missing, "returncode": 0}
     if missing:
         result = _run_command(
@@ -110,8 +142,10 @@ def _prepare_cuda_runtime(report_root: Path) -> dict[str, Any]:
                 loads[key]["error"] = str(exc)[:500]
     if install_result.get("returncode") != 0:
         classification = "CUDA_RUNTIME_DEPENDENCY_INSTALL_FAILED"
+    elif any(not installed_before.get(record["name"]) and not _version_or_none(record["name"]) for record in requirement_records):
+        classification = "CUDA_PACKAGE_MISSING"
     elif any(not item["path"] for item in loads.values()):
-        classification = "CUDA_LIBRARY_NOT_INSTALLED"
+        classification = "CUDA_LIBRARY_NOT_FOUND"
     elif any(not item["passed"] for item in loads.values()):
         classification = "CUDA_RUNTIME_LIBRARY_LOAD_FAILED"
     else:
@@ -119,8 +153,15 @@ def _prepare_cuda_runtime(report_root: Path) -> dict[str, Any]:
     payload = {
         "torch_version_before": before,
         "torch_version_after": after,
-        "torch_cuda_requirements": requirements,
-        "installed_nvidia_packages": {req.split("==", 1)[0]: _version_or_none(req.split("==", 1)[0]) for req in requirements},
+        "torch_cuda_requirements": requirement_records,
+        "installed_nvidia_packages": {
+            record["name"]: {
+                "required_specifier": record["specifier"],
+                "installed_version": _version_or_none(record["name"]),
+                "location": _distribution_location(record["name"]),
+            }
+            for record in requirement_records
+        },
         "missing_before_install": missing,
         "install": install_result,
         "library_paths": paths,
@@ -141,6 +182,23 @@ def _version_or_none(name: str) -> str | None:
         return metadata.version(name)
     except metadata.PackageNotFoundError:
         return None
+
+
+def _distribution_location(name: str) -> str | None:
+    try:
+        return str(metadata.distribution(name).locate_file(""))
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _installed_satisfies(record: dict[str, Any]) -> bool:
+    installed = _version_or_none(record["name"])
+    if installed is None:
+        return False
+    try:
+        return Requirement(record["name"] + record["specifier"]).specifier.contains(installed, prereleases=True)
+    except InvalidRequirement:
+        return False
 
 
 def _marker(name: str, payload: Any) -> None:
