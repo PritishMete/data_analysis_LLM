@@ -115,6 +115,11 @@ def main(argv: list[str] | None = None) -> int:
 
         write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
         result = run_qwen_qlora_learning_experiment(output_root=output_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root)
+    elif workflow_mode == "qwen_semantic_memorization":
+        from kaggle.qwen_qlora_learning_experiment import run_qwen_qlora_learning_experiment
+
+        write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
+        result = run_qwen_qlora_learning_experiment(output_root=output_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root, memorization=True)
     elif workflow_mode == "semantic_corpus_audit":
         from kaggle.semantic_corpus_audit_cycle import run_semantic_corpus_audit
 

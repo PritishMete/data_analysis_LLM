@@ -54,6 +54,42 @@ def test_generation_is_deterministic_and_bounded_by_target_audit():
     assert "truncated_prediction_count" in SOURCE
 
 
+def test_parser_distinguishes_generation_outcomes():
+    assert experiment._parse_prediction_diagnostic("", generated_tokens=0, max_new_tokens=10)[1] == "NO_GENERATION"
+    assert experiment._parse_prediction_diagnostic('{"intent":', generated_tokens=10, max_new_tokens=10)[1] == "TRUNCATED_JSON"
+    assert experiment._parse_prediction_diagnostic("not json", generated_tokens=2, max_new_tokens=10)[1] == "MALFORMED_JSON"
+    assert experiment._parse_prediction_diagnostic("[]", generated_tokens=2, max_new_tokens=10)[1] == "NON_OBJECT_JSON"
+
+
+def test_generation_budget_exceeds_audited_target_with_margin():
+    assert experiment._generation_budget(137) > 137
+    assert experiment._generation_budget(137) <= 768
+
+
+def test_target_distribution_is_measured_without_raw_inputs():
+    class Tokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": list(range(max(1, len(text) // 10)))}
+
+    rows = [{"output": {"intent": "filter"}}]
+    distribution = experiment._target_token_distribution(Tokenizer(), rows)
+    assert distribution["count"] == 1
+    assert distribution["minimum"] == distribution["maximum"]
+
+
+def test_memorization_contract_is_sealed_and_uses_required_milestones():
+    assert experiment.MEMORIZATION_TRAIN_EXAMPLES == 8
+    assert experiment.MEMORIZATION_STEPS == (0, 10, 25, 50)
+    assert "memorization" in SOURCE
+    assert 'validation_data_used": not memorization' in SOURCE
+    assert 'test_used": False' in SOURCE
+
+
+def test_model_not_learning_is_not_selected_when_generation_is_truncated():
+    assert '"GENERATION_TRUNCATION_FOUND" if has_truncation' in SOURCE
+    assert '"MODEL_NOT_LEARNING"' in SOURCE
+
+
 def test_diagnostics_are_privacy_safe_structural_summaries():
     assert "_safe_target_hash" in SOURCE
     assert "_structure_summary" in SOURCE

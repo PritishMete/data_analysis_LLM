@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+import math
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,8 @@ LEARNING_RATE = 1e-5
 MAX_SEQUENCE_LENGTH = 768
 GENERATION_MAX_NEW_TOKENS = 192
 PEFT_VERSION = "0.13.2"
+MEMORIZATION_TRAIN_EXAMPLES = 8
+MEMORIZATION_STEPS = (0, 10, 25, 50)
 
 
 def _version(name: str) -> str | None:
@@ -77,17 +80,48 @@ def _prompt(row: dict[str, Any]) -> str:
     return "Extract the semantic analytics contract. Return JSON only with exactly these keys: intent, semantic_bindings, predicate_graph, aggregation, ranking, limit, requires_fallback, confidence. INPUT=" + json.dumps(row.get("input") or {}, sort_keys=True, separators=(",", ":")) + " OUTPUT="
 
 
-def _parse_prediction(text: str) -> dict[str, Any] | None:
+def _parse_prediction_diagnostic(text: str, *, generated_tokens: int, max_new_tokens: int) -> tuple[dict[str, Any] | None, str]:
+    if not text.strip():
+        return None, "NO_GENERATION"
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if parsed is not None and not isinstance(parsed, dict):
+        return None, "NON_OBJECT_JSON"
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
-        return None
+        return None, "TRUNCATED_JSON" if generated_tokens >= max_new_tokens else "MALFORMED_JSON"
     try:
         value = json.loads(text[start : end + 1])
     except Exception:
-        return None
-    if not isinstance(value, dict) or set(value) != ALLOWED_SEMANTIC_OUTPUT_KEYS:
-        return None
-    return value
+        return None, "TRUNCATED_JSON" if generated_tokens >= max_new_tokens else "MALFORMED_JSON"
+    if not isinstance(value, dict):
+        return None, "NON_OBJECT_JSON"
+    if set(value) != ALLOWED_SEMANTIC_OUTPUT_KEYS:
+        return None, "SCHEMA_INVALID"
+    return value, "VALID_SEMANTIC_OUTPUT"
+
+
+def _parse_prediction(text: str) -> dict[str, Any] | None:
+    return _parse_prediction_diagnostic(text, generated_tokens=0, max_new_tokens=1)[0]
+
+
+def _generation_budget(max_target_tokens: int, *, margin: int = 16, cap: int = 768) -> int:
+    return min(cap, max(GENERATION_MAX_NEW_TOKENS, math.ceil(max_target_tokens * 1.25) + margin))
+
+
+def _target_token_distribution(tokenizer: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    lengths = []
+    for row in rows:
+        target = json.dumps(_target_output(row), sort_keys=True, separators=(",", ":"))
+        lengths.append(len(tokenizer(target, add_special_tokens=False)["input_ids"]))
+    ordered = sorted(lengths)
+    def percentile(percent: float) -> int:
+        if not ordered:
+            return 0
+        return ordered[min(len(ordered) - 1, math.ceil(len(ordered) * percent) - 1)]
+    return {"count": len(lengths), "minimum": min(lengths, default=0), "p50": percentile(0.50), "p90": percentile(0.90), "p95": percentile(0.95), "p99": percentile(0.99), "maximum": max(lengths, default=0)}
 
 
 def _prediction_is_valid(prediction: dict[str, Any] | None, expected: dict[str, Any]) -> bool:
@@ -209,23 +243,26 @@ def _tokenize_supervised(tokenizer: Any, row: dict[str, Any]) -> tuple[dict[str,
     }
 
 
-def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_module: Any, *, diagnostics: bool = False) -> dict[str, Any]:
+def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_module: Any, *, diagnostics: bool = False, max_new_tokens: int = GENERATION_MAX_NEW_TOKENS) -> dict[str, Any]:
     predictions: list[dict[str, Any]] = []
     expected: list[dict[str, Any]] = []
     samples: list[dict[str, Any]] = []
     parse_failures = empty_outputs = truncated = 0
+    classification_counts: dict[str, int] = {}
     model.eval()
     for row in rows:
         encoded = tokenizer(_prompt(row), return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH).to("cuda:0")
         with torch_module.inference_mode():
-            generated = model.generate(**encoded, max_new_tokens=GENERATION_MAX_NEW_TOKENS, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+            generated = model.generate(**encoded, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
         decoded = tokenizer.decode(generated[0][encoded["input_ids"].shape[-1] :], skip_special_tokens=True)
-        prediction = _parse_prediction(decoded)
+        generated_tokens = int(generated.shape[-1] - encoded["input_ids"].shape[-1])
+        prediction, parse_classification = _parse_prediction_diagnostic(decoded, generated_tokens=generated_tokens, max_new_tokens=max_new_tokens)
+        classification_counts[parse_classification] = classification_counts.get(parse_classification, 0) + 1
         if not decoded.strip():
             empty_outputs += 1
         if prediction is None:
             parse_failures += 1
-        if int(generated.shape[-1] - encoded["input_ids"].shape[-1]) >= GENERATION_MAX_NEW_TOKENS:
+        if generated_tokens >= max_new_tokens:
             truncated += 1
         expected_output = _target_output(row)
         if prediction is None:
@@ -248,6 +285,8 @@ def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_modu
     metrics.update({"generation_parse_failure_count": parse_failures, "empty_output_count": empty_outputs, "truncated_prediction_count": truncated})
     if diagnostics:
         metrics["diagnostic_samples"] = samples
+    metrics["parser_classification_counts"] = classification_counts
+    metrics["max_new_tokens"] = max_new_tokens
     return metrics
 
 
@@ -267,7 +306,7 @@ def _failure(root: Path, stage: str, exc: BaseException, run_id: str, expected: 
     _write_json(root / "smoke_failure.json", {"run_id": run_id, "stage": stage, "exception_type": type(exc).__name__, "sanitized_message": str(exc).replace("\n", " ")[:1000], "traceback_tail": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:]), "package_versions": {name: _version(name) for name in ("torch", "bitsandbytes", "transformers", "tokenizers", "accelerate", "peft")}, "expected_git_commit": expected, "executed_git_commit": executed, "training_completed": False, "classification": classification})
 
 
-def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expected_git_commit: str | None, source_root: Path) -> dict[str, Any]:
+def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expected_git_commit: str | None, source_root: Path, memorization: bool = False) -> dict[str, Any]:
     root = ensure_run_root(run_id, base_root=output_root / "smoke_runs")
     executed: str | None = None
     stage = "source_identity"
@@ -283,10 +322,11 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
             raise RuntimeError("QWEN_NF4_RUNTIME_GATE_FAILED")
         stage = "dataset"
         dataset = _load_experiment_dataset()
-        dataset_result = {"canonical_dataset_root": dataset["root"], "train_total": dataset["train_total"], "validation_total": dataset["validation_total"], "test_total": dataset["test_total"], "experiment_train_examples": TRAIN_EXAMPLES, "experiment_validation_examples": VALIDATION_EXAMPLES, "test_split_accessed": False, "selected_train_hashes": dataset["selected_hashes"]["train"], "selected_validation_hashes": dataset["selected_hashes"]["validation"]}
+        dataset_result = {"canonical_dataset_root": dataset["root"], "train_total": dataset["train_total"], "validation_total": dataset["validation_total"], "test_total": dataset["test_total"], "experiment_train_examples": MEMORIZATION_TRAIN_EXAMPLES if memorization else TRAIN_EXAMPLES, "experiment_validation_examples": MEMORIZATION_TRAIN_EXAMPLES if memorization else VALIDATION_EXAMPLES, "test_split_accessed": False, "selected_train_hashes": dataset["selected_hashes"]["train"], "selected_validation_hashes": dataset["selected_hashes"]["validation"]}
         _write_json(root / "learning_experiment_dataset_result.json", dataset_result)
         _marker("LEARNING_EXPERIMENT_DATASET_RESULT_JSON", dataset_result)
-        privacy = {"privacy_gate": True, "eligibility_gate": True, "test_split_accessed": False, "selected_train": TRAIN_EXAMPLES, "selected_validation": VALIDATION_EXAMPLES}
+        selected_count = MEMORIZATION_TRAIN_EXAMPLES if memorization else TRAIN_EXAMPLES
+        privacy = {"privacy_gate": True, "eligibility_gate": True, "test_split_accessed": False, "selected_train": selected_count, "selected_validation": selected_count if memorization else VALIDATION_EXAMPLES}
         _write_json(root / "learning_experiment_privacy_result.json", privacy)
         _marker("LEARNING_EXPERIMENT_PRIVACY_RESULT_JSON", privacy)
         contract = _audit_contract(dataset["selected"]["train"])
@@ -319,7 +359,9 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         if not trainable or any(parameter.requires_grad and "lora_" not in name.lower() for name, parameter in model.named_parameters()):
             raise RuntimeError("LORA_FREEZE_CONTRACT_FAILED")
         _write_json(root / "learning_experiment_lora_result.json", {"r": 16, "alpha": 32, "dropout": 0.05, "targets": targets, "trainable_parameters": trainable, "total_parameters": total, "base_model_frozen": True})
-        train_rows, validation_rows = dataset["selected"]["train"], dataset["selected"]["validation"]
+        train_rows = dataset["selected"]["train"][:MEMORIZATION_TRAIN_EXAMPLES] if memorization else dataset["selected"]["train"]
+        validation_rows = train_rows if memorization else dataset["selected"]["validation"]
+        optimizer_steps = 50 if memorization else OPTIMIZER_STEPS
         encoded_train, audits = [], []
         max_target_tokens = 0
         for row in train_rows:
@@ -327,16 +369,33 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
             encoded_train.append(encoded)
             audits.append(audit)
             max_target_tokens = max(max_target_tokens, audit["target_tokens"])
-        tokenization = {"max_sequence_length": MAX_SEQUENCE_LENGTH, "max_target_tokens": max_target_tokens, "generation_max_new_tokens": max(GENERATION_MAX_NEW_TOKENS, max_target_tokens + 16), "audit_samples": audits[:4], "supervised_labeling_verified": True, "truncated_training_examples": sum(item["input_tokens"] >= MAX_SEQUENCE_LENGTH for item in audits)}
+        if memorization:
+            encoded_train = (encoded_train * ((optimizer_steps * GRADIENT_ACCUMULATION + len(encoded_train) - 1) // len(encoded_train)))[: optimizer_steps * GRADIENT_ACCUMULATION]
+        all_safe_rows = sorted(_load_training_rows(Path(dataset["root"]), "train"), key=_safe_target_hash) + sorted(_load_training_rows(Path(dataset["root"]), "validation"), key=_safe_target_hash)
+        target_lengths = _target_token_distribution(tokenizer, all_safe_rows)
+        experiment_lengths = _target_token_distribution(tokenizer, train_rows + ([] if memorization else validation_rows))
+        standard_experiment_lengths = _target_token_distribution(tokenizer, dataset["selected"]["train"] + dataset["selected"]["validation"])
+        generation_budget = _generation_budget(target_lengths["maximum"])
+        eos_id = tokenizer.eos_token_id
+        pad_id = tokenizer.pad_token_id
+        generation_config = getattr(model, "generation_config", None)
+        eos_config = getattr(generation_config, "eos_token_id", None) == eos_id
+        pad_config = getattr(generation_config, "pad_token_id", None) == pad_id
+        tokenization = {"max_sequence_length": MAX_SEQUENCE_LENGTH, "max_target_tokens": max_target_tokens, "generation_max_new_tokens": generation_budget, "previous_max_new_tokens": GENERATION_MAX_NEW_TOKENS, "target_token_distribution": target_lengths, "experiment_target_token_distribution": experiment_lengths, "standard_128_16_target_token_distribution": standard_experiment_lengths, "targets_longer_than_previous_max_new_tokens": sum(item > GENERATION_MAX_NEW_TOKENS for item in [len(tokenizer(json.dumps(_target_output(row), sort_keys=True, separators=(",", ":")), add_special_tokens=False)["input_ids"]) for row in all_safe_rows]), "eos_token_id": eos_id, "pad_token_id": pad_id, "generation_config_eos_token_id": getattr(generation_config, "eos_token_id", None), "generation_config_pad_token_id": getattr(generation_config, "pad_token_id", None), "eos_config_valid": eos_config, "pad_config_valid": pad_config, "audit_samples": audits[:4], "supervised_labeling_verified": True, "truncated_training_examples": sum(item["input_tokens"] >= MAX_SEQUENCE_LENGTH for item in audits)}
         _write_json(root / "learning_experiment_tokenization_result.json", tokenization)
         _marker("LEARNING_EXPERIMENT_TOKENIZATION_RESULT_JSON", tokenization)
+        synthetic_rows = [{"input": {"intent": intent, "safe_field_aliases": ["numeric_metric"], "semantic_roles": ["numeric_metric"], "dtypes": ["number"], "logical_hints": {"logical_structure": "SINGLE", "predicate_count": 0, "operators": []}}, "output": {"intent": intent, "semantic_bindings": {"intent_hint": intent}, "predicate_graph": {"logical_structure": "SINGLE", "predicate_count": 0, "operators": ["SINGLE"], "roles": ["numeric_metric"], "validated": True}, "aggregation": {"measure_roles": ["numeric_metric"], "required": intent == "aggregate"}, "ranking": {"required": False, "direction": "desc"}, "limit": None, "requires_fallback": False, "confidence": 1.0}} for intent in ("aggregate", "filter", "compare", "trend")]
+        base_synthetic = _evaluate(model, tokenizer, synthetic_rows, torch, diagnostics=True, max_new_tokens=generation_budget)
+        _write_json(root / "base_synthetic_generation_result.json", base_synthetic)
+        _marker("BASE_SYNTHETIC_GENERATION_RESULT_JSON", {"run_id": run_id, "generation": base_synthetic, "eos_token_id": eos_id, "pad_token_id": pad_id, "eos_config_valid": eos_config, "pad_config_valid": pad_config})
         stage = "pretrain_evaluation"
-        evaluations: dict[str, Any] = {"step_0": _evaluate(model, tokenizer, validation_rows, torch, diagnostics=True)}
+        evaluations: dict[str, Any] = {"step_0": _evaluate(model, tokenizer, validation_rows, torch, diagnostics=True, max_new_tokens=generation_budget)}
         _write_json(root / "learning_experiment_validation_metrics.json", evaluations)
         optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=LEARNING_RATE)
         before = {name: parameter.detach().clone() for name, parameter in model.named_parameters() if "lora_" in name.lower()}
         steps: list[dict[str, Any]] = []
         best_step, best_score = 0, _score(evaluations["step_0"])
+        validation_steps = MEMORIZATION_STEPS if memorization else VALIDATION_STEPS
         adapter_root = root / "adapters"
         stage = "training"
         for index, encoded in enumerate(encoded_train, start=1):
@@ -357,8 +416,8 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
                 step = index // GRADIENT_ACCUMULATION
                 step_result = {"step": step, "loss": float((loss * GRADIENT_ACCUMULATION).detach().cpu()), "gradient_norm": norm, "learning_rate": LEARNING_RATE, "vram": _memory(torch)}
                 steps.append(step_result)
-                if step in VALIDATION_STEPS[1:]:
-                    metrics = _evaluate(model, tokenizer, validation_rows, torch, diagnostics=step == 16)
+                if step in validation_steps[1:]:
+                    metrics = _evaluate(model, tokenizer, validation_rows, torch, diagnostics=step == validation_steps[-1], max_new_tokens=generation_budget)
                     evaluations[f"step_{step}"] = metrics
                     score = _score(metrics)
                     if score > best_score:
@@ -369,7 +428,7 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         changed = any(not torch.equal(before[name], parameter.detach()) for name, parameter in model.named_parameters() if name in before)
         if not changed:
             raise RuntimeError("LORA_PARAMETER_UNCHANGED")
-        train_sanity = _evaluate(model, tokenizer, train_rows[:8], torch, diagnostics=True)
+        train_sanity = _evaluate(model, tokenizer, train_rows[:MEMORIZATION_TRAIN_EXAMPLES], torch, diagnostics=True, max_new_tokens=generation_budget)
         final_dir = adapter_root / f"best_step_{best_step}"
         if not final_dir.exists():
             final_dir.mkdir(parents=True, exist_ok=True)
@@ -383,8 +442,13 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         reload_model.eval()
         reload_inputs = tokenizer(_prompt(validation_rows[0]), return_tensors="pt").to("cuda:0")
         with torch.inference_mode():
-            reload_model.generate(**reload_inputs, max_new_tokens=tokenization["generation_max_new_tokens"], do_sample=False, pad_token_id=tokenizer.eos_token_id)
-        final = {"run_id": run_id, "expected_git_commit": expected_git_commit, "executed_git_commit": executed, "dataset": dataset_result, "privacy": privacy, "contract": contract, "tokenization": tokenization, "config": {"model": MODEL_ID, "quantization": "4-bit NF4", "double_quant": True, "compute_dtype": "float16", "lora_r": 16, "lora_alpha": 32, "lora_dropout": 0.05, "micro_batch_size": 1, "gradient_accumulation": 8, "effective_batch_size": 8, "learning_rate": LEARNING_RATE, "optimizer_steps": OPTIMIZER_STEPS}, "validation_metrics": evaluations, "train_sanity_metrics": train_sanity, "training_steps": steps, "loss_first": steps[0]["loss"], "loss_last": steps[-1]["loss"], "loss_mean": sum(item["loss"] for item in steps) / len(steps), "loss_trend": "decreasing" if steps[-1]["loss"] < steps[0]["loss"] else "not_decreasing", "lora_parameter_changed": changed, "base_model_frozen": True, "best_validation_step": best_step, "best_validation_score": best_score, "adapter_saved": True, "adapter_reload": True, "adapter_path": str(final_dir), "adapter_files": adapter_hashes, "vram_peak": _memory(torch), "train_data_used": True, "validation_data_used": True, "test_data_used": False, "test_split_accessed": False, "test_used": False, "checkpoint_saved": False, "verdict": "SEMANTIC_LEARNING_SIGNAL_CONFIRMED" if any(_score(evaluations[f"step_{step}"]) > _score(evaluations["step_0"]) and evaluations[f"step_{step}"]["semantic_schema_valid_rate"] >= evaluations["step_0"]["semantic_schema_valid_rate"] for step in VALIDATION_STEPS[1:]) else "MODEL_NOT_LEARNING"}
+            reload_model.generate(**reload_inputs, max_new_tokens=tokenization["generation_max_new_tokens"], do_sample=False, pad_token_id=pad_id, eos_token_id=eos_id)
+        all_eval_metrics = list(evaluations.values()) + [train_sanity]
+        has_truncation = any(int(item.get("truncated_prediction_count", 0)) > 0 or int(item.get("parser_classification_counts", {}).get("TRUNCATED_JSON", 0)) > 0 for item in all_eval_metrics)
+        has_complete_invalid = any(int(item.get("valid_prediction_count", 0)) == 0 and not int(item.get("truncated_prediction_count", 0)) and int(item.get("schema_failure_count", 0)) > 0 for item in all_eval_metrics)
+        improved = any(_score(evaluations[f"step_{step}"]) > _score(evaluations["step_0"]) and evaluations[f"step_{step}"]["semantic_schema_valid_rate"] >= evaluations["step_0"]["semantic_schema_valid_rate"] for step in validation_steps[1:])
+        verdict = "GENERATION_TRUNCATION_FOUND" if has_truncation else ("SEMANTIC_PARSER_BUG_FOUND" if has_complete_invalid else ("SEMANTIC_LEARNING_SIGNAL_CONFIRMED" if improved else "MODEL_NOT_LEARNING"))
+        final = {"run_id": run_id, "expected_git_commit": expected_git_commit, "executed_git_commit": executed, "dataset": dataset_result, "privacy": privacy, "contract": contract, "tokenization": tokenization, "base_synthetic_generation": base_synthetic, "generation_mechanics": {"training_inference_prompt_match": True, "chat_template_used": False, "assistant_response_boundary": "OUTPUT=", "special_tokens_audited": True}, "config": {"model": MODEL_ID, "quantization": "4-bit NF4", "double_quant": True, "compute_dtype": "float16", "lora_r": 16, "lora_alpha": 32, "lora_dropout": 0.05, "micro_batch_size": 1, "gradient_accumulation": 8, "effective_batch_size": 8, "learning_rate": LEARNING_RATE, "optimizer_steps": optimizer_steps, "memorization": memorization}, "validation_metrics": evaluations, "train_sanity_metrics": train_sanity, "training_steps": steps, "loss_first": steps[0]["loss"], "loss_last": steps[-1]["loss"], "loss_mean": sum(item["loss"] for item in steps) / len(steps), "loss_trend": "decreasing" if steps[-1]["loss"] < steps[0]["loss"] else "not_decreasing", "lora_parameter_changed": changed, "base_model_frozen": True, "best_validation_step": best_step, "best_validation_score": best_score, "adapter_saved": True, "adapter_reload": True, "adapter_path": str(final_dir), "adapter_files": adapter_hashes, "vram_peak": _memory(torch), "train_data_used": True, "validation_data_used": not memorization, "test_data_used": False, "test_split_accessed": False, "test_used": False, "verdict": verdict}
         _write_json(root / "learning_experiment_report.json", final)
         _marker("LEARNING_EXPERIMENT_FINAL_RESULT_JSON", final)
         return final
@@ -399,11 +463,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id")
     parser.add_argument("--expected-git-commit")
     parser.add_argument("--source-root")
+    parser.add_argument("--memorization", action="store_true")
     args = parser.parse_args(argv)
     root = Path(args.output_root)
     run_id = args.run_id or resolve_current_run_id(base_root=root / "smoke_runs") or generate_run_id()
-    result = run_qwen_qlora_learning_experiment(output_root=root, run_id=run_id, expected_git_commit=args.expected_git_commit, source_root=Path(args.source_root) if args.source_root else root / "data_analysis_LLM")
-    return 0 if result.get("verdict") in {"SEMANTIC_LEARNING_SIGNAL_CONFIRMED", "MODEL_NOT_LEARNING", "MODEL_FITS_TRAIN_NOT_VALIDATION"} else 1
+    result = run_qwen_qlora_learning_experiment(output_root=root, run_id=run_id, expected_git_commit=args.expected_git_commit, source_root=Path(args.source_root) if args.source_root else root / "data_analysis_LLM", memorization=args.memorization)
+    return 0 if result.get("verdict") in {"SEMANTIC_LEARNING_SIGNAL_CONFIRMED", "MODEL_NOT_LEARNING", "MODEL_FITS_TRAIN_NOT_VALIDATION", "GENERATION_TRUNCATION_FOUND", "SEMANTIC_PARSER_BUG_FOUND"} else 1
 
 
 if __name__ == "__main__":
