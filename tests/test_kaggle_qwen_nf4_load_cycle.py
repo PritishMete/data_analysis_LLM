@@ -10,6 +10,9 @@ def test_qwen_cycle_uses_exact_model_and_nf4_settings():
     assert 'bnb_4bit_quant_type="nf4"' in source
     assert "bnb_4bit_use_double_quant=True" in source
     assert "torch.float16" in source
+    assert "transformers==4.46.3" in source
+    assert "tokenizers==0.20.3" in source
+    assert "huggingface_hub==0.26.2" in source
 
 
 def test_qwen_cycle_is_training_free_and_peft_free():
@@ -27,6 +30,7 @@ def test_qwen_cycle_requires_bnb_nf4_gate_before_model_load():
     gate = 'if bnb_report.get("verdict") != "BNB_NF4_P100_RUNTIME_PASSED":'
     assert gate in source
     assert source.index(gate) < source.index("AutoTokenizer.from_pretrained")
+    assert source.index("run_bnb_compat_cycle") < source.index("_install_missing_dependencies")
 
 
 def test_qwen_cycle_emits_memory_and_model_markers():

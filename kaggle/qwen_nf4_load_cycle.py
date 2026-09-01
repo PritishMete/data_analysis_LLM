@@ -17,7 +17,13 @@ from .run_context import ensure_run_root, generate_run_id, resolve_current_run_i
 
 WORKFLOW_MODE = "qwen_nf4_load"
 MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
-TRANSFORMERS_MINIMUMS = ("transformers", "tokenizers", "accelerate", "huggingface_hub")
+MODEL_DEPENDENCY_SPECS = (
+    "transformers==4.46.3",
+    "tokenizers==0.20.3",
+    "huggingface_hub==0.26.2",
+    "accelerate",
+)
+MODEL_DEPENDENCY_NAMES = ("transformers", "tokenizers", "accelerate", "huggingface_hub")
 DEPENDENCY_TIMEOUT_SECONDS = 600
 
 
@@ -42,11 +48,13 @@ def _safe_tail(text: str | None, lines: int = 40) -> str | None:
 
 
 def _install_missing_dependencies() -> dict[str, Any]:
-    missing = [name for name in TRANSFORMERS_MINIMUMS if _version(name) is None]
+    current = {name: _version(name) for name in MODEL_DEPENDENCY_NAMES}
+    missing = [spec for spec in MODEL_DEPENDENCY_SPECS if spec.split("==", 1)[0] == "accelerate" and current["accelerate"] is None or spec.startswith("transformers==") and current["transformers"] != "4.46.3" or spec.startswith("tokenizers==") and current["tokenizers"] != "0.20.3" or spec.startswith("huggingface_hub==") and current["huggingface_hub"] != "0.26.2"]
     payload: dict[str, Any] = {
         "requested": missing,
         "no_deps": True,
         "torch_before": _version("torch"),
+        "bnb_before": _version("bitsandbytes"),
         "torch_after": None,
         "returncode": 0,
         "stdout_tail": None,
@@ -65,10 +73,15 @@ def _install_missing_dependencies() -> dict[str, Any]:
         )
         payload.update({"returncode": result.returncode, "stdout_tail": _safe_tail(result.stdout), "stderr_tail": _safe_tail(result.stderr)})
     payload["torch_after"] = _version("torch")
-    payload["versions"] = {name: _version(name) for name in TRANSFORMERS_MINIMUMS}
-    payload["ok"] = payload["returncode"] == 0 and payload["torch_before"] == payload["torch_after"]
-    if payload["torch_before"] != payload["torch_after"]:
+    payload["versions"] = {name: _version(name) for name in MODEL_DEPENDENCY_NAMES}
+    payload["bnb_after"] = _version("bitsandbytes")
+    payload["torch_drift"] = payload["torch_before"] != payload["torch_after"]
+    payload["bnb_drift"] = payload["bnb_before"] != payload["bnb_after"]
+    payload["ok"] = payload["returncode"] == 0 and not payload["torch_drift"] and not payload["bnb_drift"] and payload["torch_after"] == "2.5.1+cu118" and payload["bnb_after"] == "0.43.3" and payload["versions"].get("transformers") == "4.46.3"
+    if payload["torch_drift"]:
         payload["classification"] = "TORCH_VERSION_DRIFT"
+    elif payload["bnb_drift"]:
+        payload["classification"] = "BNB_VERSION_DRIFT"
     elif payload["returncode"] != 0:
         payload["classification"] = "MODEL_DEPENDENCY_INSTALL_FAILED"
     return payload
@@ -111,16 +124,16 @@ def run_qwen_nf4_load_cycle(*, output_root: Path, run_id: str, expected_git_comm
         if expected_git_commit and executed != expected_git_commit:
             raise RuntimeError("stale_kaggle_checkout")
 
+        # This call is the single proven Torch + CUDA + BNB + NF4 gate.
+        bnb_report = run_bnb_compat_cycle(output_root=output_root, run_id=run_id, expected_git_commit=expected_git_commit, source_root=source_root)
+        if bnb_report.get("verdict") != "BNB_NF4_P100_RUNTIME_PASSED":
+            raise RuntimeError(str(bnb_report.get("verdict") or "BNB_NF4_GATE_FAILED"))
+
         dependencies = _install_missing_dependencies()
         _write_json(report_root / "model_dependency_result.json", dependencies)
         _marker("MODEL_DEPENDENCY_RESULT_JSON", dependencies)
         if not dependencies["ok"]:
             raise RuntimeError(str(dependencies.get("classification") or "MODEL_DEPENDENCY_INSTALL_FAILED"))
-
-        # This call is the single proven Torch + CUDA + BNB + NF4 gate.
-        bnb_report = run_bnb_compat_cycle(output_root=output_root, run_id=run_id, expected_git_commit=expected_git_commit, source_root=source_root)
-        if bnb_report.get("verdict") != "BNB_NF4_P100_RUNTIME_PASSED":
-            raise RuntimeError(str(bnb_report.get("verdict") or "BNB_NF4_GATE_FAILED"))
 
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
