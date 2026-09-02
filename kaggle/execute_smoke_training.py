@@ -32,6 +32,30 @@ def _write_json(path: Path, payload: Any) -> Path:
     return path
 
 
+def _write_top_level_failure(exc: BaseException, argv: list[str] | None) -> None:
+    """Leave a small run-scoped failure record if dispatch fails above a workflow."""
+    values = argv or sys.argv[1:]
+    parsed: dict[str, str] = {}
+    for index, value in enumerate(values):
+        if value.startswith("--") and index + 1 < len(values):
+            parsed[value[2:].replace("-", "_")] = values[index + 1]
+    output_root = Path(parsed.get("output_root") or KAGGLE_WORKING_ROOT)
+    run_id = parsed.get("run_id") or os.environ.get("KAGGLE_SMOKE_RUN_ID") or "unknown"
+    root = ensure_run_root(run_id, base_root=output_root / "smoke_runs")
+    safe_message = str(exc).replace("\n", " ")
+    for marker in ("token=", "secret=", "password=", "authorization="):
+        if marker.lower() in safe_message.lower():
+            safe_message = safe_message[:safe_message.lower().index(marker.lower())] + marker + "[REDACTED]"
+    _write_json(root / "smoke_failure.json", {
+        "run_id": run_id,
+        "executed_commit": os.environ.get("KAGGLE_EXECUTED_SOURCE_COMMIT"),
+        "last_stage": "execute_smoke_training",
+        "exception_type": type(exc).__name__,
+        "safe_message": safe_message[:1000],
+        "classification": "REMOTE_ENTRYPOINT_FAILURE",
+    })
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", default=str(KAGGLE_WORKING_ROOT))
@@ -147,4 +171,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except BaseException as exc:
+        _write_top_level_failure(exc, sys.argv[1:])
+        raise

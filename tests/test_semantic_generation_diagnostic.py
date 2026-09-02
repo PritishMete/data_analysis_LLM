@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import json
 
 from kaggle import semantic_generation_diagnostic as diagnostic
 
@@ -84,3 +85,24 @@ def test_dependency_specs_are_exact_and_no_deps():
 def test_failure_redacts_credentials():
     safe = diagnostic._redact_safe_text("token=abc secret: xyz authorization=Bearer-value")
     assert "abc" not in safe and "xyz" not in safe and "Bearer-value" not in safe
+
+
+def test_notebook_emits_startup_identity_and_heartbeats_before_bootstrap():
+    notebook = json.loads(Path("kaggle/semantic_extractor_training.ipynb").read_text(encoding="utf-8"))
+    source = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+    assert "write_json(RUN_ROOT / 'run_identity.json', identity)" in source
+    assert "print('RUN_IDENTITY_JSON='" in source
+    assert "write_heartbeat('startup'" in source
+    assert source.index("write_heartbeat('startup'") < source.index("bootstrap_environment.py")
+    assert "dependencies_begin" in source
+    assert "dependencies_complete" in source
+    assert "model_load_begin" in source
+    assert "generation_diagnostic_complete" in source
+
+
+def test_entrypoint_has_top_level_failure_capture_and_identity_fields():
+    source = Path("kaggle/execute_smoke_training.py").read_text(encoding="utf-8")
+    assert "_write_top_level_failure" in source
+    assert "smoke_failure.json" in source
+    assert '"run_id": run_id' in source
+    assert '"last_stage": "execute_smoke_training"' in source
