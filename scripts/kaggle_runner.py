@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata as metadata
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -572,6 +573,81 @@ def sync_notebook_to_stage(
     return notebook_dir
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_prepared_submission(*, notebook_dir: Path, run_id: str, expected_commit: str, spec: KaggleNotebookSpec) -> dict[str, Any]:
+    entrypoint = notebook_dir / spec.code_file
+    metadata_path = notebook_dir / "kernel-metadata.json"
+    if not entrypoint.exists() or not metadata_path.exists():
+        raise KaggleAutomationError("prepared_submission_missing_files")
+    source = entrypoint.read_text(encoding="utf-8")
+    historical_ids = ("1bcfd66-20260901T175300Z-t6xm", "db9a3f1-20260901T173537Z-flh7", "7b632bf-20260902T033839Z-kv6d")
+    stale_ids = [value for value in historical_ids if value in source]
+    if run_id not in source or expected_commit not in source or stale_ids:
+        raise KaggleAutomationError("prepared_submission_identity_mismatch")
+    metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata_payload.get("code_file") != spec.code_file:
+        raise KaggleAutomationError("prepared_submission_code_file_mismatch")
+    if metadata_payload.get("id") != spec.notebook_ref(discover_kaggle_auth().username):
+        raise KaggleAutomationError("prepared_submission_kernel_ref_mismatch")
+    return {
+        "source_file": str(NOTEBOOK_SOURCE),
+        "source_file_sha256": _sha256_file(NOTEBOOK_SOURCE),
+        "generated_entrypoint": str(entrypoint),
+        "generated_entrypoint_sha256": _sha256_file(entrypoint),
+        "metadata_file": str(metadata_path),
+        "metadata_sha256": _sha256_file(metadata_path),
+        "metadata": metadata_payload,
+        "current_run_id_embedded": True,
+        "current_commit_embedded": True,
+        "historical_active_run_ids": stale_ids,
+        "startup_marker_position_verified": source.index("write_heartbeat('startup'") < source.index("bootstrap_environment.py"),
+    }
+
+
+def prepare_only(*, stage_root: Path = DEFAULT_STAGE_ROOT, spec: KaggleNotebookSpec | None = None, run_id: str | None = None) -> dict[str, Any]:
+    spec = spec or KaggleNotebookSpec(workflow_mode="qwen_semantic_generation_diagnostic")
+    auth = discover_kaggle_auth()
+    if not auth.available:
+        raise KaggleAutomationError("authentication_missing")
+    expected_commit = get_repo_state().head
+    if not expected_commit:
+        raise KaggleAutomationError("git_commit_unavailable")
+    resolved_run_id = run_id or generate_run_id(git_commit=expected_commit)
+    stage = ensure_stage_paths(run_root_for(resolved_run_id, base_root=stage_root))
+    notebook_dir = sync_notebook_to_stage(stage, spec, auth, run_id=resolved_run_id, expected_commit=expected_commit)
+    prepared = _validate_prepared_submission(notebook_dir=notebook_dir, run_id=resolved_run_id, expected_commit=expected_commit, spec=spec)
+    manifest = {
+        "run_id": resolved_run_id,
+        "expected_commit": expected_commit,
+        "git_head": expected_commit,
+        "kernel_slug": spec.notebook_slug,
+        "kernel_ref": kaggle_kernel_ref(auth, spec),
+        "source_entrypoint": str(NOTEBOOK_SOURCE),
+        "submission_timestamp": time.time(),
+        "remote_submission_performed": False,
+        **prepared,
+    }
+    manifest_path = stage.stage_root / "submission_manifest.json"
+    write_json(manifest_path, manifest)
+    return {
+        "run_id": resolved_run_id,
+        "expected_commit": expected_commit,
+        "kernel_ref": kaggle_kernel_ref(auth, spec),
+        "notebook_dir": str(notebook_dir),
+        "submission_manifest": str(manifest_path),
+        "manifest": manifest,
+        "safe_push_command": ["kaggle", "kernels", "push", "-p", str(notebook_dir)],
+        "remote_submission_performed": False,
+    }
+
+
 def kaggle_kernel_ref(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str:
     return spec.notebook_ref(auth.username)
 
@@ -726,7 +802,23 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
     if not auth.available:
         raise KaggleAutomationError("authentication_missing")
     stage = ensure_stage_paths(stage_root)
+    expected_commit = expected_commit or get_repo_state().head
+    if not expected_commit:
+        raise KaggleAutomationError("git_commit_unavailable")
     notebook_dir = sync_notebook_to_stage(stage, spec, auth, run_id=run_id, expected_commit=expected_commit)
+    prepared = _validate_prepared_submission(notebook_dir=notebook_dir, run_id=run_id or "", expected_commit=expected_commit, spec=spec)
+    submission_manifest = {
+        "run_id": run_id,
+        "expected_commit": expected_commit,
+        "git_head": get_repo_state().head,
+        "kernel_slug": spec.notebook_slug,
+        "kernel_ref": kaggle_kernel_ref(auth, spec),
+        "source_entrypoint": str(NOTEBOOK_SOURCE),
+        "submission_timestamp": time.time(),
+        "remote_submission_performed": False,
+        **prepared,
+    }
+    write_json(stage.stage_root / "submission_manifest.json", submission_manifest)
     result = _kaggle_checked("kernels", "push", "-p", str(notebook_dir), timeout=120, phase="push_complete", kernel_ref=kaggle_kernel_ref(auth, spec), expected_commit=expected_commit, run_id=run_id, stage_root=stage_root)
     _write_runner_metadata(
         stage_root=stage_root,
@@ -741,6 +833,7 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
         "dataset_ref": spec.dataset_ref,
         "stdout": _safe_cli_output(result),
         "stage_dir": str(notebook_dir),
+        "submission_manifest": str(stage.stage_root / "submission_manifest.json"),
     }
 
 
@@ -1006,6 +1099,9 @@ def outputs(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAUL
     kernel_ref = kaggle_kernel_ref(auth, spec)
     timeout_seconds = int(os.environ.get("KAGGLE_OUTPUTS_TIMEOUT_SECONDS", str(DEFAULT_OUTPUTS_TIMEOUT_SECONDS)))
     retry_count = int(os.environ.get("KAGGLE_OUTPUTS_RETRY_COUNT", str(DEFAULT_OUTPUTS_RETRY_COUNT)))
+    if stage.download_dir.exists():
+        shutil.rmtree(stage.download_dir)
+    stage.download_dir.mkdir(parents=True, exist_ok=True)
     attempts: list[dict[str, Any]] = []
     last_error: dict[str, Any] | None = None
     for attempt_index in range(max(1, retry_count + 1)):
@@ -1021,7 +1117,17 @@ def outputs(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAUL
                 kernel_ref=kernel_ref,
                 stage_root=stage_root,
             )
-            downloaded = [path.name for path in stage.download_dir.rglob("*") if path.is_file() and path.name in SAFE_OUTPUT_NAMES]
+            downloaded = []
+            for path in stage.download_dir.rglob("*"):
+                if not path.is_file() or path.name not in SAFE_OUTPUT_NAMES:
+                    continue
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8")) if path.suffix == ".json" else None
+                except (OSError, json.JSONDecodeError):
+                    payload = None
+                if run_id and isinstance(payload, dict) and payload.get("run_id") not in {None, run_id}:
+                    continue
+                downloaded.append(path.name)
             return {
                 "notebook_ref": kernel_ref,
                 "download_dir": str(stage.download_dir),
@@ -1474,6 +1580,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("semantic-corpus-audit-cycle")
     sub.add_parser("bnb-native-diagnose")
     sub.add_parser("diagnose")
+    sub.add_parser("prepare-only")
     report = sub.add_parser("report")
     report.add_argument("--run-id", required=True)
     return parser
@@ -1527,6 +1634,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json(bnb_native_diagnose(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "bnb_native_diagnose"}), run_id=args.run_id))
         elif args.command == "diagnose":
             _emit_json(diagnose(stage_root=args.stage_root, spec=spec, run_id=args.run_id))
+        elif args.command == "prepare-only":
+            _emit_json(prepare_only(stage_root=args.stage_root, spec=KaggleNotebookSpec(**{**spec.to_dict(), "workflow_mode": "qwen_semantic_generation_diagnostic"}), run_id=args.run_id))
         elif args.command == "report":
             _emit_json(report(run_id=args.run_id, stage_root=args.stage_root, spec=spec))
         else:

@@ -74,6 +74,50 @@ def test_push_run_status_and_outputs_use_official_cli(monkeypatch, tmp_path):
     assert any(call[:2] == ("kernels", "push") for call in calls)
 
 
+def test_prepare_only_creates_manifest_without_kaggle_submission(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/safe/auth", "access_token"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="a" * 40, dirty=False, branch="main"))
+    monkeypatch.setattr(kaggle_runner, "generate_run_id", lambda **_: "a" * 7 + "-20260902T000000Z-test")
+    monkeypatch.setattr(kaggle_runner, "_kaggle", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("prepare-only submitted to Kaggle")))
+
+    result = kaggle_runner.prepare_only(stage_root=tmp_path / "stage")
+    manifest_path = Path(result["submission_manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert result["remote_submission_performed"] is False
+    assert manifest["run_id"] == result["run_id"]
+    assert manifest["expected_commit"] == "a" * 40
+    assert manifest["current_run_id_embedded"] is True
+    assert manifest["current_commit_embedded"] is True
+    assert manifest["startup_marker_position_verified"] is True
+    assert manifest["generated_entrypoint_sha256"] == kaggle_runner._sha256_file(Path(manifest["generated_entrypoint"]))
+    assert manifest["metadata_sha256"] == kaggle_runner._sha256_file(Path(manifest["metadata_file"]))
+
+
+def test_prepared_submission_rejects_historical_identity(tmp_path):
+    entrypoint = tmp_path / "semantic_extractor_training.ipynb"
+    metadata = tmp_path / "kernel-metadata.json"
+    entrypoint.write_text("1bcfd66-20260901T175300Z-t6xm", encoding="utf-8")
+    metadata.write_text(json.dumps({"code_file": entrypoint.name, "id": "jiban/data-analysis-llm-semantic-extractor"}), encoding="utf-8")
+    spec = kaggle_runner.KaggleNotebookSpec()
+    try:
+        kaggle_runner._validate_prepared_submission(notebook_dir=tmp_path, run_id="new-run", expected_commit="a" * 40, spec=spec)
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc) == "prepared_submission_identity_mismatch"
+    else:
+        raise AssertionError("historical source was accepted")
+
+
+def test_outputs_rejects_json_from_another_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/safe/auth", "access_token"))
+    def fake_kaggle(*args, **kwargs):
+        output = Path(args[args.index("-p") + 1])
+        (output / "final_report.json").write_text(json.dumps({"run_id": "old-run"}), encoding="utf-8")
+        return _completed("downloaded")
+    monkeypatch.setattr(kaggle_runner, "_kaggle", fake_kaggle)
+    result = kaggle_runner.outputs(stage_root=tmp_path / "stage", run_id="new-run")
+    assert result["downloaded_safe_artifacts"] == []
+
+
 def test_full_cycle_refuses_when_local_tests_fail(monkeypatch, tmp_path):
     monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
     monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/tmp/kaggle.json", "kaggle.json"))
