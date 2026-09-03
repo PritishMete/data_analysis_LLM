@@ -39,6 +39,7 @@ DEFAULT_STAGE_ROOT = REPO_ROOT / "runtime" / "kaggle_runner"
 RUNNER_HEARTBEAT_PATH = DEFAULT_STAGE_ROOT / "runner_heartbeat.json"
 RUNNER_FAILURE_PATH = DEFAULT_STAGE_ROOT / "runner_failure.json"
 RUNNER_METADATA_NAME = "runner_metadata.json"
+SUBMISSION_ATTEMPT_NAME = "submission_attempt.json"
 REMOTE_IDENTITY_NAME = "remote_identity.json"
 RETRIEVAL_REPORT_NAME = "retrieval_report.json"
 DEFAULT_OUTPUTS_TIMEOUT_SECONDS = 600
@@ -129,6 +130,31 @@ class KaggleAutomationError(RuntimeError):
 
 
 @dataclass(slots=True)
+class KaggleCommandResult:
+    command_safe: list[str]
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool
+    duration_seconds: float
+
+    @property
+    def returncode(self) -> int | None:
+        return self.exit_code
+
+
+def _safe_command(args: list[str]) -> list[str]:
+    redacted = []
+    for arg in args:
+        value = str(arg)
+        if any(marker in value.lower() for marker in ("token", "secret", "password", "api_key")):
+            redacted.append("[REDACTED]")
+        else:
+            redacted.append(value)
+    return redacted
+
+
+@dataclass(slots=True)
 class KaggleAuthState:
     available: bool
     username: str | None
@@ -205,21 +231,30 @@ def _emit_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def _run_command(args: list[str], *, check: bool = True, timeout: int | None = None, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=check,
-        timeout=timeout,
-        cwd=cwd,
-        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
-    )
+def _run_command(args: list[str], *, check: bool = False, timeout: int | None = None, cwd: str | None = None) -> KaggleCommandResult:
+    del check  # Results are always returned, including nonzero exits.
+    started = time.perf_counter()
+    command_safe = _safe_command(args)
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=timeout if timeout is not None else 120,
+            cwd=cwd,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        return KaggleCommandResult(command_safe, completed.returncode, completed.stdout or "", completed.stderr or "", False, round(time.perf_counter() - started, 3))
+    except subprocess.TimeoutExpired as exc:
+        return KaggleCommandResult(command_safe, None, str(exc.stdout or ""), str(exc.stderr or ""), True, round(time.perf_counter() - started, 3))
+    except OSError as exc:
+        return KaggleCommandResult(command_safe, None, "", str(exc), False, round(time.perf_counter() - started, 3))
 
 
-def _safe_subprocess(args: list[str], *, check: bool = True, timeout: int | None = None, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+def _safe_subprocess(args: list[str], *, check: bool = False, timeout: int | None = None, cwd: str | None = None) -> KaggleCommandResult:
     return _run_command(args, check=check, timeout=timeout, cwd=cwd)
 
 
@@ -230,9 +265,20 @@ def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
     return "\n".join(parts[-lines:])
 
 
-def _safe_cli_output(result: subprocess.CompletedProcess[str]) -> str:
-    text = result.stdout or ""
+def _safe_cli_output(result: Any) -> str:
+    text = getattr(result, "stdout", "") or ""
     return text.strip()
+
+
+def _command_result_payload(result: Any, command: list[str]) -> dict[str, Any]:
+    return {
+        "command_safe": getattr(result, "command_safe", _safe_command(command)),
+        "exit_code": getattr(result, "exit_code", getattr(result, "returncode", None)),
+        "stdout": getattr(result, "stdout", "") or "",
+        "stderr": getattr(result, "stderr", "") or "",
+        "timed_out": bool(getattr(result, "timed_out", False)),
+        "duration_seconds": getattr(result, "duration_seconds", None),
+    }
 
 
 def parse_run_identity_marker(text: str | None, *, run_id: str, expected_commit: str | None) -> dict[str, Any] | None:
@@ -670,11 +716,11 @@ def kaggle_kernel_ref(auth: KaggleAuthState, spec: KaggleNotebookSpec) -> str:
     return spec.notebook_ref(auth.username)
 
 
-def _kaggle(*args: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+def _kaggle(*args: str, timeout: int | None = None) -> KaggleCommandResult:
     kaggle_exe = _resolve_kaggle_executable()
     if kaggle_exe is not None:
         return _run_command([kaggle_exe, *args], timeout=timeout, cwd=str(Path.home()))
-    raise KaggleAutomationError("kaggle_cli_missing")
+    return KaggleCommandResult(_safe_command(["kaggle", *args]), None, "", "kaggle_cli_missing", False, 0.0)
 
 
 def resolve_kaggle_runtime() -> dict[str, Any]:
@@ -704,10 +750,28 @@ def _kaggle_checked(
     start_time: float | None = None,
     last_status: str | None = None,
     stage_root: Path = DEFAULT_STAGE_ROOT,
-) -> subprocess.CompletedProcess[str]:
+) -> KaggleCommandResult:
     try:
-        return _kaggle(*args, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
+        result = _kaggle(*args, timeout=timeout)
+        result_payload = _command_result_payload(result, ["kaggle", *args])
+        if result_payload["timed_out"] or result_payload["exit_code"] not in (0, None):
+            exc = KaggleAutomationError("kaggle_command_failed")
+            _write_runner_failure(
+                phase=phase,
+                command="kaggle " + " ".join(args),
+                exc=exc,
+                timeout_seconds=timeout,
+                kernel_ref=kernel_ref,
+                expected_commit=expected_commit,
+                run_id=run_id,
+                elapsed_seconds=(time.perf_counter() - start_time) if start_time is not None else None,
+                stdout=result_payload["stdout"],
+                stderr=result_payload["stderr"],
+                last_status=last_status,
+                stage_root=stage_root,
+            )
+        return result
+    except subprocess.TimeoutExpired as exc:  # compatibility with mocked subprocess implementations
         _write_runner_failure(
             phase=phase,
             command="kaggle " + " ".join(args),
@@ -722,7 +786,7 @@ def _kaggle_checked(
             last_status=last_status,
             stage_root=stage_root,
         )
-        raise KaggleAutomationError(f"{phase}_timeout") from exc
+        return KaggleCommandResult(_safe_command(["kaggle", *args]), None, str(getattr(exc, "stdout", "") or ""), str(getattr(exc, "stderr", "") or ""), True, 0.0)
     except Exception as exc:
         _write_runner_failure(
             phase=phase,
@@ -736,7 +800,7 @@ def _kaggle_checked(
             last_status=last_status,
             stage_root=stage_root,
         )
-        raise
+        return KaggleCommandResult(_safe_command(["kaggle", *args]), None, "", str(exc), False, 0.0)
 
 
 def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_STAGE_ROOT) -> dict[str, Any]:
@@ -760,10 +824,14 @@ def preflight(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFA
             stage_root=stage_root,
         )
         try:
-            notebook_status = _sdk_kernel_status(auth, spec)
-            notebook_exists = notebook_status is not None
-        except subprocess.CalledProcessError as exc:
-            notebook_error = _safe_cli_output(exc)
+            notebook_result = _kaggle_checked(
+                "kernels", "status", notebook_ref, timeout=60,
+                phase="auth_check_complete", kernel_ref=notebook_ref,
+                expected_commit=repo.head, stage_root=stage_root,
+            )
+            notebook_status = _safe_cli_output(notebook_result)
+            notebook_exists = getattr(notebook_result, "exit_code", getattr(notebook_result, "returncode", None)) == 0
+            notebook_error = _safe_tail(notebook_result.stderr)
         except Exception as exc:
             notebook_error = str(exc)
     dataset_ok = False
@@ -820,6 +888,14 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
     if not auth.available:
         raise KaggleAutomationError("authentication_missing")
     stage = ensure_stage_paths(stage_root)
+    attempt_path = stage.stage_root / SUBMISSION_ATTEMPT_NAME
+    if attempt_path.exists():
+        try:
+            prior_attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prior_attempt = {}
+        if run_id is None or prior_attempt.get("run_id") == run_id:
+            raise KaggleAutomationError("duplicate_submission_attempt_blocked")
     expected_commit = expected_commit or get_repo_state().head
     if not expected_commit:
         raise KaggleAutomationError("git_commit_unavailable")
@@ -838,6 +914,23 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
     }
     write_json(stage.stage_root / "submission_manifest.json", submission_manifest)
     result = _kaggle_checked("kernels", "push", "-p", str(notebook_dir), timeout=120, phase="push_complete", kernel_ref=kaggle_kernel_ref(auth, spec), expected_commit=expected_commit, run_id=run_id, stage_root=stage_root)
+    result_payload = _command_result_payload(result, ["kaggle", "kernels", "push", "-p", str(notebook_dir)])
+    attempt = {
+        "run_id": run_id,
+        "expected_commit": expected_commit,
+        "timestamp": time.time(),
+        "command_safe": result_payload["command_safe"],
+        "exit_code": result_payload["exit_code"],
+        "stdout_safe_tail": _safe_tail(result_payload["stdout"]),
+        "stderr_safe_tail": _safe_tail(result_payload["stderr"]),
+        "timed_out": result_payload["timed_out"],
+        "duration_seconds": result_payload["duration_seconds"],
+    }
+    write_json(attempt_path, attempt)
+    if result_payload["timed_out"]:
+        raise KaggleAutomationError("push_timeout")
+    if result_payload["exit_code"] != 0:
+        raise KaggleAutomationError(json.dumps({"phase": "push", **{key: result_payload[key] for key in ("command_safe", "exit_code")}, "stdout_safe_tail": _safe_tail(result_payload["stdout"]), "stderr_safe_tail": _safe_tail(result_payload["stderr"])}, sort_keys=True))
     _write_runner_metadata(
         stage_root=stage_root,
         run_id=run_id or _run_id_from_stage_root(stage_root) or "unknown",
@@ -850,6 +943,7 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
         "notebook_ref": kaggle_kernel_ref(auth, spec),
         "dataset_ref": spec.dataset_ref,
         "stdout": _safe_cli_output(result),
+        "command_result": result_payload,
         "stage_dir": str(notebook_dir),
         "submission_manifest": str(stage.stage_root / "submission_manifest.json"),
     }
@@ -1135,6 +1229,11 @@ def outputs(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAUL
                 kernel_ref=kernel_ref,
                 stage_root=stage_root,
             )
+            result_payload = _command_result_payload(result, ["kaggle", "kernels", "output", kernel_ref])
+            if result_payload["timed_out"]:
+                raise KaggleAutomationError("outputs_timeout")
+            if result_payload["exit_code"] != 0:
+                raise KaggleAutomationError(json.dumps({"exit_code": result_payload["exit_code"], "stdout_safe_tail": _safe_tail(result_payload["stdout"]), "stderr_safe_tail": _safe_tail(result_payload["stderr"])}, sort_keys=True))
             downloaded = []
             for path in stage.download_dir.rglob("*"):
                 if not path.is_file() or path.name not in SAFE_OUTPUT_NAMES:
@@ -1308,9 +1407,12 @@ def _status_payload(
         raise KaggleAutomationError("authentication_missing")
     kernel_ref = kaggle_kernel_ref(auth, spec)
     start_time = time.perf_counter()
-    status_text = _sdk_kernel_status(auth, spec)
-    if status_text is None:
-        result = _kaggle_checked("kernels", "status", kernel_ref, timeout=60, phase="poll_started", kernel_ref=kernel_ref, start_time=start_time, stage_root=stage_root)
+    result = _kaggle_checked("kernels", "status", kernel_ref, timeout=60, phase="poll_started", kernel_ref=kernel_ref, start_time=start_time, stage_root=stage_root)
+    if getattr(result, "timed_out", False):
+        status_text = "KAGGLE_API_TIMEOUT"
+    elif getattr(result, "exit_code", getattr(result, "returncode", None)) != 0:
+        status_text = _safe_cli_output(result) or "KAGGLE_STATUS_FAILED"
+    else:
         status_text = _safe_cli_output(result)
     breadcrumbs = _read_breadcrumbs(stage_root)
     heartbeat = _read_heartbeat(stage_root)

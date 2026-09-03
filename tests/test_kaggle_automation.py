@@ -469,12 +469,11 @@ def test_kaggle_command_uses_resolved_executable(monkeypatch, tmp_path):
     assert calls[0][0] == str(exe)
 
 
-def test_sdk_kernel_status_is_used_for_preflight(monkeypatch, tmp_path):
+def test_preflight_uses_bounded_cli_status(monkeypatch, tmp_path):
     monkeypatch.setattr(kaggle_runner, "kaggle_cli_available", lambda: True)
     monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jaistudio", "/tmp/kaggle.json", "access_token"))
     monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="abc123", dirty=False, branch="main"))
-    monkeypatch.setattr(kaggle_runner, "_sdk_kernel_status", lambda auth, spec: "RUNNING")
-    monkeypatch.setattr(kaggle_runner, "_kaggle_checked", lambda *args, **kwargs: _completed("file1\nfile2\n"))
+    monkeypatch.setattr(kaggle_runner, "_kaggle_checked", lambda *args, **kwargs: _completed("RUNNING"))
 
     result = kaggle_runner.preflight(stage_root=tmp_path / "stage")
 
@@ -488,6 +487,49 @@ def test_normalize_status_text_handles_sdk_enums():
         value = "KernelWorkerStatus.ERROR"
 
     assert kaggle_runner._normalize_status_text(FakeStatus()) == "KernelWorkerStatus.ERROR"
+
+
+def test_nonzero_command_preserves_all_result_fields(monkeypatch):
+    monkeypatch.setattr(kaggle_runner.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 7, "safe stdout", "safe stderr"))
+    result = kaggle_runner._run_command(["kaggle", "status"], timeout=3)
+    assert result.exit_code == 7
+    assert result.returncode == 7
+    assert result.stdout == "safe stdout"
+    assert result.stderr == "safe stderr"
+    assert result.timed_out is False
+    assert result.command_safe == ["kaggle", "status"]
+
+
+def test_command_timeout_returns_structured_result(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"], output="partial out", stderr="partial err")
+
+    monkeypatch.setattr(kaggle_runner.subprocess, "run", timeout)
+    result = kaggle_runner._run_command(["kaggle", "status"], timeout=2)
+    assert result.timed_out is True
+    assert result.exit_code is None
+    assert "partial out" in result.stdout
+    assert "partial err" in result.stderr
+
+
+def test_status_uses_bounded_cli_and_returns_on_timeout(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", None, "access_token"))
+    monkeypatch.setattr(kaggle_runner, "_kaggle_checked", lambda *args, **kwargs: kaggle_runner.KaggleCommandResult([], None, "", "", True, 2.0))
+    result = kaggle_runner.status(stage_root=tmp_path / "stage")
+    assert result["status"] == "KAGGLE_API_TIMEOUT"
+
+
+def test_push_duplicate_attempt_is_blocked(monkeypatch, tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / kaggle_runner.SUBMISSION_ATTEMPT_NAME).write_text(json.dumps({"run_id": "already-used"}), encoding="utf-8")
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", None, "access_token"))
+    try:
+        kaggle_runner.push(stage_root=stage, run_id="already-used", expected_commit="a" * 40)
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc) == "duplicate_submission_attempt_blocked"
+    else:
+        raise AssertionError("duplicate submission was not blocked")
     assert kaggle_runner._normalize_status_text("RUNNING") == "RUNNING"
     assert kaggle_runner._normalize_status_text(None) is None
 
@@ -568,8 +610,7 @@ def test_postmortem_rejects_historical_logs_without_current_run_evidence(tmp_pat
 def test_bounded_kaggle_call_writes_failure_on_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(kaggle_runner, "_kaggle", lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd=args, timeout=30)))
 
-    try:
-        kaggle_runner._kaggle_checked(
+    result = kaggle_runner._kaggle_checked(
             "kernels",
             "status",
             "user/notebook",
@@ -579,10 +620,8 @@ def test_bounded_kaggle_call_writes_failure_on_timeout(monkeypatch, tmp_path):
             expected_commit="abc123",
             stage_root=tmp_path,
         )
-    except kaggle_runner.KaggleAutomationError as exc:
-        assert str(exc) == "poll_started_timeout"
-    else:
-        raise AssertionError("timeout should be wrapped as KaggleAutomationError")
+    assert result.timed_out is True
+    assert result.exit_code is None
 
     failure_path = tmp_path / "runner_failure.json"
     assert failure_path.exists()
