@@ -132,9 +132,9 @@ def test_dependency_handoff_uses_one_run_dir_and_initializes_report_before_work(
 
 def test_dependency_report_consumer_requires_success_before_model_load():
     source = Path("kaggle/semantic_extractor_training.ipynb").read_text(encoding="utf-8")
-    report_guard = "if bootstrap_report.get('status') != 'SUCCESS' or not bootstrap_report.get('install_success') or not bootstrap_report.get('stack_verified'):"
-    assert report_guard in source
-    assert source.index(report_guard) < source.index("write_heartbeat('model_load_begin'")
+    assert "dependency_report_allows_model_load" in source
+    assert "dependency_gate['allowed']" in source
+    assert source.index("dependency_report_allows_model_load") < source.index("write_heartbeat('model_load_begin'")
 
 
 def test_prepared_submission_rejects_historical_identity(tmp_path):

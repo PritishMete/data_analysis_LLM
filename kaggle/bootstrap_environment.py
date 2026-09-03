@@ -29,6 +29,7 @@ if __package__ in {None, ""}:
     )
     from kaggle.run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper  # type: ignore[no-redef]
     from kaggle.import_trace import write_import_trace  # type: ignore[no-redef]
+    from kaggle.dependency_report import write_dependency_report  # type: ignore[no-redef]
 else:
     from .bootstrap import (
         KAGGLE_WORKING_ROOT,
@@ -44,6 +45,7 @@ else:
     )
     from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper
     from .import_trace import write_import_trace
+    from .dependency_report import write_dependency_report
 
 
 def _write_json(path: Path, payload: Any) -> Path:
@@ -57,6 +59,25 @@ def _safe_tail(text: str | None, *, lines: int = 40) -> str | None:
         return None
     split = text.splitlines()
     return "\n".join(split[-lines:])
+
+
+def _finalize_dependency_report(path: Path, report: dict[str, Any]) -> dict[str, Any]:
+    """Validate and durably publish the one report consumed by the notebook."""
+    finalized = write_dependency_report(path, report)
+    print("DEPENDENCY_REPORT_JSON=" + json.dumps(finalized, sort_keys=True), flush=True)
+    remote_log = path.parent / "remote.log"
+    with remote_log.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "DEPENDENCY_REPORT_FINALIZED "
+            + json.dumps({key: finalized[key] for key in ("status", "install_success", "stack_verified")}, sort_keys=True)
+            + "\n"
+        )
+        handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except OSError:
+            pass
+    return finalized
 
 
 def _probe_runtime() -> dict[str, Any]:
@@ -251,29 +272,33 @@ def main(argv: list[str] | None = None) -> int:
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="bootstrap_started")
     _write_json_helper(report_root / "runner_metadata.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "timestamp": time.time()})
     dependency_report_path = report_root / "dependency_install_result.json"
-    _write_json_helper(dependency_report_path, {
+    initial_report = {
+        "schema_version": "1.0",
         "status": "STARTED",
         "run_id": resolved_run_id,
         "stage": "dependencies",
         "bootstrap_pid": bootstrap_pid,
         "install_attempted": False,
-    })
+        "install_success": False,
+        "stack_verified": False,
+    }
+    _finalize_dependency_report(dependency_report_path, initial_report)
     if str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "").strip().lower() == "qwen_nf4_load":
-        _write_json_helper(dependency_report_path, {"status": "SUCCESS", "run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "stack_verified": True, "model_load_bootstrap": True, "dataset_used": False})
+        _finalize_dependency_report(dependency_report_path, {"schema_version": "1.0", "status": "SUCCESS", "stage": "dependencies", "run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "stack_verified": True, "model_load_bootstrap": True, "dataset_used": False})
         return 0
     if str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "").strip().lower() == "bnb_native_diagnose":
         # The native diagnostic owns its isolated Torch/BNB setup and must not
         # inspect datasets or import the general training dependency graph.
-        _write_json_helper(dependency_report_path, {"status": "SUCCESS", "run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "stack_verified": True, "diagnostic_bootstrap": True, "dataset_used": False})
+        _finalize_dependency_report(dependency_report_path, {"schema_version": "1.0", "status": "SUCCESS", "stage": "dependencies", "run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "stack_verified": True, "diagnostic_bootstrap": True, "dataset_used": False})
         return 0
     repo_dataset = resolve_canonical_dataset_root()
     dataset_dir = Path(repo_dataset["root"]) if repo_dataset.get("root") else None
     if dataset_dir is None:
-        _write_json_helper(dependency_report_path, {"status": "FAILED", "install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": repo_dataset.get("reason") or "dataset_not_found", "run_id": resolved_run_id})
+        _finalize_dependency_report(dependency_report_path, {"schema_version": "1.0", "status": "FAILED", "stage": "dependencies", "install_success": False, "stack_verified": False, "install_attempted": False, "fresh_process_required": True, "reason": repo_dataset.get("reason") or "dataset_not_found", "run_id": resolved_run_id})
         return 1
     verification = verify_attached_dataset(dataset_dir)
     if not verification.get("verified"):
-        _write_json_helper(dependency_report_path, {"status": "FAILED", "install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification, "run_id": resolved_run_id})
+        _finalize_dependency_report(dependency_report_path, {"schema_version": "1.0", "status": "FAILED", "stage": "dependencies", "install_success": False, "stack_verified": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification, "run_id": resolved_run_id})
         return 1
     gpu_identity = inspect_kaggle_gpu_identity()
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="before_torch_import")
@@ -301,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         probe_classification = None
     install_result.update({
-        "status": "SUCCESS" if install_result["install_success"] else "FAILED",
+        "status": "SUCCESS" if install_result["install_success"] and stack_verified else "FAILED",
         "stage": "dependencies",
         "bootstrap_pid": bootstrap_pid,
         "run_id": resolved_run_id,
@@ -325,8 +350,9 @@ def main(argv: list[str] | None = None) -> int:
         "semantic_dataset_root": str(discover_semantic_dataset() or ""),
     })
     install_result["stack_verified"] = stack_verified
-    _write_json_helper(dependency_report_path, install_result)
-    return 0 if install_result["install_success"] else 1
+    install_result["schema_version"] = "1.0"
+    _finalize_dependency_report(dependency_report_path, install_result)
+    return 0 if install_result["status"] == "SUCCESS" else 1
 
 
 if __name__ == "__main__":
