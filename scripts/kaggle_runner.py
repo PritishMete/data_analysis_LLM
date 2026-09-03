@@ -587,6 +587,19 @@ def _validate_prepared_submission(*, notebook_dir: Path, run_id: str, expected_c
     if not entrypoint.exists() or not metadata_path.exists():
         raise KaggleAutomationError("prepared_submission_missing_files")
     source = entrypoint.read_text(encoding="utf-8")
+    try:
+        notebook_payload = json.loads(source)
+    except json.JSONDecodeError as exc:
+        raise KaggleAutomationError("prepared_submission_identity_mismatch") from exc
+    cells = notebook_payload.get("cells")
+    if not isinstance(cells, list) or not cells or cells[0].get("cell_type") != "code":
+        raise KaggleAutomationError("prepared_submission_startup_identity_not_first_cell")
+    first_source = "".join(cells[0].get("source", []))
+    forbidden_before_identity = ("torch", "transformers", "peft", "bitsandbytes", "datasets", "pip install")
+    if "RUN_IDENTITY_JSON" not in first_source or "RUN_IDENTITY.json" not in first_source or "flush()" not in first_source:
+        raise KaggleAutomationError("prepared_submission_startup_identity_incomplete")
+    if any(value in first_source.lower() for value in forbidden_before_identity):
+        raise KaggleAutomationError("prepared_submission_startup_identity_not_identity_only")
     historical_ids = ("1bcfd66-20260901T175300Z-t6xm", "db9a3f1-20260901T173537Z-flh7", "7b632bf-20260902T033839Z-kv6d")
     stale_ids = [value for value in historical_ids if value in source]
     if run_id not in source or expected_commit not in source or stale_ids:
@@ -607,7 +620,12 @@ def _validate_prepared_submission(*, notebook_dir: Path, run_id: str, expected_c
         "current_run_id_embedded": True,
         "current_commit_embedded": True,
         "historical_active_run_ids": stale_ids,
-        "startup_marker_position_verified": source.index("write_heartbeat('startup'") < source.index("bootstrap_environment.py"),
+        "startup_marker_position_verified": True,
+        "startup_identity_cell_index": 0,
+        "first_executable_cell_verified": True,
+        "run_scoped_identity_path": "/kaggle/working/<run_id>/RUN_IDENTITY.json",
+        "run_scoped_log_path": "/kaggle/working/<run_id>/remote.log",
+        "failure_path": "/kaggle/working/<run_id>/failure.json",
     }
 
 

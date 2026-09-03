@@ -91,6 +91,28 @@ def test_prepare_only_creates_manifest_without_kaggle_submission(monkeypatch, tm
     assert manifest["startup_marker_position_verified"] is True
     assert manifest["generated_entrypoint_sha256"] == kaggle_runner._sha256_file(Path(manifest["generated_entrypoint"]))
     assert manifest["metadata_sha256"] == kaggle_runner._sha256_file(Path(manifest["metadata_file"]))
+    prepared_notebook = json.loads(Path(manifest["generated_entrypoint"]).read_text(encoding="utf-8"))
+    assert prepared_notebook["cells"][0]["cell_type"] == "code"
+    first_cell = "".join(prepared_notebook["cells"][0]["source"])
+    assert "RUN_IDENTITY_JSON=" in first_cell
+    assert "RUN_IDENTITY.json" in first_cell
+    assert "flush()" in first_cell
+    assert "__RUN_ID__" not in first_cell
+    assert "__EXPECTED_GIT_COMMIT__" not in first_cell
+
+
+def test_prepared_submission_rejects_notebook_without_first_identity_cell(tmp_path, monkeypatch):
+    entrypoint = tmp_path / "semantic_extractor_training.ipynb"
+    metadata = tmp_path / "kernel-metadata.json"
+    entrypoint.write_text(json.dumps({"cells": [{"cell_type": "markdown", "source": ["setup"]}]}), encoding="utf-8")
+    metadata.write_text(json.dumps({"code_file": entrypoint.name, "id": "jiban/data-analysis-llm-semantic-extractor"}), encoding="utf-8")
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/safe/auth", "access_token"))
+    try:
+        kaggle_runner._validate_prepared_submission(notebook_dir=tmp_path, run_id="new-run", expected_commit="a" * 40, spec=kaggle_runner.KaggleNotebookSpec())
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc) == "prepared_submission_startup_identity_not_first_cell"
+    else:
+        raise AssertionError("notebook without identity cell was accepted")
 
 
 def test_prepared_submission_rejects_historical_identity(tmp_path):
