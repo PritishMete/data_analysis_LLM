@@ -84,6 +84,11 @@ def test_dependency_specs_are_exact_and_no_deps():
     assert "--no-deps" in Path(diagnostic.__file__).read_text(encoding="utf-8")
 
 
+def test_generation_dependency_contract_keeps_pinned_hub_version():
+    assert diagnostic.EXPECTED_DEPENDENCY_VERSIONS["huggingface_hub"] == "0.26.2"
+    assert "huggingface_hub==0.26.2" in dict(diagnostic.GENERATION_DEPENDENCIES).values()
+
+
 def test_failure_redacts_credentials():
     safe = diagnostic._redact_safe_text("token=abc secret: xyz authorization=Bearer-value")
     assert "abc" not in safe and "xyz" not in safe and "Bearer-value" not in safe

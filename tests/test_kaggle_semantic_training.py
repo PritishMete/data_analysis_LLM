@@ -376,6 +376,19 @@ def test_dependency_preflight_passes_after_cu118_verification():
     assert preflight.install_plan["pip_groups"][0]["index_url"].endswith("/cu118")
 
 
+def test_bootstrap_uses_canonical_bnb_probe_and_nf4_gate():
+    bootstrap_source = Path("kaggle/bootstrap.py").read_text(encoding="utf-8")
+    environment_source = Path("kaggle/bootstrap_environment.py").read_text(encoding="utf-8")
+    assert "def _probe_bitsandbytes_runtime" in bootstrap_source
+    assert "_probe_bitsandbytes_runtime," in environment_source
+    assert "postinstall_bnb = _probe_bitsandbytes_runtime()" in environment_source
+    assert '"real_bnb_cuda_operation"' in bootstrap_source
+    assert '"BNB_IMPORT_FAILED"' in environment_source
+    assert '"BNB_CUDA_RUNTIME_FAILED"' in environment_source
+    assert '"BNB_NF4_RUNTIME_FAILED"' in environment_source
+    assert 'and bool((bnb_probe.get("json") or {}).get("real_bnb_cuda_operation"))' in environment_source
+
+
 def test_stale_kaggle_checkout_fails_fast(tmp_path, monkeypatch):
     canonical_root = _write_canonical_dataset(tmp_path / "canonical")
     repo_root = tmp_path / "archive"

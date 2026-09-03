@@ -235,11 +235,15 @@ print(json.dumps(payload))
 def _probe_bitsandbytes_runtime() -> dict[str, Any]:
     snippet = """
 import json
+import torch
 from bitsandbytes import cextension
 import bitsandbytes as bnb
 payload = {
     "version": bnb.__version__,
     "available_cuda_versions": cextension.get_available_cuda_binary_versions(),
+    "cuda_backend_active": False,
+    "real_bnb_cuda_operation": False,
+    "real_bnb_cuda_error": None,
 }
 try:
     specs = cextension.get_cuda_specs()
@@ -250,6 +254,17 @@ try:
     }
 except Exception as exc:
     payload["cuda_specs_error"] = str(exc)
+if torch.cuda.is_available():
+    try:
+        import bitsandbytes.functional as functional
+        tensor = torch.tensor([[0.25, -1.0], [2.5, 3.0]], device="cuda", dtype=torch.float16)
+        quantized = functional.quantize_4bit(tensor, quant_type="nf4")
+        restored = functional.dequantize_4bit(*quantized) if isinstance(quantized, (tuple, list)) else functional.dequantize_4bit(quantized)
+        torch.cuda.synchronize()
+        payload["real_bnb_cuda_operation"] = bool(getattr(restored, "is_cuda", False))
+        payload["cuda_backend_active"] = payload["real_bnb_cuda_operation"]
+    except Exception as exc:
+        payload["real_bnb_cuda_error"] = str(exc)[:500]
 print(json.dumps(payload))
 """
     result = _safe_run_json_probe([sys.executable, "-c", snippet], timeout=60)

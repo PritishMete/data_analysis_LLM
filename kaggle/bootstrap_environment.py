@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
         discover_semantic_dataset,
         ensure_kaggle_paths,
         inspect_kaggle_gpu_identity,
+        _probe_bitsandbytes_runtime,
         resolve_canonical_dataset_root,
         verify_attached_dataset,
         write_dependency_preflight_report,
@@ -36,6 +37,7 @@ else:
         discover_semantic_dataset,
         ensure_kaggle_paths,
         inspect_kaggle_gpu_identity,
+        _probe_bitsandbytes_runtime,
         resolve_canonical_dataset_root,
         verify_attached_dataset,
         write_dependency_preflight_report,
@@ -229,6 +231,7 @@ def _stack_verified(*, versions: dict[str, str | None], torch_probe: dict[str, A
         and tuple(runtime.get("capability") or ()) == (6, 0)
         and "sm_60" in (runtime.get("arch_list") or [])
         and bool(bnb_probe.get("ok"))
+        and bool((bnb_probe.get("json") or {}).get("real_bnb_cuda_operation"))
         and all(bool(nf4.get(key)) for key in ("initialization", "quantization", "dequantization", "cuda"))
     )
 
@@ -287,6 +290,16 @@ def main(argv: list[str] | None = None) -> int:
     nf4_probe = _probe_nf4_runtime() if postinstall_bnb.get("ok") else {"ok": False, "json": {}}
     versions = _installed_versions()
     stack_verified = _stack_verified(versions=versions, torch_probe=postinstall_torch, bnb_probe=postinstall_bnb, nf4_probe=nf4_probe)
+    bnb_probe_json = postinstall_bnb.get("json") or {}
+    nf4_probe_json = nf4_probe.get("json") or {}
+    if not postinstall_bnb.get("ok"):
+        probe_classification = "BNB_IMPORT_FAILED"
+    elif not bnb_probe_json.get("real_bnb_cuda_operation"):
+        probe_classification = "BNB_CUDA_RUNTIME_FAILED"
+    elif not all(bool(nf4_probe_json.get(key)) for key in ("initialization", "quantization", "dequantization", "cuda")):
+        probe_classification = "BNB_NF4_RUNTIME_FAILED"
+    else:
+        probe_classification = None
     install_result.update({
         "status": "SUCCESS" if install_result["install_success"] else "FAILED",
         "stage": "dependencies",
@@ -307,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         "postinstall_bnb": postinstall_bnb,
         "nf4_probe": nf4_probe,
         "stack_verified": stack_verified,
+        "probe_classification": probe_classification,
         "resume_checkpoint": str(detect_resume_checkpoint(paths.checkpoints)) if detect_resume_checkpoint(paths.checkpoints) else None,
         "semantic_dataset_root": str(discover_semantic_dataset() or ""),
     })
