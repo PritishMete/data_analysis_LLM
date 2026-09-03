@@ -66,7 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     output_root = Path(args.output_root)
     resolved_run_id = args.run_id or resolve_current_run_id(base_root=output_root / "smoke_runs") or generate_run_id()
-    run_root = ensure_run_root(resolved_run_id, base_root=output_root / "smoke_runs")
+    run_root = Path(os.environ["KAGGLE_RUN_DIR"]) if os.environ.get("KAGGLE_RUN_DIR") else ensure_run_root(resolved_run_id, base_root=output_root / "smoke_runs")
+    run_root.mkdir(parents=True, exist_ok=True)
     paths = ensure_kaggle_paths(run_root)
     report_root = run_root
     training_pid = os.getpid()

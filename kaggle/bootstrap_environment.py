@@ -175,28 +175,37 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     output_root = Path(args.output_root)
     resolved_run_id = args.run_id or resolve_current_run_id(base_root=output_root / "smoke_runs") or generate_run_id()
-    run_root = ensure_run_root(resolved_run_id, base_root=output_root / "smoke_runs")
+    run_root = Path(os.environ["KAGGLE_RUN_DIR"]) if os.environ.get("KAGGLE_RUN_DIR") else ensure_run_root(resolved_run_id, base_root=output_root / "smoke_runs")
+    run_root.mkdir(parents=True, exist_ok=True)
     paths = ensure_kaggle_paths(run_root)
     report_root = run_root
     bootstrap_pid = os.getpid()
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="bootstrap_started")
     _write_json_helper(report_root / "runner_metadata.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "timestamp": time.time()})
+    dependency_report_path = report_root / "dependency_install_result.json"
+    _write_json_helper(dependency_report_path, {
+        "status": "STARTED",
+        "run_id": resolved_run_id,
+        "stage": "dependencies",
+        "bootstrap_pid": bootstrap_pid,
+        "install_attempted": False,
+    })
     if str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "").strip().lower() == "qwen_nf4_load":
-        _write_json_helper(report_root / "dependency_install_result.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "model_load_bootstrap": True, "dataset_used": False})
+        _write_json_helper(dependency_report_path, {"status": "SUCCESS", "run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "stack_verified": True, "model_load_bootstrap": True, "dataset_used": False})
         return 0
     if str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "").strip().lower() == "bnb_native_diagnose":
         # The native diagnostic owns its isolated Torch/BNB setup and must not
         # inspect datasets or import the general training dependency graph.
-        _write_json_helper(report_root / "dependency_install_result.json", {"run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "diagnostic_bootstrap": True, "dataset_used": False})
+        _write_json_helper(dependency_report_path, {"status": "SUCCESS", "run_id": resolved_run_id, "bootstrap_pid": bootstrap_pid, "install_success": True, "stack_verified": True, "diagnostic_bootstrap": True, "dataset_used": False})
         return 0
     repo_dataset = resolve_canonical_dataset_root()
     dataset_dir = Path(repo_dataset["root"]) if repo_dataset.get("root") else None
     if dataset_dir is None:
-        _write_json_helper(report_root / "dependency_install_result.json", {"install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": repo_dataset.get("reason") or "dataset_not_found", "run_id": resolved_run_id})
+        _write_json_helper(dependency_report_path, {"status": "FAILED", "install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": repo_dataset.get("reason") or "dataset_not_found", "run_id": resolved_run_id})
         return 1
     verification = verify_attached_dataset(dataset_dir)
     if not verification.get("verified"):
-        _write_json_helper(report_root / "dependency_install_result.json", {"install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification, "run_id": resolved_run_id})
+        _write_json_helper(dependency_report_path, {"status": "FAILED", "install_success": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification, "run_id": resolved_run_id})
         return 1
     gpu_identity = inspect_kaggle_gpu_identity()
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="before_torch_import")
@@ -209,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     write_dependency_preflight_report(report_root, preflight)
     install_result = _install_packages({"preflight": preflight.to_dict(), "gpu_identity": gpu_identity, "torch_probe": torch_probe})
     install_result.update({
+        "status": "SUCCESS" if install_result["install_success"] else "FAILED",
+        "stage": "dependencies",
         "bootstrap_pid": bootstrap_pid,
         "run_id": resolved_run_id,
         "dataset_dir": str(dataset_dir),
@@ -224,7 +235,8 @@ def main(argv: list[str] | None = None) -> int:
         "resume_checkpoint": str(detect_resume_checkpoint(paths.checkpoints)) if detect_resume_checkpoint(paths.checkpoints) else None,
         "semantic_dataset_root": str(discover_semantic_dataset() or ""),
     })
-    _write_json_helper(report_root / "dependency_install_result.json", install_result)
+    install_result["stack_verified"] = bool(install_result["install_success"])
+    _write_json_helper(dependency_report_path, install_result)
     return 0 if install_result["install_success"] else 1
 
 

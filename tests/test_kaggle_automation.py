@@ -115,6 +115,28 @@ def test_prepared_submission_rejects_notebook_without_first_identity_cell(tmp_pa
         raise AssertionError("notebook without identity cell was accepted")
 
 
+def test_dependency_handoff_uses_one_run_dir_and_initializes_report_before_work():
+    bootstrap = Path("kaggle/bootstrap_environment.py").read_text(encoding="utf-8")
+    notebook = Path("kaggle/semantic_extractor_training.ipynb").read_text(encoding="utf-8")
+    execute = Path("kaggle/execute_smoke_training.py").read_text(encoding="utf-8")
+    assert 'dependency_report_path = report_root / "dependency_install_result.json"' in bootstrap
+    assert '"status": "STARTED"' in bootstrap
+    assert '"status": "SUCCESS"' in bootstrap
+    assert '"status": "FAILED"' in bootstrap
+    assert "KAGGLE_RUN_DIR" in bootstrap
+    assert "KAGGLE_RUN_DIR" in execute
+    assert "os.environ['KAGGLE_RUN_DIR'] = str(RUN_DIR)" in notebook
+    assert "dependency_report_path = RUN_DIR / 'dependency_install_result.json'" in notebook
+    assert "DEPENDENCY_REPORT_HANDOFF_FAILED" in notebook
+
+
+def test_dependency_report_consumer_requires_success_before_model_load():
+    source = Path("kaggle/semantic_extractor_training.ipynb").read_text(encoding="utf-8")
+    report_guard = "if bootstrap_report.get('status') != 'SUCCESS' or not bootstrap_report.get('install_success') or not bootstrap_report.get('stack_verified'):"
+    assert report_guard in source
+    assert source.index(report_guard) < source.index("write_heartbeat('model_load_begin'")
+
+
 def test_prepared_submission_rejects_historical_identity(tmp_path):
     entrypoint = tmp_path / "semantic_extractor_training.ipynb"
     metadata = tmp_path / "kernel-metadata.json"
