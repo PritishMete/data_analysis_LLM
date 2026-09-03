@@ -348,6 +348,22 @@ def _classify_preinstall_inspection(preinstall_probe: dict[str, Any]) -> str | N
     return None
 
 
+def _torch_profile_failure(runtime: dict[str, Any], cuda: dict[str, Any]) -> str | None:
+    """Classify the pinned runtime only after it was freshly imported."""
+    payload = runtime.get("json") or {}
+    if payload.get("torch_version") != TORCH_REQUESTED_VERSION:
+        return "TORCH_VERSION_MISMATCH"
+    if payload.get("torch_cuda_version") != "11.8":
+        return "TORCH_CUDA_VERSION_MISMATCH"
+    if tuple(payload.get("compute_capability") or ()) != (6, 0) or "sm_60" not in (payload.get("arch_list") or []):
+        return "TORCH_P100_ARCH_UNSUPPORTED"
+    if not payload.get("skip_code_available"):
+        return "TORCH_DYNAMO_BINARY_MISMATCH"
+    if not bool((cuda.get("json") or {}).get("basic_cuda_tensor_test")):
+        return "PYTORCH_CUDA_FAILED"
+    return None
+
+
 def run_shared_p100_torch_bootstrap(
     *,
     report_root: Path,
@@ -412,7 +428,13 @@ def run_shared_p100_torch_bootstrap(
     runtime_json = runtime_probe.get("json") or {}
     cuda_json = cuda_probe.get("json") or {}
     sm60_supported = tuple(runtime_json.get("compute_capability") or []) == (6, 0) and "sm_60" in (runtime_json.get("arch_list") or [])
-    bootstrap_result["verdict"] = "P100_TORCH_RUNTIME_PASSED" if sm60_supported and cuda_json.get("basic_cuda_tensor_test") else "PYTORCH_SM60_UNSUPPORTED"
+    profile_failure = _torch_profile_failure(runtime_probe, cuda_probe)
+    bootstrap_result["verdict"] = "P100_TORCH_RUNTIME_PASSED" if profile_failure is None else profile_failure
+    bootstrap_result["runtime_profile_verified"] = profile_failure is None
+    install_payload["runtime_verified"] = profile_failure is None
+    install_payload["ok"] = bool(install_payload.get("ok")) and profile_failure is None
+    install_payload["failure_classification"] = profile_failure
+    bootstrap_result["install"] = install_payload
     bootstrap_result["torch_version"] = runtime_json.get("torch_version")
     bootstrap_result["torch_cuda_version"] = runtime_json.get("torch_cuda_version")
     bootstrap_result["gpu_name"] = runtime_json.get("gpu_name")
@@ -437,6 +459,8 @@ def run_shared_p100_torch_bootstrap(
                 "timestamp": time.time(),
             },
         )
+    if profile_failure is not None:
+        raise RuntimeError(profile_failure)
     return bootstrap_result
 
 

@@ -30,6 +30,7 @@ if __package__ in {None, ""}:
     from kaggle.run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper  # type: ignore[no-redef]
     from kaggle.import_trace import write_import_trace  # type: ignore[no-redef]
     from kaggle.dependency_report import write_dependency_report  # type: ignore[no-redef]
+    from kaggle.p100_torch_runtime import run_shared_p100_torch_bootstrap  # type: ignore[no-redef]
 else:
     from .bootstrap import (
         KAGGLE_WORKING_ROOT,
@@ -46,6 +47,7 @@ else:
     from .run_context import ensure_run_root, generate_run_id, resolve_current_run_id, write_json as _write_json_helper
     from .import_trace import write_import_trace
     from .dependency_report import write_dependency_report
+    from .p100_torch_runtime import run_shared_p100_torch_bootstrap
 
 
 def _write_json(path: Path, payload: Any) -> Path:
@@ -301,15 +303,53 @@ def main(argv: list[str] | None = None) -> int:
         _finalize_dependency_report(dependency_report_path, {"schema_version": "1.0", "status": "FAILED", "stage": "dependencies", "install_success": False, "stack_verified": False, "install_attempted": False, "fresh_process_required": True, "reason": "canonical_dataset_verification_failed", "dataset_verification": verification, "run_id": resolved_run_id})
         return 1
     gpu_identity = inspect_kaggle_gpu_identity()
-    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="before_torch_import")
-    torch_probe = _probe_runtime()
-    write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="after_torch_import")
+    try:
+        shared_torch = run_shared_p100_torch_bootstrap(
+            report_root=report_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            phase_prefix="generation",
+            write_markers=True,
+        )
+    except Exception as exc:
+        _finalize_dependency_report(
+            dependency_report_path,
+            {
+                **initial_report,
+                "status": "FAILED",
+                "install_attempted": True,
+                "install_success": False,
+                "stack_verified": False,
+                "reason": str(exc),
+                "classification": str(exc),
+                "gpu_identity": gpu_identity,
+            },
+        )
+        return 1
+    torch_probe = {
+        "ok": True,
+        "json": {
+            "version": shared_torch.get("torch_version"),
+            "cuda": shared_torch.get("torch_cuda_version"),
+            "available": bool(shared_torch.get("basic_cuda_tensor_test")),
+            "device_name": shared_torch.get("gpu_name"),
+            "capability": shared_torch.get("compute_capability"),
+            "arch_list": shared_torch.get("arch_list"),
+        },
+    }
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="before_bitsandbytes_import")
     bnb_probe = {"ok": True, "json": {"version": None, "available_cuda_versions": None}}
     write_import_trace(report_root / "import_trace.jsonl", module="kaggle.bootstrap_environment", event="after_bitsandbytes_import")
     preflight = build_kaggle_dependency_plan(gpu_identity=gpu_identity, torch_probe=torch_probe, bitsandbytes_probe=bnb_probe)
+    preflight_payload = preflight.to_dict()
+    # Torch has already been installed and verified by the shared P100 path;
+    # the remaining installer may not reinstall it through a second plan.
+    preflight_payload["install_plan"]["pip_groups"] = [
+        group for group in preflight_payload["install_plan"].get("pip_groups", [])
+        if group.get("name") != "torch_cu126"
+    ]
+    preflight.install_plan["pip_groups"] = preflight_payload["install_plan"]["pip_groups"]
     write_dependency_preflight_report(report_root, preflight)
-    install_result = _install_packages({"preflight": preflight.to_dict(), "gpu_identity": gpu_identity, "torch_probe": torch_probe})
+    install_result = _install_packages({"preflight": preflight_payload, "gpu_identity": gpu_identity, "torch_probe": torch_probe})
     postinstall_torch = _probe_runtime()
     postinstall_bnb = _probe_bitsandbytes_runtime()
     nf4_probe = _probe_nf4_runtime() if postinstall_bnb.get("ok") else {"ok": False, "json": {}}
@@ -333,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         "dataset_dir": str(dataset_dir),
         "gpu_identity": gpu_identity,
         "torch_probe": torch_probe,
+        "shared_torch_bootstrap": shared_torch,
         "dependency_preflight_passed": bool(preflight.compatibility_passed or preflight.install_plan.get("pip_groups")),
         "planned_packages": preflight.install_plan,
         "runtime_environment": {

@@ -8,6 +8,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 from typing import Any, Iterable
 from zipfile import ZIP_DEFLATED, ZipFile

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from kaggle import bnb_compat_cycle, torch_compat_cycle
+from kaggle import bootstrap, bootstrap_environment
 from kaggle import p100_torch_runtime
 
 
@@ -40,6 +41,27 @@ def test_preinstall_inspection_is_non_terminal_for_incompatible_default_torch():
     payload = {"ok": True, "json": {"default_torch_appears_p100_incompatible": True, "inspect_only": True}}
 
     assert p100_torch_runtime._classify_preinstall_inspection(payload) is None
+
+
+def test_pip_success_does_not_certify_an_incompatible_torch_runtime():
+    runtime = {"ok": True, "json": {"torch_version": "2.10.0+cu128", "torch_cuda_version": "12.8", "compute_capability": [6, 0], "arch_list": ["sm_70"]}}
+    cuda = {"ok": True, "json": {"basic_cuda_tensor_test": True}}
+
+    assert p100_torch_runtime._torch_profile_failure(runtime, cuda) == "TORCH_VERSION_MISMATCH"
+
+
+def test_generation_bootstrap_reuses_shared_p100_path_before_runtime_packages():
+    source = Path(bootstrap_environment.__file__).read_text(encoding="utf-8")
+
+    assert "run_shared_p100_torch_bootstrap" in source
+    assert source.index("run_shared_p100_torch_bootstrap") < source.index("_install_packages")
+
+
+def test_canonical_bnb_probe_has_subprocess_dependency():
+    source = Path(bootstrap.__file__).read_text(encoding="utf-8")
+
+    assert "import subprocess" in source
+    assert "def _probe_bitsandbytes_runtime" in source
 
 
 def test_bnb_install_snippet_uses_no_deps():
