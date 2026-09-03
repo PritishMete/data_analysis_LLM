@@ -471,12 +471,24 @@ def get_repo_state() -> KaggleRepoState:
 
 
 def ensure_stage_paths(stage_root: Path = DEFAULT_STAGE_ROOT) -> KagglePaths:
+    stage_root = Path(stage_root).resolve()
     notebook_dir = stage_root / "notebook"
     download_dir = stage_root / "downloads"
     logs_dir = stage_root / "logs"
     for path in (notebook_dir, download_dir, logs_dir):
         path.mkdir(parents=True, exist_ok=True)
     return KagglePaths(stage_root=stage_root, notebook_dir=notebook_dir, download_dir=download_dir, logs_dir=logs_dir)
+
+
+def _validate_kernel_directory(notebook_dir: Path, code_file: str) -> Path:
+    resolved = Path(notebook_dir).resolve()
+    if not resolved.exists() or not resolved.is_dir():
+        raise KaggleAutomationError("KAGGLE_LOCAL_KERNEL_PATH_INVALID: notebook directory")
+    if not (resolved / "kernel-metadata.json").is_file():
+        raise KaggleAutomationError("KAGGLE_LOCAL_KERNEL_PATH_INVALID: kernel-metadata.json")
+    if not (resolved / code_file).is_file():
+        raise KaggleAutomationError(f"KAGGLE_LOCAL_KERNEL_PATH_INVALID: {code_file}")
+    return resolved
 
 
 def _write_runner_heartbeat(
@@ -628,6 +640,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _validate_prepared_submission(*, notebook_dir: Path, run_id: str, expected_commit: str, spec: KaggleNotebookSpec) -> dict[str, Any]:
+    notebook_dir = Path(notebook_dir).resolve()
     entrypoint = notebook_dir / spec.code_file
     metadata_path = notebook_dir / "kernel-metadata.json"
     if not entrypoint.exists() or not metadata_path.exists():
@@ -900,6 +913,7 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
     if not expected_commit:
         raise KaggleAutomationError("git_commit_unavailable")
     notebook_dir = sync_notebook_to_stage(stage, spec, auth, run_id=run_id, expected_commit=expected_commit)
+    notebook_dir = _validate_kernel_directory(notebook_dir, spec.code_file)
     prepared = _validate_prepared_submission(notebook_dir=notebook_dir, run_id=run_id or "", expected_commit=expected_commit, spec=spec)
     submission_manifest = {
         "run_id": run_id,

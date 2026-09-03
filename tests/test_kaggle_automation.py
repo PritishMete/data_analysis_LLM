@@ -530,6 +530,66 @@ def test_push_duplicate_attempt_is_blocked(monkeypatch, tmp_path):
         assert str(exc) == "duplicate_submission_attempt_blocked"
     else:
         raise AssertionError("duplicate submission was not blocked")
+
+
+def test_kernel_directory_gate_resolves_relative_path_and_requires_files(tmp_path):
+    directory = tmp_path / "kernel with spaces"
+    directory.mkdir()
+    (directory / "kernel-metadata.json").write_text("{}", encoding="utf-8")
+    (directory / "semantic_extractor_training.ipynb").write_text("{}", encoding="utf-8")
+    resolved = kaggle_runner._validate_kernel_directory(Path(str(directory)), "semantic_extractor_training.ipynb")
+    assert resolved.is_absolute()
+    assert resolved == directory.resolve()
+
+
+def test_kernel_directory_gate_rejects_missing_directory(tmp_path):
+    try:
+        kaggle_runner._validate_kernel_directory(tmp_path / "missing", "semantic_extractor_training.ipynb")
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc).startswith("KAGGLE_LOCAL_KERNEL_PATH_INVALID")
+    else:
+        raise AssertionError("missing kernel directory was accepted")
+
+
+def test_kernel_directory_gate_rejects_missing_metadata(tmp_path):
+    directory = tmp_path / "kernel"
+    directory.mkdir()
+    (directory / "semantic_extractor_training.ipynb").write_text("{}", encoding="utf-8")
+    try:
+        kaggle_runner._validate_kernel_directory(directory, "semantic_extractor_training.ipynb")
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert "kernel-metadata.json" in str(exc)
+    else:
+        raise AssertionError("kernel without metadata was accepted")
+
+
+def test_push_command_uses_absolute_notebook_path(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_kaggle(*args, **kwargs):
+        calls.append(args)
+        return _completed("pushed")
+
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", None, "access_token"))
+    monkeypatch.setattr(kaggle_runner, "_kaggle", fake_kaggle)
+    result = kaggle_runner.push(stage_root=tmp_path / "stage with spaces", run_id="absolute-test", expected_commit="a" * 40)
+    assert result["command_result"]["exit_code"] == 0
+    command = calls[0]
+    push_path = Path(command[command.index("-p") + 1])
+    assert push_path.is_absolute()
+    assert push_path.name == "notebook"
+
+
+def test_push_does_not_call_cli_when_kernel_path_gate_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", None, "access_token"))
+    monkeypatch.setattr(kaggle_runner, "sync_notebook_to_stage", lambda *args, **kwargs: tmp_path / "missing")
+    monkeypatch.setattr(kaggle_runner, "_kaggle", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CLI should not run")))
+    try:
+        kaggle_runner.push(stage_root=tmp_path / "stage", run_id="invalid-path", expected_commit="a" * 40)
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc).startswith("KAGGLE_LOCAL_KERNEL_PATH_INVALID")
+    else:
+        raise AssertionError("invalid kernel path was accepted")
     assert kaggle_runner._normalize_status_text("RUNNING") == "RUNNING"
     assert kaggle_runner._normalize_status_text(None) is None
 
