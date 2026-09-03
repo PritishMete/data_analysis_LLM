@@ -79,6 +79,8 @@ def test_dependency_specs_are_exact_and_no_deps():
     assert all("==" in requirement for _, requirement in diagnostic.GENERATION_DEPENDENCIES)
     assert diagnostic.EXPECTED_DEPENDENCY_VERSIONS["accelerate"] == "1.13.0"
     assert diagnostic.EXPECTED_DEPENDENCY_VERSIONS["peft"] == "0.13.2"
+    assert diagnostic.EXPECTED_DEPENDENCY_VERSIONS["huggingface_hub"] == "0.26.2"
+    assert ("huggingface_hub", "huggingface_hub==0.26.2") in diagnostic.GENERATION_DEPENDENCIES
     assert "--no-deps" in Path(diagnostic.__file__).read_text(encoding="utf-8")
 
 

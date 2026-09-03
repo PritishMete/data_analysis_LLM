@@ -35,10 +35,17 @@ SAFE_ZIP_NAMES = {
 
 P100_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu118"
 P100_TORCH_PACKAGES = {
-    "torch": "2.4.1+cu118",
-    "torchvision": "0.19.1+cu118",
-    "torchaudio": "2.4.1+cu118",
+    "torch": "2.5.1+cu118",
+    "torchvision": "0.20.1+cu118",
+    "torchaudio": "2.5.1+cu118",
 }
+P100_MODEL_PACKAGES = [
+    "transformers==4.46.3",
+    "tokenizers==0.20.3",
+    "accelerate==1.13.0",
+    "peft==0.13.2",
+    "huggingface_hub==0.26.2",
+]
 
 
 @dataclass(slots=True)
@@ -300,6 +307,13 @@ def build_kaggle_dependency_plan(*, gpu_identity: dict[str, Any], torch_probe: d
                 "packages": [f"{package}=={version}" for package, version in P100_TORCH_PACKAGES.items()],
             }
         )
+    install_plan["pip_groups"].append(
+        {
+            "name": "model_runtime",
+            "index_url": None,
+            "packages": P100_MODEL_PACKAGES,
+        }
+    )
     if requires_bitsandbytes_upgrade or bitsandbytes_version is None:
         install_plan["pip_groups"].append(
             {

@@ -102,6 +102,8 @@ print(json.dumps(payload))
 def _install_packages(plan: dict[str, Any]) -> dict[str, Any]:
     requested: list[str] = []
     result_payload = {
+        "status": "STARTED",
+        "stage": "dependencies",
         "install_attempted": False,
         "install_success": False,
         "requested_packages": requested,
@@ -118,6 +120,7 @@ def _install_packages(plan: dict[str, Any]) -> dict[str, Any]:
     pip_groups = (plan.get("preflight") or {}).get("install_plan", {}).get("pip_groups") or []
     if not pip_groups:
         result_payload["install_success"] = True
+        result_payload["status"] = "SUCCESS"
         return result_payload
     result_payload["install_attempted"] = True
     last = None
@@ -142,9 +145,14 @@ def _install_packages(plan: dict[str, Any]) -> dict[str, Any]:
         result_payload["stdout_tail"] = _safe_tail(last.stdout)
         result_payload["stderr_tail"] = _safe_tail(last.stderr)
         if last.returncode != 0:
+            result_payload["failed_dependency"] = packages[-1] if packages else group.get("name")
+            result_payload["failed_command_safe"] = command[:4] + packages
             break
     if last is not None and last.returncode == 0:
         result_payload["install_success"] = True
+        result_payload["status"] = "SUCCESS"
+    elif last is not None:
+        result_payload["status"] = "FAILED"
     try:
         result_payload["installed_torch_distribution"] = metadata.version("torch")
     except Exception:
@@ -166,6 +174,63 @@ def _install_packages(plan: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
     return result_payload
+
+
+def _probe_nf4_runtime() -> dict[str, Any]:
+    snippet = """
+import json
+import torch
+import bitsandbytes.functional as functional
+payload = {"initialization": False, "quantization": False, "dequantization": False, "cuda": False}
+if not torch.cuda.is_available():
+    print(json.dumps(payload))
+    raise SystemExit(0)
+tensor = torch.randn(32, device="cuda", dtype=torch.float16)
+payload["initialization"] = True
+quantized, state = functional.quantize_4bit(tensor, quant_type="nf4", compress_statistics=True)
+payload["quantization"] = True
+restored = functional.dequantize_4bit(quantized, state)
+payload["dequantization"] = True
+torch.cuda.synchronize()
+payload["cuda"] = bool(restored.is_cuda)
+print(json.dumps(payload))
+"""
+    return _safe_run_json_probe([sys.executable, "-c", snippet], timeout=60)
+
+
+def _installed_versions() -> dict[str, str | None]:
+    names = ("torch", "transformers", "tokenizers", "accelerate", "peft", "bitsandbytes", "huggingface-hub")
+    versions: dict[str, str | None] = {}
+    for name in names:
+        try:
+            versions[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            versions[name] = None
+    return versions
+
+
+def _stack_verified(*, versions: dict[str, str | None], torch_probe: dict[str, Any], bnb_probe: dict[str, Any], nf4_probe: dict[str, Any]) -> bool:
+    expected = {
+        "torch": "2.5.1+cu118",
+        "transformers": "4.46.3",
+        "tokenizers": "0.20.3",
+        "accelerate": "1.13.0",
+        "peft": "0.13.2",
+        "bitsandbytes": "0.43.3",
+        "huggingface-hub": "0.26.2",
+    }
+    runtime = torch_probe.get("json") or {}
+    nf4 = nf4_probe.get("json") or {}
+    return (
+        all(versions.get(name) == value for name, value in expected.items())
+        and runtime.get("version") == expected["torch"]
+        and runtime.get("cuda") == "11.8"
+        and bool(runtime.get("available"))
+        and tuple(runtime.get("capability") or ()) == (6, 0)
+        and "sm_60" in (runtime.get("arch_list") or [])
+        and bool(bnb_probe.get("ok"))
+        and all(bool(nf4.get(key)) for key in ("initialization", "quantization", "dequantization", "cuda"))
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -217,6 +282,11 @@ def main(argv: list[str] | None = None) -> int:
     preflight = build_kaggle_dependency_plan(gpu_identity=gpu_identity, torch_probe=torch_probe, bitsandbytes_probe=bnb_probe)
     write_dependency_preflight_report(report_root, preflight)
     install_result = _install_packages({"preflight": preflight.to_dict(), "gpu_identity": gpu_identity, "torch_probe": torch_probe})
+    postinstall_torch = _probe_runtime()
+    postinstall_bnb = _probe_bitsandbytes_runtime()
+    nf4_probe = _probe_nf4_runtime() if postinstall_bnb.get("ok") else {"ok": False, "json": {}}
+    versions = _installed_versions()
+    stack_verified = _stack_verified(versions=versions, torch_probe=postinstall_torch, bnb_probe=postinstall_bnb, nf4_probe=nf4_probe)
     install_result.update({
         "status": "SUCCESS" if install_result["install_success"] else "FAILED",
         "stage": "dependencies",
@@ -232,10 +302,15 @@ def main(argv: list[str] | None = None) -> int:
             "platform": platform.platform(),
             "machine": platform.machine(),
         },
+        "versions": versions,
+        "postinstall_torch": postinstall_torch,
+        "postinstall_bnb": postinstall_bnb,
+        "nf4_probe": nf4_probe,
+        "stack_verified": stack_verified,
         "resume_checkpoint": str(detect_resume_checkpoint(paths.checkpoints)) if detect_resume_checkpoint(paths.checkpoints) else None,
         "semantic_dataset_root": str(discover_semantic_dataset() or ""),
     })
-    install_result["stack_verified"] = bool(install_result["install_success"])
+    install_result["stack_verified"] = stack_verified
     _write_json_helper(dependency_report_path, install_result)
     return 0 if install_result["install_success"] else 1
 

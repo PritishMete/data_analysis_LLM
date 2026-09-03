@@ -329,7 +329,10 @@ def test_dependency_preflight_selects_p100_cu118_stack(tmp_path):
     assert preflight.compatibility_passed is True
     assert payload["gpu_name"] == "Tesla P100-PCIE-16GB"
     assert payload["install_plan"]["pip_groups"][0]["index_url"].endswith("/cu118")
-    assert any("torch==2.4.1+cu118" in package for package in payload["install_plan"]["pip_groups"][0]["packages"])
+    assert any("torch==2.5.1+cu118" in package for package in payload["install_plan"]["pip_groups"][0]["packages"])
+    assert any(group["name"] == "model_runtime" for group in payload["install_plan"]["pip_groups"])
+    model_group = next(group for group in payload["install_plan"]["pip_groups"] if group["name"] == "model_runtime")
+    assert "huggingface_hub==0.26.2" in model_group["packages"]
 
 
 def test_dependency_preflight_passes_after_cu118_verification():

@@ -37,6 +37,7 @@ EXPECTED_DEPENDENCY_VERSIONS = {
     "accelerate": "1.13.0",
     "bitsandbytes": "0.43.3",
     "peft": "0.13.2",
+    "huggingface_hub": "0.26.2",
 }
 GENERATION_DEPENDENCIES = (
     ("transformers", "transformers==4.46.3"),
