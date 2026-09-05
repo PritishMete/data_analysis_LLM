@@ -22,6 +22,7 @@ from .qwen_qlora_learning_experiment import (
     _parse_prediction_diagnostic,
     _prediction_is_valid,
     build_semantic_prompt,
+    build_semantic_stopping_criteria,
     schema_failure_diagnostics,
     semantic_prompt_token_ids,
     _target_output,
@@ -235,12 +236,12 @@ def _run_budget(model: Any, tokenizer: Any, torch_module: Any, rows: list[dict[s
         encoded = tokenizer(build_semantic_prompt(row), return_tensors="pt", add_special_tokens=True, truncation=False).to("cuda:0")
         input_tokens = int(encoded["input_ids"].shape[-1])
         with torch_module.inference_mode():
-            generated = model.generate(**encoded, max_new_tokens=budget, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
+            generated = model.generate(**encoded, max_new_tokens=budget, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id, stopping_criteria=build_semantic_stopping_criteria(tokenizer, input_tokens))
         completion_ids = generated[0][input_tokens:]
         completion_list = [int(value) for value in completion_ids.detach().cpu().tolist()]
         new_tokens = len(completion_list)
         decoded = tokenizer.decode(completion_ids, skip_special_tokens=True)
-        termination = _generation_termination_reason(completion_ids, generated_tokens=new_tokens, max_new_tokens=budget, eos_token_id=tokenizer.eos_token_id)
+        termination = _generation_termination_reason(completion_ids, generated_tokens=new_tokens, max_new_tokens=budget, eos_token_id=tokenizer.eos_token_id, decoded_text=decoded)
         counts[termination] = counts.get(termination, 0) + 1
         prediction, classification = _parse_prediction_diagnostic(decoded, generated_tokens=new_tokens, max_new_tokens=budget, termination_reason=termination)
         classifications[classification] = classifications.get(classification, 0) + 1
@@ -266,6 +267,7 @@ def _run_budget(model: Any, tokenizer: Any, torch_module: Any, rows: list[dict[s
             "valid_json_object": has_json,
             "schema_valid": schema_ok,
             "schema_failure_diagnostics": schema_diagnostics,
+            "completion_only_stopping": True,
             "parse_classification": classification,
             "completion_text": decoded,
             "repetition": _repetition_stat(completion_list, decoded),

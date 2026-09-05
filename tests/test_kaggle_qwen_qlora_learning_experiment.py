@@ -108,6 +108,37 @@ def test_generation_termination_reason_is_based_on_actual_completion_tokens():
     assert experiment._generation_termination_reason([], generated_tokens=0, max_new_tokens=3, eos_token_id=151645) == "NO_GENERATION"
 
 
+def test_generation_termination_reason_reports_complete_json():
+    assert experiment._generation_termination_reason([1, 2], generated_tokens=2, max_new_tokens=192, eos_token_id=151645, decoded_text=' {"ok":true}') == "COMPLETE_JSON"
+
+
+def test_complete_json_stopping_criterion_handles_nested_values_and_strings():
+    class Tokenizer:
+        def decode(self, token_ids, skip_special_tokens=True):
+            del skip_special_tokens
+            return "".join(chr(token_id) for token_id in token_ids)
+
+    criterion = experiment._CompleteJsonStoppingCriterion(Tokenizer(), prompt_length=2)
+    generated = '  {"nested":{"items":["brace }", "bracket ]", "quote \\\"", "slash \\\\"]}} prose'
+    token_ids = [[100, 101] + [ord(char) for char in generated]]
+    assert criterion(token_ids) is True
+    incomplete = [[100, 101] + [ord(char) for char in ' {"nested":[1, 2}']]
+    assert criterion(incomplete) is False
+
+
+def test_complete_json_stopping_criterion_ignores_prompt_json():
+    class Tokenizer:
+        def decode(self, token_ids, skip_special_tokens=True):
+            del skip_special_tokens
+            return "".join(chr(token_id) for token_id in token_ids)
+
+    criterion = experiment._CompleteJsonStoppingCriterion(Tokenizer(), prompt_length=4)
+    prompt_only = [[ord("{"), ord("\""), ord("p"), ord("}"), ord(" ")]]
+    assert criterion(prompt_only) is False
+    with_completion = [[ord("{"), ord("\""), ord("p"), ord("}"), ord(" "), ord("{") , ord("}")]]
+    assert criterion(with_completion) is True
+
+
 def test_complete_first_json_object_survives_trailing_text():
     value = {"intent": "filter", "semantic_bindings": {}, "predicate_graph": {}, "aggregation": {}, "ranking": {}, "limit": None, "requires_fallback": False, "confidence": 1.0}
     text = json.dumps(value) + " trailing prose"

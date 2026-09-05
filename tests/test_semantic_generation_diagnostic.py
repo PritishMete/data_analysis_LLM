@@ -46,6 +46,12 @@ def test_generation_report_includes_safe_schema_failure_diagnostics():
     assert "completion_text" in SOURCE
 
 
+def test_generation_uses_completion_only_json_stopping_criterion():
+    assert "build_semantic_stopping_criteria" in SOURCE
+    assert "stopping_criteria=" in SOURCE
+    assert '"COMPLETE_JSON"' in Path(diagnostic._generation_termination_reason.__code__.co_filename).read_text(encoding="utf-8")
+
+
 def test_runner_exposes_generation_diagnostic_command():
     from scripts import kaggle_runner
 

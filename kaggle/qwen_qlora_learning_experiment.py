@@ -94,7 +94,7 @@ def _extract_first_json_object(text: str) -> str | None:
     start = text.find("{")
     if start < 0:
         return None
-    depth = 0
+    stack: list[str] = []
     in_string = False
     escaped = False
     for index in range(start, len(text)):
@@ -109,16 +109,41 @@ def _extract_first_json_object(text: str) -> str | None:
             continue
         if char == '"':
             in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
+        elif char in "{[":
+            stack.append(char)
+        elif char in "}]":
+            expected_open = "{" if char == "}" else "["
+            if not stack or stack[-1] != expected_open:
+                return None
+            stack.pop()
+            if not stack and char == "}":
                 return text[start : index + 1]
     return None
 
 
-def _generation_termination_reason(completion_ids: Any, *, generated_tokens: int, max_new_tokens: int, eos_token_id: Any) -> str:
+class _CompleteJsonStoppingCriterion:
+    """Stop generation after one complete JSON object in the new-token span."""
+
+    def __init__(self, tokenizer: Any, prompt_length: int) -> None:
+        self.tokenizer = tokenizer
+        self.prompt_length = prompt_length
+
+    def __call__(self, input_ids: Any, scores: Any = None, **kwargs: Any) -> bool:
+        del scores, kwargs
+        for sequence in input_ids:
+            completion_ids = sequence[self.prompt_length :]
+            text = self.tokenizer.decode(completion_ids, skip_special_tokens=True)
+            if _extract_first_json_object(text) is not None:
+                return True
+        return False
+
+
+def build_semantic_stopping_criteria(tokenizer: Any, prompt_length: int) -> list[Any]:
+    """Build completion-only stopping criteria without importing model packages."""
+    return [_CompleteJsonStoppingCriterion(tokenizer, prompt_length)]
+
+
+def _generation_termination_reason(completion_ids: Any, *, generated_tokens: int, max_new_tokens: int, eos_token_id: Any, decoded_text: str | None = None) -> str:
     if generated_tokens <= 0:
         return "NO_GENERATION"
     eos_ids = {int(eos_token_id)} if isinstance(eos_token_id, int) else {int(value) for value in (eos_token_id or [])}
@@ -128,6 +153,8 @@ def _generation_termination_reason(completion_ids: Any, *, generated_tokens: int
         last_token = None
     if last_token in eos_ids:
         return "EOS"
+    if decoded_text is not None and _extract_first_json_object(decoded_text) is not None:
+        return "COMPLETE_JSON"
     if generated_tokens >= max_new_tokens:
         return "MAX_NEW_TOKENS_REACHED"
     return "OTHER_STOPPING_CRITERION"
@@ -361,11 +388,11 @@ def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_modu
     for row in rows:
         encoded = tokenizer(build_semantic_prompt(row), return_tensors="pt", add_special_tokens=True, truncation=True, max_length=MAX_SEQUENCE_LENGTH).to("cuda:0")
         with torch_module.inference_mode():
-            generated = model.generate(**encoded, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
+            generated = model.generate(**encoded, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id, stopping_criteria=build_semantic_stopping_criteria(tokenizer, int(encoded["input_ids"].shape[-1])))
         completion_ids = generated[0][encoded["input_ids"].shape[-1] :]
         decoded = tokenizer.decode(completion_ids, skip_special_tokens=True)
         generated_tokens = int(completion_ids.shape[-1])
-        termination_reason = _generation_termination_reason(completion_ids, generated_tokens=generated_tokens, max_new_tokens=max_new_tokens, eos_token_id=tokenizer.eos_token_id)
+        termination_reason = _generation_termination_reason(completion_ids, generated_tokens=generated_tokens, max_new_tokens=max_new_tokens, eos_token_id=tokenizer.eos_token_id, decoded_text=decoded)
         prediction, parse_classification = _parse_prediction_diagnostic(decoded, generated_tokens=generated_tokens, max_new_tokens=max_new_tokens, termination_reason=termination_reason)
         classification_counts[parse_classification] = classification_counts.get(parse_classification, 0) + 1
         if not decoded.strip():
