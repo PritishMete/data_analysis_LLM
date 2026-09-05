@@ -21,7 +21,9 @@ from .qwen_qlora_learning_experiment import (
     _generation_termination_reason,
     _parse_prediction_diagnostic,
     _prediction_is_valid,
-    _prompt,
+    build_semantic_prompt,
+    schema_failure_diagnostics,
+    semantic_prompt_token_ids,
     _target_output,
     _version,
 )
@@ -204,10 +206,11 @@ def _target_eos_audit(tokenizer: Any, row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _template_audit(tokenizer: Any, row: dict[str, Any]) -> dict[str, Any]:
-    prompt = _prompt(row)
+    prompt = build_semantic_prompt(row)
     target = json.dumps(_target_output(row), sort_keys=True, separators=(",", ":"))
-    prompt_ids = tokenizer(prompt, add_special_tokens=True, truncation=False)["input_ids"]
-    full_ids = tokenizer(prompt + target, add_special_tokens=True, truncation=False)["input_ids"]
+    prompt_ids = semantic_prompt_token_ids(tokenizer, row)
+    target_ids = tokenizer(target, add_special_tokens=False, truncation=False)["input_ids"]
+    full_ids = prompt_ids + list(target_ids) + ([int(tokenizer.eos_token_id)] if tokenizer.eos_token_id is not None else [])
     prefix_match = full_ids[: len(prompt_ids)] == prompt_ids
     return {
         "chat_template_used": False,
@@ -229,7 +232,7 @@ def _run_budget(model: Any, tokenizer: Any, torch_module: Any, rows: list[dict[s
     classifications: dict[str, int] = {}
     valid_json = schema_valid = 0
     for row in rows:
-        encoded = tokenizer(_prompt(row), return_tensors="pt", truncation=False).to("cuda:0")
+        encoded = tokenizer(build_semantic_prompt(row), return_tensors="pt", add_special_tokens=True, truncation=False).to("cuda:0")
         input_tokens = int(encoded["input_ids"].shape[-1])
         with torch_module.inference_mode():
             generated = model.generate(**encoded, max_new_tokens=budget, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
@@ -246,6 +249,13 @@ def _run_budget(model: Any, tokenizer: Any, torch_module: Any, rows: list[dict[s
         valid_json += int(has_json)
         schema_ok = prediction is not None and _prediction_is_valid(prediction, row)
         schema_valid += int(schema_ok)
+        parsed_object = None
+        if object_text is not None:
+            try:
+                parsed_object = json.loads(object_text)
+            except (TypeError, ValueError):
+                parsed_object = None
+        schema_diagnostics = None if schema_ok else schema_failure_diagnostics(parsed_object)
         results.append({
             "intent": row["output"]["intent"],
             "input_tokens": input_tokens,
@@ -255,6 +265,7 @@ def _run_budget(model: Any, tokenizer: Any, torch_module: Any, rows: list[dict[s
             "termination_reason": termination,
             "valid_json_object": has_json,
             "schema_valid": schema_ok,
+            "schema_failure_diagnostics": schema_diagnostics,
             "parse_classification": classification,
             "completion_text": decoded,
             "repetition": _repetition_stat(completion_list, decoded),

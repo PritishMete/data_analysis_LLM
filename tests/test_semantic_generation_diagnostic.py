@@ -40,6 +40,12 @@ def test_template_and_eos_audits_are_structural_only():
     assert eos["target_eos_supervised"] is True
 
 
+def test_generation_report_includes_safe_schema_failure_diagnostics():
+    assert "schema_failure_diagnostics" in SOURCE
+    assert "schema_failure_diagnostics(parsed_object)" in SOURCE
+    assert "completion_text" in SOURCE
+
+
 def test_runner_exposes_generation_diagnostic_command():
     from scripts import kaggle_runner
 

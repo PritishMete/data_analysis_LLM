@@ -39,6 +39,40 @@ def test_label_masking_audit_supervises_only_target_span():
     assert '"supervised_labeling_verified": True' in SOURCE
 
 
+def test_training_and_inference_share_one_canonical_prompt_builder():
+    assert "def build_semantic_prompt" in SOURCE
+    assert "semantic_prompt_token_ids(tokenizer, row)" in SOURCE
+    assert "tokenizer(build_semantic_prompt(row)" in SOURCE
+    assert "\n_prompt(" not in SOURCE
+
+
+def test_schema_failure_diagnostics_are_structural_and_safe():
+    value = {"intent": 7, "requires_fallback": "no", "extra": True}
+    diagnostics = experiment.schema_failure_diagnostics(value)
+    assert "semantic_bindings" in diagnostics["missing_keys"]
+    assert diagnostics["unexpected_keys"] == ["extra"]
+    assert diagnostics["wrong_types"] == ["intent", "requires_fallback"]
+    assert diagnostics["invalid_shapes"] == []
+
+
+def test_schema_failure_diagnostics_detect_invalid_shapes():
+    diagnostics = experiment.schema_failure_diagnostics({
+        "intent": "filter",
+        "semantic_bindings": {},
+        "predicate_graph": {"logical_structure": []},
+        "aggregation": {"required": "yes"},
+        "ranking": {"required": 1},
+        "limit": None,
+        "requires_fallback": False,
+        "confidence": 1.0,
+    })
+    assert diagnostics["invalid_shapes"] == [
+        "aggregation.required",
+        "predicate_graph.logical_structure",
+        "ranking.required",
+    ]
+
+
 def test_validation_schedule_and_train_sanity_are_present():
     assert '"step_0"' in SOURCE
     assert "VALIDATION_STEPS = (0, 4, 8, 12, 16)" in SOURCE

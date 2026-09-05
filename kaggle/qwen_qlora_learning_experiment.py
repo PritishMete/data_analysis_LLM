@@ -76,8 +76,17 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _prompt(row: dict[str, Any]) -> str:
+def build_semantic_prompt(row: dict[str, Any]) -> str:
     return "Extract the semantic analytics contract. Return JSON only with exactly these keys: intent, semantic_bindings, predicate_graph, aggregation, ranking, limit, requires_fallback, confidence. INPUT=" + json.dumps(row.get("input") or {}, sort_keys=True, separators=(",", ":")) + " OUTPUT="
+
+
+# Backward-compatible internal name; all call sites use the canonical builder.
+_prompt = build_semantic_prompt
+
+
+def semantic_prompt_token_ids(tokenizer: Any, row: dict[str, Any]) -> list[int]:
+    """Return the exact assistant-prefix token sequence shared by train/infer."""
+    return list(tokenizer(build_semantic_prompt(row), add_special_tokens=True, truncation=False)["input_ids"])
 
 
 def _extract_first_json_object(text: str) -> str | None:
@@ -149,6 +158,45 @@ def _parse_prediction_diagnostic(text: str, *, generated_tokens: int, max_new_to
     if set(value) != ALLOWED_SEMANTIC_OUTPUT_KEYS:
         return None, "SCHEMA_INVALID"
     return value, "VALID_SEMANTIC_OUTPUT"
+
+
+def schema_failure_diagnostics(value: Any) -> dict[str, Any]:
+    """Describe schema failures without retaining generated values or raw text."""
+    expected = set(ALLOWED_SEMANTIC_OUTPUT_KEYS)
+    if not isinstance(value, dict):
+        return {"missing_keys": [], "unexpected_keys": [], "wrong_types": [], "invalid_shapes": ["not_object"]}
+    wrong_types = []
+    type_rules = {
+        "intent": str,
+        "semantic_bindings": (dict, list),
+        "predicate_graph": dict,
+        "aggregation": dict,
+        "ranking": dict,
+        "limit": (int, type(None)),
+        "requires_fallback": bool,
+        "confidence": (int, float),
+    }
+    for key, rule in type_rules.items():
+        if key in value and not isinstance(value[key], rule):
+            wrong_types.append(key)
+    invalid_shapes = []
+    predicate = value.get("predicate_graph")
+    if isinstance(predicate, dict):
+        logical = predicate.get("logical_structure")
+        if logical is not None and not isinstance(logical, str):
+            invalid_shapes.append("predicate_graph.logical_structure")
+    aggregation = value.get("aggregation")
+    if isinstance(aggregation, dict) and "required" in aggregation and not isinstance(aggregation["required"], bool):
+        invalid_shapes.append("aggregation.required")
+    ranking = value.get("ranking")
+    if isinstance(ranking, dict) and "required" in ranking and not isinstance(ranking["required"], bool):
+        invalid_shapes.append("ranking.required")
+    return {
+        "missing_keys": sorted(expected - set(value)),
+        "unexpected_keys": sorted(set(value) - expected),
+        "wrong_types": sorted(wrong_types),
+        "invalid_shapes": sorted(invalid_shapes),
+    }
 
 
 def _parse_prediction(text: str) -> dict[str, Any] | None:
@@ -275,19 +323,19 @@ def _install_peft() -> dict[str, Any]:
 def _tokenize_supervised(tokenizer: Any, row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
     import torch
 
-    prompt_ids = tokenizer(_prompt(row), add_special_tokens=True, truncation=False)["input_ids"]
+    prompt_ids = semantic_prompt_token_ids(tokenizer, row)
     target_text = json.dumps(_target_output(row), sort_keys=True, separators=(",", ":"))
-    full = tokenizer(_prompt(row) + target_text, return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH - 1, padding=False)
-    input_ids = full["input_ids"]
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     if eos_token_id is None:
         raise RuntimeError("TARGET_EOS_TOKEN_MISSING")
-    eos = input_ids.new_tensor([[int(eos_token_id)]])
-    input_ids = torch.cat((input_ids, eos), dim=-1)
-    full["input_ids"] = input_ids
-    if "attention_mask" in full:
-        full["attention_mask"] = torch.cat((full["attention_mask"], full["attention_mask"].new_ones((1, 1))), dim=-1)
-    prompt_count = min(len(prompt_ids), int(input_ids.shape[-1]))
+    target_ids = list(tokenizer(target_text, add_special_tokens=False)["input_ids"])
+    available_target = MAX_SEQUENCE_LENGTH - len(prompt_ids) - 1
+    if available_target <= 0:
+        raise RuntimeError("PROMPT_EXCEEDS_SEQUENCE_LIMIT")
+    sequence = prompt_ids + target_ids[:available_target] + [int(eos_token_id)]
+    input_ids = torch.tensor([sequence], dtype=torch.long)
+    full = {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
+    prompt_count = len(prompt_ids)
     labels = input_ids.clone()
     labels[:, :prompt_count] = -100
     supervised = int((labels != -100).sum().item())
@@ -311,7 +359,7 @@ def _evaluate(model: Any, tokenizer: Any, rows: list[dict[str, Any]], torch_modu
     classification_counts: dict[str, int] = {}
     model.eval()
     for row in rows:
-        encoded = tokenizer(_prompt(row), return_tensors="pt", truncation=True, max_length=MAX_SEQUENCE_LENGTH).to("cuda:0")
+        encoded = tokenizer(build_semantic_prompt(row), return_tensors="pt", add_special_tokens=True, truncation=True, max_length=MAX_SEQUENCE_LENGTH).to("cuda:0")
         with torch_module.inference_mode():
             generated = model.generate(**encoded, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
         completion_ids = generated[0][encoded["input_ids"].shape[-1] :]
@@ -502,7 +550,7 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         reload_base = AutoModelForCausalLM.from_pretrained(MODEL_ID, quantization_config=quantization, device_map={"": 0}, torch_dtype=torch.float16, trust_remote_code=True)
         reload_model = PeftModel.from_pretrained(reload_base, final_dir)
         reload_model.eval()
-        reload_inputs = tokenizer(_prompt(validation_rows[0]), return_tensors="pt").to("cuda:0")
+        reload_inputs = tokenizer(build_semantic_prompt(validation_rows[0]), return_tensors="pt", add_special_tokens=True).to("cuda:0")
         with torch.inference_mode():
             reload_model.generate(**reload_inputs, max_new_tokens=tokenization["generation_max_new_tokens"], do_sample=False, pad_token_id=pad_id, eos_token_id=eos_id)
         all_eval_metrics = list(evaluations.values()) + [train_sanity]
