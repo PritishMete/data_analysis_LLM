@@ -208,10 +208,15 @@ payload = {
     "required_cuda_symbols": {},
     "diagnostic_first_error": None,
 }
-try:
-    payload["available_cuda_versions"] = list(cextension.get_available_cuda_binary_versions())
-except Exception as exc:
-    payload["available_cuda_versions_error"] = str(exc)
+if hasattr(cextension, "get_available_cuda_binary_versions"):
+    try:
+        payload["available_cuda_versions"] = list(cextension.get_available_cuda_binary_versions())
+        payload["available_cuda_versions_status"] = "reported"
+    except Exception as exc:
+        payload["available_cuda_versions_status"] = "probe_error"
+        payload["available_cuda_versions_error"] = str(exc)[:500]
+else:
+    payload["available_cuda_versions_status"] = "unsupported_by_version"
 try:
     available_versions = payload.get("available_cuda_versions") or []
     torch_cuda_version = payload.get("torch_cuda_version")

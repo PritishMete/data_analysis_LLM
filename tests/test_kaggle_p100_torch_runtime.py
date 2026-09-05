@@ -64,6 +64,40 @@ def test_canonical_bnb_probe_has_subprocess_dependency():
     assert "def _probe_bitsandbytes_runtime" in source
 
 
+def test_bnb_optional_cuda_enumeration_is_feature_detected():
+    source = Path(bootstrap.__file__).read_text(encoding="utf-8")
+    cycle_source = Path(bnb_compat_cycle.__file__).read_text(encoding="utf-8")
+
+    assert 'if hasattr(cextension, "get_available_cuda_binary_versions"):' in source
+    assert 'if hasattr(cextension, "get_available_cuda_binary_versions"):' in cycle_source
+    assert '"available_cuda_versions_status": "unsupported_by_version"' in source
+
+
+def test_canonical_bnb_gate_uses_real_finite_cuda_output():
+    source = Path(bootstrap.__file__).read_text(encoding="utf-8")
+
+    assert '"version_match": bnb.__version__ == "0.43.3"' in source
+    assert '"native_library_loaded": False' in source
+    assert "torch.isfinite(restored).all().item()" in source
+
+
+def test_missing_optional_bnb_api_does_not_block_verified_stack():
+    versions = {
+        "torch": "2.5.1+cu118",
+        "transformers": "4.46.3",
+        "tokenizers": "0.20.3",
+        "accelerate": "1.13.0",
+        "peft": "0.13.2",
+        "bitsandbytes": "0.43.3",
+        "huggingface-hub": "0.26.2",
+    }
+    torch_probe = {"json": {"version": "2.5.1+cu118", "cuda": "11.8", "available": True, "capability": [6, 0], "arch_list": ["sm_60"]}}
+    bnb_probe = {"ok": True, "json": {"real_bnb_cuda_operation": True}}
+    nf4_probe = {"json": {"initialization": True, "quantization": True, "dequantization": True, "cuda": True}}
+
+    assert bootstrap_environment._stack_verified(versions=versions, torch_probe=torch_probe, bnb_probe=bnb_probe, nf4_probe=nf4_probe)
+
+
 def test_bnb_install_snippet_uses_no_deps():
     assert "--no-deps" in bnb_compat_cycle._installer_snippet()
 

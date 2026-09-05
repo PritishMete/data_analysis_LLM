@@ -236,16 +236,38 @@ print(json.dumps(payload))
 def _probe_bitsandbytes_runtime() -> dict[str, Any]:
     snippet = """
 import json
+import ctypes
 import torch
 from bitsandbytes import cextension
 import bitsandbytes as bnb
 payload = {
     "version": bnb.__version__,
-    "available_cuda_versions": cextension.get_available_cuda_binary_versions(),
+    "version_expected": "0.43.3",
+    "version_match": bnb.__version__ == "0.43.3",
+    "available_cuda_versions": None,
+    "available_cuda_versions_status": "unsupported_by_version",
     "cuda_backend_active": False,
     "real_bnb_cuda_operation": False,
+    "native_library_loaded": False,
+    "native_library": None,
     "real_bnb_cuda_error": None,
 }
+if hasattr(cextension, "get_available_cuda_binary_versions"):
+    try:
+        payload["available_cuda_versions"] = list(cextension.get_available_cuda_binary_versions())
+        payload["available_cuda_versions_status"] = "reported"
+    except Exception as exc:
+        payload["available_cuda_versions_status"] = "probe_error"
+        payload["available_cuda_versions_error"] = str(exc)[:500]
+try:
+    native = getattr(cextension, "lib", None)
+    native_path = getattr(native, "_name", None) or getattr(native, "__file__", None)
+    payload["native_library"] = native_path
+    if native_path:
+        ctypes.CDLL(str(native_path), mode=getattr(ctypes, "RTLD_GLOBAL", 0))
+        payload["native_library_loaded"] = True
+except Exception as exc:
+    payload["native_library_error"] = str(exc)[:500]
 try:
     specs = cextension.get_cuda_specs()
     payload["cuda_specs"] = {
@@ -262,7 +284,7 @@ if torch.cuda.is_available():
         quantized = functional.quantize_4bit(tensor, quant_type="nf4")
         restored = functional.dequantize_4bit(*quantized) if isinstance(quantized, (tuple, list)) else functional.dequantize_4bit(quantized)
         torch.cuda.synchronize()
-        payload["real_bnb_cuda_operation"] = bool(getattr(restored, "is_cuda", False))
+        payload["real_bnb_cuda_operation"] = bool(getattr(restored, "is_cuda", False)) and bool(torch.isfinite(restored).all().item())
         payload["cuda_backend_active"] = payload["real_bnb_cuda_operation"]
     except Exception as exc:
         payload["real_bnb_cuda_error"] = str(exc)[:500]

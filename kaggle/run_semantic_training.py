@@ -331,8 +331,16 @@ from bitsandbytes import cextension
 import bitsandbytes as bnb
 payload = {
     "version": bnb.__version__,
-    "available_cuda_versions": cextension.get_available_cuda_binary_versions(),
+    "available_cuda_versions": None,
+    "available_cuda_versions_status": "unsupported_by_version",
 }
+if hasattr(cextension, "get_available_cuda_binary_versions"):
+    try:
+        payload["available_cuda_versions"] = list(cextension.get_available_cuda_binary_versions())
+        payload["available_cuda_versions_status"] = "reported"
+    except Exception as exc:
+        payload["available_cuda_versions_status"] = "probe_error"
+        payload["available_cuda_versions_error"] = str(exc)[:500]
 try:
     specs = cextension.get_cuda_specs()
     payload["cuda_specs"] = {
