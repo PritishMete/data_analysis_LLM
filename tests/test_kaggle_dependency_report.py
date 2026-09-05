@@ -84,3 +84,9 @@ def test_bootstrap_public_entrypoint_is_exception_safe():
     assert "def _run_bootstrap" in source
     assert "return _run_bootstrap(argv)" in source
     assert "_finalize_unexpected_failure(argv, exc)" in source
+
+
+def test_bootstrap_json_probe_is_imported_before_runtime_use():
+    source = Path(bootstrap_environment.__file__).read_text(encoding="utf-8")
+    assert hasattr(bootstrap_environment, "_safe_run_json_probe")
+    assert source.index("_safe_run_json_probe,") < source.index("def _probe_nf4_runtime")
