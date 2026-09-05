@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
 import pytest
 
+from kaggle import bootstrap_environment
 from kaggle.dependency_report import (
     DependencyReportError,
     dependency_report_allows_model_load,
@@ -61,3 +63,24 @@ def test_boolean_fields_must_be_booleans():
     payload["install_success"] = "true"
     with pytest.raises(DependencyReportError, match="must be boolean"):
         validate_dependency_report(payload)
+
+
+def test_unexpected_bootstrap_failure_publishes_terminal_failed_report(tmp_path, monkeypatch):
+    monkeypatch.delenv("KAGGLE_RUN_DIR", raising=False)
+    bootstrap_environment._finalize_unexpected_failure(
+        ["--output-root", str(tmp_path), "--run-id", "run-failure"],
+        RuntimeError("safe bootstrap failure"),
+    )
+
+    saved = json.loads((tmp_path / "smoke_runs" / "run-failure" / "dependency_install_result.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "FAILED"
+    assert saved["install_success"] is False
+    assert saved["stack_verified"] is False
+    assert saved["unexpected_exception"] is True
+
+
+def test_bootstrap_public_entrypoint_is_exception_safe():
+    source = Path(bootstrap_environment.__file__).read_text(encoding="utf-8")
+    assert "def _run_bootstrap" in source
+    assert "return _run_bootstrap(argv)" in source
+    assert "_finalize_unexpected_failure(argv, exc)" in source

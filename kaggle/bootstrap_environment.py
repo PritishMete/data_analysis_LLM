@@ -259,7 +259,7 @@ def _stack_verified(*, versions: dict[str, str | None], torch_probe: dict[str, A
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_bootstrap(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", default=str(KAGGLE_WORKING_ROOT))
     parser.add_argument("--run-id", default=None)
@@ -394,6 +394,48 @@ def main(argv: list[str] | None = None) -> int:
     install_result["schema_version"] = "1.0"
     _finalize_dependency_report(dependency_report_path, install_result)
     return 0 if install_result["status"] == "SUCCESS" else 1
+
+
+def _finalize_unexpected_failure(argv: list[str] | None, exc: BaseException) -> None:
+    """Publish a terminal failure when an unexpected bootstrap error escapes."""
+    values = argv or sys.argv[1:]
+    parsed: dict[str, str] = {}
+    for index, value in enumerate(values):
+        if value.startswith("--") and index + 1 < len(values):
+            parsed[value[2:].replace("-", "_")] = values[index + 1]
+    output_root = Path(parsed.get("output_root") or KAGGLE_WORKING_ROOT)
+    run_id = parsed.get("run_id") or os.environ.get("KAGGLE_SMOKE_RUN_ID") or "unknown"
+    run_root = Path(os.environ["KAGGLE_RUN_DIR"]) if os.environ.get("KAGGLE_RUN_DIR") else ensure_run_root(run_id, base_root=output_root / "smoke_runs")
+    report_path = run_root / "dependency_install_result.json"
+    message = str(exc).replace("\n", " ")
+    report = {
+        "schema_version": "1.0",
+        "status": "FAILED",
+        "run_id": run_id,
+        "stage": "dependencies",
+        "install_success": False,
+        "stack_verified": False,
+        "install_attempted": True,
+        "failed_dependency": None,
+        "failed_command": None,
+        "exit_code": None,
+        "stderr_safe_tail": _safe_tail(message),
+        "classification": type(exc).__name__,
+        "reason": message[:1000],
+        "unexpected_exception": True,
+    }
+    try:
+        _finalize_dependency_report(report_path, report)
+    except Exception as finalize_exc:
+        print("DEPENDENCY_REPORT_FINALIZATION_FAILED=" + type(finalize_exc).__name__, flush=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _run_bootstrap(argv)
+    except BaseException as exc:
+        _finalize_unexpected_failure(argv, exc)
+        raise
 
 
 if __name__ == "__main__":
