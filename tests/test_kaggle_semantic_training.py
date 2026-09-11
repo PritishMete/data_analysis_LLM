@@ -555,6 +555,32 @@ def test_canonical_dependency_gate_rejects_unverified_runtime_probes(tmp_path):
     assert "sm60_requires_compatible_torch_and_bitsandbytes" not in str(result)
 
 
+def test_canonical_dependency_gate_reads_outer_bootstrap_report_for_nested_run(tmp_path, monkeypatch):
+    run_id = "run-nested"
+    report = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "stage": "dependencies",
+        "status": "SUCCESS",
+        "install_success": True,
+        "stack_verified": True,
+        "postinstall_torch": {"json": {"available": True, "capability": [6, 0], "arch_list": ["sm_60"]}},
+        "shared_torch_bootstrap": {"basic_cuda_tensor_test": True},
+        "postinstall_bnb": {"json": {"real_bnb_cuda_operation": True}},
+        "nf4_probe": {"json": {key: True for key in ("initialization", "quantization", "dequantization", "cuda")}},
+    }
+    outer = tmp_path / run_id
+    nested = outer / "smoke_runs" / run_id
+    (outer / "dependency_install_result.json").parent.mkdir(parents=True)
+    (outer / "dependency_install_result.json").write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.setenv("KAGGLE_SMOKE_RUN_ID", run_id)
+
+    result = _canonical_dependency_compatibility_gate(nested)
+
+    assert result["allowed"] is True
+    assert result["report_path"] == str(outer / "dependency_install_result.json")
+
+
 def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
     import importlib
     import sys

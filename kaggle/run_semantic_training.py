@@ -503,16 +503,27 @@ def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_pa
     }
 
 
-def _canonical_dependency_compatibility_gate(report_root: Path) -> dict[str, Any]:
+def _canonical_dependency_compatibility_gate(report_root: Path, *, run_id: str | None = None) -> dict[str, Any]:
     """Use the finalized bootstrap report as the model-load compatibility gate."""
-    report_path = report_root / "dependency_install_result.json"
-    if not report_path.exists():
+    report_candidates = [report_root / "dependency_install_result.json"]
+    # The notebook bootstrap writes to KAGGLE_RUN_DIR, while the legacy smoke
+    # executor may place its flow under that run directory's smoke_runs child.
+    report_candidates.extend(
+        parent / "dependency_install_result.json"
+        for parent in (report_root.parent, report_root.parent.parent)
+        if parent != report_root
+    )
+    report_path = next((path for path in report_candidates if path.exists()), None)
+    if report_path is None:
         return {"allowed": False, "reason": "DEPENDENCY_REPORT_MISSING"}
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"allowed": False, "reason": "DEPENDENCY_REPORT_INVALID", "detail": str(exc)[:500]}
 
+    expected_run_id = run_id
+    if expected_run_id and report.get("run_id") != expected_run_id:
+        return {"allowed": False, "reason": "DEPENDENCY_REPORT_RUN_ID_MISMATCH"}
     gate = dependency_report_allows_model_load(report)
     if not gate.get("allowed"):
         return gate
@@ -538,7 +549,7 @@ def _canonical_dependency_compatibility_gate(report_root: Path) -> dict[str, Any
     )
     if not required_probe_evidence:
         return {"allowed": False, "reason": "RUNTIME_PROBES_NOT_VERIFIED"}
-    return {"allowed": True, "reason": "SUCCESS", "report": report}
+    return {"allowed": True, "reason": "SUCCESS", "report": report, "report_path": str(report_path)}
 
 
 def _safe_probe_result(result: subprocess.CompletedProcess[str], *, label: str) -> dict[str, Any]:
@@ -1297,7 +1308,7 @@ def run_notebook_flow(
     _stage_guard(stage="dependencies_started", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     runtime_packages = _ensure_runtime_packages(preflight=dependency_preflight)
     _stage_guard(stage="dependencies_complete", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="runtime packages checked", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
-    dependency_gate = _canonical_dependency_compatibility_gate(run_root)
+    dependency_gate = _canonical_dependency_compatibility_gate(run_root, run_id=resolved_run_id)
     post_install_preflight = {
         "canonical_report_path": str(run_root / "dependency_install_result.json"),
         "model_load_gate": dependency_gate,
