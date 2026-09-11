@@ -563,6 +563,53 @@ def _canonical_dependency_compatibility_gate(
     return {"allowed": True, "reason": "SUCCESS", "report": report, "report_path": str(report_path)}
 
 
+def _build_post_install_preflight_result(
+    *,
+    report_path: Path,
+    model_load_gate: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    """Build the single handoff shape shared by gating and final reporting."""
+    allowed = model_load_gate.get("allowed")
+    reason = model_load_gate.get("reason")
+    if not isinstance(allowed, bool) or not isinstance(reason, str):
+        return {
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "canonical_report_path": str(report_path),
+            "model_load_gate": model_load_gate,
+            "allowed": False,
+            "reason": "DEPENDENCY_PREFLIGHT_RESULT_INVALID",
+        }
+    return {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "canonical_report_path": str(report_path),
+        "model_load_gate": model_load_gate,
+        "allowed": allowed,
+        "reason": reason,
+    }
+
+
+def _validate_post_install_preflight_result(
+    result: Any,
+    *,
+    expected_run_id: str,
+) -> dict[str, Any]:
+    """Validate the canonical post-install handoff without assuming success."""
+    required = {"schema_version", "run_id", "canonical_report_path", "model_load_gate", "allowed", "reason"}
+    if not isinstance(result, dict) or not required.issubset(result):
+        return {"valid": False, "reason": "DEPENDENCY_PREFLIGHT_RESULT_INVALID"}
+    if result.get("schema_version") != "1.0" or result.get("run_id") != expected_run_id:
+        return {"valid": False, "reason": "DEPENDENCY_PREFLIGHT_RESULT_INVALID"}
+    if not isinstance(result.get("canonical_report_path"), str) or not isinstance(result.get("allowed"), bool) or not isinstance(result.get("reason"), str):
+        return {"valid": False, "reason": "DEPENDENCY_PREFLIGHT_RESULT_INVALID"}
+    gate = result.get("model_load_gate")
+    if not isinstance(gate, dict) or gate.get("allowed") != result["allowed"] or gate.get("reason") != result["reason"]:
+        return {"valid": False, "reason": "DEPENDENCY_PREFLIGHT_RESULT_INVALID"}
+    return {"valid": True, "allowed": result["allowed"], "reason": result["reason"]}
+
+
 def _normalize_runtime_payload(payload: Any) -> dict[str, Any]:
     """Merge wrapped probe JSON with sibling evidence from the same report."""
     if not isinstance(payload, dict):
@@ -1343,12 +1390,19 @@ def run_notebook_flow(
         dependency_report_path=dependency_report_path,
         run_id=resolved_run_id,
     )
-    post_install_preflight = {
-        "canonical_report_path": str(run_root / "dependency_install_result.json"),
-        "model_load_gate": dependency_gate,
-    }
-    if not dependency_gate.get("allowed"):
-        failure_reason = dependency_gate.get("reason") or "dependency_preflight_failed"
+    post_install_preflight = _build_post_install_preflight_result(
+        report_path=run_root / "dependency_install_result.json",
+        model_load_gate=dependency_gate,
+        run_id=resolved_run_id,
+    )
+    post_install_validation = _validate_post_install_preflight_result(post_install_preflight, expected_run_id=resolved_run_id)
+    if not post_install_validation.get("valid"):
+        failure_reason = post_install_validation.get("reason") or "DEPENDENCY_PREFLIGHT_RESULT_INVALID"
+        exc = RuntimeError(failure_reason)
+        _write_smoke_failure(report_root=run_root, stage="dependency_compatibility_preflight", exc=exc, torch_module=None, run_id=resolved_run_id)
+        raise exc
+    if not post_install_preflight["allowed"]:
+        failure_reason = post_install_preflight["reason"] or "dependency_preflight_failed"
         exc = RuntimeError(failure_reason)
         _write_smoke_failure(report_root=run_root, stage="dependency_compatibility_preflight", exc=exc, torch_module=None, run_id=resolved_run_id)
         raise exc
@@ -1418,7 +1472,7 @@ def run_notebook_flow(
         "semantic_dataset_root": semantic_data["semantic_output_root"],
         "dependency_preflight": dependency_preflight,
         "dependency_post_install_preflight": post_install_preflight,
-        "dependency_preflight_passed": bool(post_install_preflight["preflight"].get("compatibility_passed")),
+        "dependency_preflight_passed": post_install_preflight["allowed"],
         "canonical_row_counts": {
             "train": int(semantic_data["bundle_report"].get("train_count", 0)),
             "validation": int(semantic_data["bundle_report"].get("validation_count", 0)),

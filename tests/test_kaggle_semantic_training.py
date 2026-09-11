@@ -19,7 +19,7 @@ from kaggle.bootstrap import (
     write_dependency_preflight_report,
 )
 from kaggle.run_context import resolve_executed_source_commit, write_source_identity
-from kaggle.run_semantic_training import _build_smoke_corpus, _canonical_dependency_compatibility_gate, _dependency_probe_snippets, _normalize_runtime_payload, _patch_torch_dynamo_compatibility, _run_python_probe, _smoke_split_targets
+from kaggle.run_semantic_training import _build_post_install_preflight_result, _build_smoke_corpus, _canonical_dependency_compatibility_gate, _dependency_probe_snippets, _normalize_runtime_payload, _patch_torch_dynamo_compatibility, _run_python_probe, _smoke_split_targets, _validate_post_install_preflight_result
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
 
 
@@ -565,6 +565,59 @@ def test_canonical_dependency_gate_allows_proven_p100_stack(tmp_path):
     assert result["allowed"] is True
     assert result["reason"] == "SUCCESS"
 
+
+def test_version_91_post_install_preflight_shape_reaches_report_assembly(tmp_path):
+    run_id = "run-version-91"
+    gate = {"allowed": True, "reason": "SUCCESS", "report": {"stack_verified": True}}
+    result = _build_post_install_preflight_result(
+        report_path=tmp_path / "dependency_install_result.json",
+        model_load_gate=gate,
+        run_id=run_id,
+    )
+
+    assert result == {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "canonical_report_path": str(tmp_path / "dependency_install_result.json"),
+        "model_load_gate": gate,
+        "allowed": True,
+        "reason": "SUCCESS",
+    }
+    assert _validate_post_install_preflight_result(result, expected_run_id=run_id) == {
+        "valid": True,
+        "allowed": True,
+        "reason": "SUCCESS",
+    }
+
+    source = Path("kaggle/run_semantic_training.py").read_text(encoding="utf-8")
+    assert 'post_install_preflight["preflight"]' not in source
+    assert '"dependency_preflight_passed": post_install_preflight["allowed"]' in source
+
+
+def test_post_install_preflight_rejects_malformed_or_failed_results(tmp_path):
+    run_id = "run-version-91"
+    gate = {"allowed": True, "reason": "SUCCESS"}
+    valid = _build_post_install_preflight_result(
+        report_path=tmp_path / "dependency_install_result.json",
+        model_load_gate=gate,
+        run_id=run_id,
+    )
+
+    malformed = dict(valid)
+    malformed.pop("model_load_gate")
+    assert _validate_post_install_preflight_result(malformed, expected_run_id=run_id)["reason"] == "DEPENDENCY_PREFLIGHT_RESULT_INVALID"
+
+    failed_gate = {"allowed": False, "reason": "DEPENDENCY_REPORT_MISSING"}
+    failed = _build_post_install_preflight_result(
+        report_path=tmp_path / "dependency_install_result.json",
+        model_load_gate=failed_gate,
+        run_id=run_id,
+    )
+    assert _validate_post_install_preflight_result(failed, expected_run_id=run_id) == {
+        "valid": True,
+        "allowed": False,
+        "reason": "DEPENDENCY_REPORT_MISSING",
+    }
 
 def test_version_90_runtime_payload_normalization_preserves_sibling_cuda_evidence(tmp_path):
     report = {
