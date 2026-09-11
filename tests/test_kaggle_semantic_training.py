@@ -19,7 +19,7 @@ from kaggle.bootstrap import (
     write_dependency_preflight_report,
 )
 from kaggle.run_context import resolve_executed_source_commit, write_source_identity
-from kaggle.run_semantic_training import _build_smoke_corpus, _canonical_dependency_compatibility_gate, _dependency_probe_snippets, _patch_torch_dynamo_compatibility, _smoke_split_targets
+from kaggle.run_semantic_training import _build_smoke_corpus, _canonical_dependency_compatibility_gate, _dependency_probe_snippets, _patch_torch_dynamo_compatibility, _run_python_probe, _smoke_split_targets
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
 
 
@@ -458,12 +458,51 @@ def test_torch_dynamo_compatibility_patch_adds_missing_skip_code():
 def test_dependency_probe_snippets_add_repo_root_to_sys_path():
     snippets = _dependency_probe_snippets()
     for snippet in snippets.values():
-        assert "pathlib.Path.cwd()" in snippet
+        assert 'os.environ["KAGGLE_PROBE_SOURCE_ROOT"]' in snippet
         assert "sys.path.insert(0, str(repo_root))" in snippet
         assert "from src.training.torch_compat import ensure_torch_dynamo_compatibility" in snippet
 
 
+def test_nested_probe_propagates_current_source_root_and_existing_pythonpath(monkeypatch, tmp_path):
+    (tmp_path / "src").mkdir()
+    captured = {}
+
+    class FakeProcess:
+        pid = 2468
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            captured["timeout"] = timeout
+            return '{"ok": true}', ""
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setenv("PYTHONPATH", "existing-probe-path")
+    monkeypatch.setattr("kaggle.run_semantic_training.subprocess.Popen", fake_popen)
+
+    result = _run_python_probe(
+        "print('{}')",
+        timeout=17,
+        phase="test",
+        label="torch",
+        source_root=tmp_path,
+    )
+
+    env = captured["kwargs"]["env"]
+    assert captured["kwargs"]["cwd"] == str(tmp_path.resolve())
+    assert env["KAGGLE_PROBE_SOURCE_ROOT"] == str(tmp_path.resolve())
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(tmp_path.resolve()), "existing-probe-path"]
+    assert captured["timeout"] == 17
+    assert result["ok"] is True
+
+
 def test_dependency_compatibility_preflight_writes_isolated_probe_artifacts(tmp_path, monkeypatch):
+    source_root = tmp_path / "source_checkout"
+    source_root.joinpath("src").mkdir(parents=True)
+    nested_root = tmp_path / "outer_run" / "smoke_runs" / "run-89"
     probes = {
         "compat": {"ok": True, "parent_pid": 11, "child_pid": 22, "returncode": 0, "signal": None, "timed_out": False, "stdout": '{"torch_imported": true}', "stderr": "", "json": {"torch_imported": True}},
         "torch_import": {"ok": True, "parent_pid": 11, "child_pid": 23, "returncode": 0, "signal": None, "timed_out": False, "stdout": '{"version": "2.6.0+cu124", "cuda": "12.4", "available": true}', "stderr": "", "json": {"version": "2.6.0+cu124", "cuda": "12.4", "available": True}},
@@ -479,11 +518,12 @@ def test_dependency_compatibility_preflight_writes_isolated_probe_artifacts(tmp_
         "bitsandbytes": "bitsandbytes",
         "nf4": "nf4",
     })
-    monkeypatch.setattr("kaggle.run_semantic_training._run_python_probe", lambda snippet, *, timeout, phase, label: probes[label])
+    monkeypatch.setattr("kaggle.run_semantic_training._run_python_probe", lambda snippet, *, timeout, phase, label, source_root: probes[label])
 
     result = __import__("kaggle.run_semantic_training", fromlist=["_run_dependency_compatibility_preflight"])._run_dependency_compatibility_preflight(  # type: ignore[attr-defined]
-        report_root=tmp_path,
-        breadcrumbs_path=tmp_path / "smoke_breadcrumbs.jsonl",
+        report_root=nested_root,
+        breadcrumbs_path=nested_root / "smoke_breadcrumbs.jsonl",
+        source_root=source_root,
     )
 
     for name in [
@@ -493,7 +533,7 @@ def test_dependency_compatibility_preflight_writes_isolated_probe_artifacts(tmp_
         "probe_bitsandbytes_runtime.json",
         "probe_nf4_runtime.json",
     ]:
-        assert (tmp_path / "reports" / name).exists()
+        assert (nested_root / "reports" / name).exists()
     assert result["preflight"]["compatibility_passed"] is True
 
 

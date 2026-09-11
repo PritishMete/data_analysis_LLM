@@ -231,12 +231,11 @@ def _patch_torch_dynamo_compatibility(torch_module: Any | None) -> bool:
 
 def _dependency_probe_snippets() -> dict[str, str]:
     compat_snippet = """
+import os
 import json
 import pathlib
 import sys
-repo_root = pathlib.Path.cwd()
-if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
-    repo_root = repo_root.parent
+repo_root = pathlib.Path(os.environ["KAGGLE_PROBE_SOURCE_ROOT"])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 from src.training.torch_compat import ensure_torch_dynamo_compatibility
@@ -266,12 +265,11 @@ payload = {
 print(json.dumps(payload))
 """
     torch_import_snippet = """
+import os
 import json
 import pathlib
 import sys
-repo_root = pathlib.Path.cwd()
-if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
-    repo_root = repo_root.parent
+repo_root = pathlib.Path(os.environ["KAGGLE_PROBE_SOURCE_ROOT"])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 from src.training.torch_compat import ensure_torch_dynamo_compatibility
@@ -288,12 +286,11 @@ if payload["available"]:
 print(json.dumps(payload))
 """
     torch_cuda_snippet = """
+import os
 import json
 import pathlib
 import sys
-repo_root = pathlib.Path.cwd()
-if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
-    repo_root = repo_root.parent
+repo_root = pathlib.Path(os.environ["KAGGLE_PROBE_SOURCE_ROOT"])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 from src.training.torch_compat import ensure_torch_dynamo_compatibility
@@ -318,12 +315,11 @@ if payload["available"]:
 print(json.dumps(payload))
 """
     bitsandbytes_snippet = """
+import os
 import json
 import pathlib
 import sys
-repo_root = pathlib.Path.cwd()
-if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
-    repo_root = repo_root.parent
+repo_root = pathlib.Path(os.environ["KAGGLE_PROBE_SOURCE_ROOT"])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 from src.training.torch_compat import ensure_torch_dynamo_compatibility
@@ -354,12 +350,11 @@ except Exception as exc:
 print(json.dumps(payload))
 """
     nf4_snippet = """
+import os
 import json
 import pathlib
 import sys
-repo_root = pathlib.Path.cwd()
-if not (repo_root / "src").exists() and (repo_root.parent / "src").exists():
-    repo_root = repo_root.parent
+repo_root = pathlib.Path(os.environ["KAGGLE_PROBE_SOURCE_ROOT"])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 from src.training.torch_compat import ensure_torch_dynamo_compatibility
@@ -388,8 +383,28 @@ print(json.dumps(payload))
     }
 
 
-def _run_python_probe(snippet: str, *, timeout: int, phase: str, label: str) -> dict[str, Any]:
-    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+def _run_python_probe(
+    snippet: str,
+    *,
+    timeout: int,
+    phase: str,
+    label: str,
+    source_root: Path,
+) -> dict[str, Any]:
+    source_root = source_root.resolve()
+    if not source_root.is_dir() or not (source_root / "src").is_dir():
+        raise RuntimeError("PROBE_SOURCE_ROOT_INVALID")
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    pythonpath = str(source_root)
+    if existing_pythonpath:
+        pythonpath = os.pathsep.join((pythonpath, existing_pythonpath))
+    env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "KAGGLE_PROBE_SOURCE_ROOT": str(source_root),
+        "PYTHONPATH": pythonpath,
+    }
     proc = subprocess.Popen(
         [sys.executable, "-c", snippet],
         stdout=subprocess.PIPE,
@@ -397,7 +412,7 @@ def _run_python_probe(snippet: str, *, timeout: int, phase: str, label: str) -> 
         text=True,
         encoding="utf-8",
         errors="replace",
-        cwd=str(Path.cwd()),
+        cwd=str(source_root),
         env=env,
     )
     timed_out = False
@@ -469,16 +484,16 @@ def _write_probe_artifact(report_root: Path, *, probe_name: str, probe: dict[str
     return _write_json(path, payload)
 
 
-def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_path: Path) -> dict[str, Any]:
+def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_path: Path, source_root: Path) -> dict[str, Any]:
     _write_smoke_heartbeat(report_root, stage="dependency_compatibility_preflight")
     _emit_smoke_stage(breadcrumbs_path, stage="dependency_compatibility_preflight_started", success=True, safe_message="preflight start")
     gpu_identity = inspect_kaggle_gpu_identity()
     probes = _dependency_probe_snippets()
-    compat_probe = _run_python_probe(probes["compat"], timeout=60, phase="dependency_compatibility_preflight", label="compat")
-    torch_import_probe = _run_python_probe(probes["torch_import"], timeout=60, phase="dependency_compatibility_preflight", label="torch_import")
-    torch_cuda_probe = _run_python_probe(probes["torch_cuda"], timeout=60, phase="dependency_compatibility_preflight", label="torch_cuda")
-    bnb_probe = _run_python_probe(probes["bitsandbytes"], timeout=60, phase="dependency_compatibility_preflight", label="bitsandbytes")
-    nf4_probe = _run_python_probe(probes["nf4"], timeout=60, phase="dependency_compatibility_preflight", label="nf4")
+    compat_probe = _run_python_probe(probes["compat"], timeout=60, phase="dependency_compatibility_preflight", label="compat", source_root=source_root)
+    torch_import_probe = _run_python_probe(probes["torch_import"], timeout=60, phase="dependency_compatibility_preflight", label="torch_import", source_root=source_root)
+    torch_cuda_probe = _run_python_probe(probes["torch_cuda"], timeout=60, phase="dependency_compatibility_preflight", label="torch_cuda", source_root=source_root)
+    bnb_probe = _run_python_probe(probes["bitsandbytes"], timeout=60, phase="dependency_compatibility_preflight", label="bitsandbytes", source_root=source_root)
+    nf4_probe = _run_python_probe(probes["nf4"], timeout=60, phase="dependency_compatibility_preflight", label="nf4", source_root=source_root)
     _write_probe_artifact(report_root, probe_name="probe_compat_shim", probe=compat_probe, classification=_classify_probe_result(label="compat", probe=compat_probe))
     _write_probe_artifact(report_root, probe_name="probe_torch_import_runtime", probe=torch_import_probe, classification=_classify_probe_result(label="torch_import", probe=torch_import_probe))
     _write_probe_artifact(report_root, probe_name="probe_torch_cuda_runtime", probe=torch_cuda_probe, classification=_classify_probe_result(label="torch_cuda", probe=torch_cuda_probe))
@@ -1302,7 +1317,11 @@ def run_notebook_flow(
     _emit_smoke_stage(breadcrumbs_path, stage="source_identity_resolved", success=True, safe_message="source identity resolved", run_id=resolved_run_id)
     _emit_smoke_stage(breadcrumbs_path, stage="source_identity_verified", success=True, safe_message="source identity verified", run_id=resolved_run_id)
     _emit_smoke_stage(breadcrumbs_path, stage="bootstrap_script_started", success=True, safe_message="bootstrap start", run_id=resolved_run_id)
-    dependency_preflight = _run_dependency_compatibility_preflight(report_root=run_root, breadcrumbs_path=breadcrumbs_path)
+    dependency_preflight = _run_dependency_compatibility_preflight(
+        report_root=run_root,
+        breadcrumbs_path=breadcrumbs_path,
+        source_root=repo_root,
+    )
     _stage_guard(stage="dependencies_started", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     runtime_packages = _ensure_runtime_packages(preflight=dependency_preflight)
     _stage_guard(stage="dependencies_complete", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="runtime packages checked", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
