@@ -29,6 +29,7 @@ from .bootstrap import (
     write_dependency_preflight_report,
     build_semantic_dataset_from_canonical,
 )
+from .dependency_report import dependency_report_allows_model_load
 
 COMPATIBILITY_REPORT: Any | None = None
 RUNNER_METADATA_NAME = "runner_metadata.json"
@@ -500,6 +501,44 @@ def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_pa
         "nf4_probe": nf4_probe,
         "preflight": preflight.to_dict(),
     }
+
+
+def _canonical_dependency_compatibility_gate(report_root: Path) -> dict[str, Any]:
+    """Use the finalized bootstrap report as the model-load compatibility gate."""
+    report_path = report_root / "dependency_install_result.json"
+    if not report_path.exists():
+        return {"allowed": False, "reason": "DEPENDENCY_REPORT_MISSING"}
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"allowed": False, "reason": "DEPENDENCY_REPORT_INVALID", "detail": str(exc)[:500]}
+
+    gate = dependency_report_allows_model_load(report)
+    if not gate.get("allowed"):
+        return gate
+
+    # These are the authoritative post-install runtime probes. Do not replace
+    # them with version or optional-library heuristics at model-load time.
+    shared_torch_payload = report.get("shared_torch_bootstrap") or report.get("shared_torch_runtime") or {}
+    shared_torch_payload = shared_torch_payload.get("runtime", shared_torch_payload) if isinstance(shared_torch_payload, dict) else {}
+    shared_torch_payload = shared_torch_payload.get("json", shared_torch_payload) if isinstance(shared_torch_payload, dict) else {}
+    torch_payload = report.get("postinstall_torch") or report.get("torch_probe") or shared_torch_payload
+    torch_payload = torch_payload.get("json", torch_payload) if isinstance(torch_payload, dict) else {}
+    bnb_payload = report.get("postinstall_bnb") or {}
+    bnb_payload = bnb_payload.get("json", bnb_payload) if isinstance(bnb_payload, dict) else {}
+    nf4_payload = report.get("nf4_probe") or {}
+    nf4_payload = nf4_payload.get("json", nf4_payload) if isinstance(nf4_payload, dict) else {}
+    required_probe_evidence = (
+        bool(torch_payload.get("available"))
+        and tuple(torch_payload.get("capability") or ()) == (6, 0)
+        and "sm_60" in (torch_payload.get("arch_list") or [])
+        and bool(torch_payload.get("basic_cuda_tensor_test") or shared_torch_payload.get("basic_cuda_tensor_test"))
+        and bool(bnb_payload.get("real_bnb_cuda_operation"))
+        and all(bool(nf4_payload.get(key)) for key in ("initialization", "quantization", "dequantization", "cuda"))
+    )
+    if not required_probe_evidence:
+        return {"allowed": False, "reason": "RUNTIME_PROBES_NOT_VERIFIED"}
+    return {"allowed": True, "reason": "SUCCESS", "report": report}
 
 
 def _safe_probe_result(result: subprocess.CompletedProcess[str], *, label: str) -> dict[str, Any]:
@@ -1258,9 +1297,13 @@ def run_notebook_flow(
     _stage_guard(stage="dependencies_started", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     runtime_packages = _ensure_runtime_packages(preflight=dependency_preflight)
     _stage_guard(stage="dependencies_complete", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="runtime packages checked", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
-    post_install_preflight = _run_dependency_compatibility_preflight(report_root=run_root, breadcrumbs_path=breadcrumbs_path)
-    if not post_install_preflight["preflight"].get("compatibility_passed"):
-        failure_reason = post_install_preflight["preflight"].get("reason") or "dependency_preflight_failed"
+    dependency_gate = _canonical_dependency_compatibility_gate(run_root)
+    post_install_preflight = {
+        "canonical_report_path": str(run_root / "dependency_install_result.json"),
+        "model_load_gate": dependency_gate,
+    }
+    if not dependency_gate.get("allowed"):
+        failure_reason = dependency_gate.get("reason") or "dependency_preflight_failed"
         exc = RuntimeError(failure_reason)
         _write_smoke_failure(report_root=run_root, stage="dependency_compatibility_preflight", exc=exc, torch_module=None, run_id=resolved_run_id)
         raise exc

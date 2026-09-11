@@ -19,7 +19,7 @@ from kaggle.bootstrap import (
     write_dependency_preflight_report,
 )
 from kaggle.run_context import resolve_executed_source_commit, write_source_identity
-from kaggle.run_semantic_training import _build_smoke_corpus, _dependency_probe_snippets, _patch_torch_dynamo_compatibility, _smoke_split_targets
+from kaggle.run_semantic_training import _build_smoke_corpus, _canonical_dependency_compatibility_gate, _dependency_probe_snippets, _patch_torch_dynamo_compatibility, _smoke_split_targets
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
 
 
@@ -495,6 +495,64 @@ def test_dependency_compatibility_preflight_writes_isolated_probe_artifacts(tmp_
     ]:
         assert (tmp_path / "reports" / name).exists()
     assert result["preflight"]["compatibility_passed"] is True
+
+
+def test_canonical_dependency_gate_allows_proven_p100_stack(tmp_path):
+    report = {
+        "schema_version": "1.0",
+        "run_id": "run-p100",
+        "stage": "dependencies",
+        "status": "SUCCESS",
+        "install_success": True,
+        "stack_verified": True,
+        "postinstall_torch": {
+            "json": {
+                "version": "2.5.1+cu118",
+                "cuda": "11.8",
+                "available": True,
+                "capability": [6, 0],
+                "arch_list": ["sm_60"],
+                "basic_cuda_tensor_test": True,
+            }
+        },
+        "postinstall_bnb": {"json": {"real_bnb_cuda_operation": True}},
+        "nf4_probe": {"json": {key: True for key in ("initialization", "quantization", "dequantization", "cuda")}},
+    }
+    (tmp_path / "dependency_install_result.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = _canonical_dependency_compatibility_gate(tmp_path)
+
+    assert result["allowed"] is True
+    assert result["reason"] == "SUCCESS"
+
+
+def test_canonical_dependency_gate_rejects_unverified_runtime_probes(tmp_path):
+    report = {
+        "schema_version": "1.0",
+        "run_id": "run-p100",
+        "stage": "dependencies",
+        "status": "SUCCESS",
+        "install_success": True,
+        "stack_verified": True,
+        "postinstall_torch": {
+            "json": {
+                "version": "2.5.1+cu118",
+                "cuda": "11.8",
+                "available": True,
+                "capability": [6, 0],
+                "arch_list": ["sm_60"],
+                "basic_cuda_tensor_test": True,
+            }
+        },
+        "postinstall_bnb": {"json": {"real_bnb_cuda_operation": False}},
+        "nf4_probe": {"json": {key: True for key in ("initialization", "quantization", "dequantization", "cuda")}},
+    }
+    (tmp_path / "dependency_install_result.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = _canonical_dependency_compatibility_gate(tmp_path)
+
+    assert result == {"allowed": False, "reason": "RUNTIME_PROBES_NOT_VERIFIED"}
+    assert "sm60_requires_compatible_torch_and_bitsandbytes" not in str(result)
 
 
 def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
