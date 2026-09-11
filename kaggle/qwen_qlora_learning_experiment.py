@@ -20,6 +20,7 @@ from typing import Any
 
 from learning.semantic_extractor_training import (
     ALLOWED_SEMANTIC_OUTPUT_KEYS,
+    SEMANTIC_OUTPUT_CONTRACT,
     semantic_metrics,
     validate_semantic_target,
 )
@@ -77,7 +78,8 @@ def _hash(value: Any) -> str:
 
 
 def build_semantic_prompt(row: dict[str, Any]) -> str:
-    return "Extract the semantic analytics contract. Return JSON only with exactly these keys: intent, semantic_bindings, predicate_graph, aggregation, ranking, limit, requires_fallback, confidence. INPUT=" + json.dumps(row.get("input") or {}, sort_keys=True, separators=(",", ":")) + " OUTPUT="
+    contract = json.dumps(SEMANTIC_OUTPUT_CONTRACT, sort_keys=True, separators=(",", ":"))
+    return "Extract the semantic analytics contract. Return one JSON object only, with exactly this typed contract (no SQL, tool IDs, or executable plan): " + contract + " INPUT=" + json.dumps(row.get("input") or {}, sort_keys=True, separators=(",", ":")) + " OUTPUT="
 
 
 # Backward-compatible internal name; all call sites use the canonical builder.
@@ -195,7 +197,7 @@ def schema_failure_diagnostics(value: Any) -> dict[str, Any]:
     wrong_types = []
     type_rules = {
         "intent": str,
-        "semantic_bindings": (dict, list),
+        "semantic_bindings": dict,
         "predicate_graph": dict,
         "aggregation": dict,
         "ranking": dict,
@@ -218,6 +220,25 @@ def schema_failure_diagnostics(value: Any) -> dict[str, Any]:
     ranking = value.get("ranking")
     if isinstance(ranking, dict) and "required" in ranking and not isinstance(ranking["required"], bool):
         invalid_shapes.append("ranking.required")
+    bindings = value.get("semantic_bindings")
+    if isinstance(bindings, list):
+        if "semantic_bindings" not in wrong_types:
+            wrong_types.append("semantic_bindings")
+    if isinstance(predicate, dict):
+        operators = predicate.get("operators")
+        if operators is not None and (not isinstance(operators, list) or any(not isinstance(item, str) for item in operators)):
+            invalid_shapes.append("predicate_graph.operators")
+        logical = predicate.get("logical_structure")
+        if isinstance(logical, str) and logical not in {"SINGLE", "AND", "OR", "MIXED", "NOT"}:
+            invalid_shapes.append("predicate_graph.logical_structure_enum")
+    if isinstance(value.get("limit"), bool) or (isinstance(value.get("limit"), int) and value["limit"] < 0):
+        invalid_shapes.append("limit")
+    if isinstance(value.get("requires_fallback"), bool) is False and "requires_fallback" in value:
+        if "requires_fallback" not in wrong_types:
+            wrong_types.append("requires_fallback")
+    confidence = value.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and not 0.0 <= float(confidence) <= 1.0:
+        invalid_shapes.append("confidence")
     return {
         "missing_keys": sorted(expected - set(value)),
         "unexpected_keys": sorted(set(value) - expected),

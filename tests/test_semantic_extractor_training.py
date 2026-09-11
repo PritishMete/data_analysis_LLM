@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 
 from learning.semantic_extractor_training import (
+    ALLOWED_SEMANTIC_OUTPUT_KEYS,
+    SEMANTIC_OUTPUT_CONTRACT,
     build_semantic_extractor_targets,
     build_semantic_readiness_report,
     semantic_metrics,
@@ -130,6 +132,33 @@ def test_semantic_extractor_targets_are_semantic_only():
     }
     assert "tool_graph" not in sample["output"]
     assert "sql" not in str(sample).lower()
+
+
+def test_semantic_target_contract_has_exact_types_and_no_optional_top_level_keys():
+    target = build_semantic_extractor_targets(_bundle())[0].to_dict()
+    output = target["output"]
+    assert set(output) == ALLOWED_SEMANTIC_OUTPUT_KEYS
+    assert set(SEMANTIC_OUTPUT_CONTRACT) == ALLOWED_SEMANTIC_OUTPUT_KEYS
+    assert isinstance(output["intent"], str)
+    assert isinstance(output["semantic_bindings"], dict)
+    assert isinstance(output["predicate_graph"], dict)
+    assert isinstance(output["aggregation"], dict)
+    assert isinstance(output["ranking"], dict)
+    assert output["limit"] is None or (isinstance(output["limit"], int) and not isinstance(output["limit"], bool))
+    assert isinstance(output["requires_fallback"], bool)
+    assert isinstance(output["confidence"], float)
+
+
+def test_semantic_target_validator_rejects_missing_and_wrong_contract_fields():
+    target = build_semantic_extractor_targets(_bundle())[0].to_dict()
+    target["output"].pop("limit")
+    assert validate_semantic_target(target) == (False, "invalid_output_schema")
+    target = build_semantic_extractor_targets(_bundle())[0].to_dict()
+    target["output"]["requires_fallback"] = "false"
+    assert validate_semantic_target(target) == (False, "invalid_requires_fallback")
+    target = build_semantic_extractor_targets(_bundle())[0].to_dict()
+    target["output"]["confidence"] = 2.0
+    assert validate_semantic_target(target) == (False, "invalid_confidence")
 
 
 def test_semantic_extractor_split_families_and_readiness():

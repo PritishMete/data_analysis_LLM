@@ -73,6 +73,24 @@ def test_schema_failure_diagnostics_detect_invalid_shapes():
     ]
 
 
+def test_schema_failure_diagnostics_identify_enum_and_nested_shape_errors():
+    diagnostics = experiment.schema_failure_diagnostics({
+        "intent": "not_supported",
+        "semantic_bindings": [],
+        "predicate_graph": {"logical_structure": "XOR", "operators": [7]},
+        "aggregation": {},
+        "ranking": {"direction": "sideways"},
+        "limit": -1,
+        "requires_fallback": False,
+        "confidence": 2.0,
+    })
+    assert "semantic_bindings" in diagnostics["wrong_types"]
+    assert "predicate_graph.logical_structure_enum" in diagnostics["invalid_shapes"]
+    assert "predicate_graph.operators" in diagnostics["invalid_shapes"]
+    assert "limit" in diagnostics["invalid_shapes"]
+    assert "confidence" in diagnostics["invalid_shapes"]
+
+
 def test_validation_schedule_and_train_sanity_are_present():
     assert '"step_0"' in SOURCE
     assert "VALIDATION_STEPS = (0, 4, 8, 12, 16)" in SOURCE

@@ -10,6 +10,7 @@ import importlib.metadata as metadata
 import json
 import math
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -193,10 +194,23 @@ def _synthetic_rows() -> list[dict[str, Any]]:
 
 
 def _repetition_stat(token_ids: list[int], text: str) -> dict[str, Any]:
-    repeated_adjacent = any(left == right for left, right in zip(token_ids, token_ids[1:]))
-    trigrams = [tuple(token_ids[index : index + 3]) for index in range(max(0, len(token_ids) - 2))]
+    object_text = _extract_first_json_object(text)
+    object_end = text.find(object_text) + len(object_text) if object_text else -1
+    continuation = text[object_end:] if object_end >= 0 else ""
+    lexical_tokens = re.findall(r"[A-Za-z0-9_]+", continuation.lower())
+    repeated_adjacent = any(left == right for left, right in zip(lexical_tokens, lexical_tokens[1:]))
+    trigrams = [tuple(lexical_tokens[index : index + 3]) for index in range(max(0, len(lexical_tokens) - 2))]
     repeated_trigrams = len(trigrams) != len(set(trigrams))
-    return {"repeated_adjacent_token": repeated_adjacent, "repeated_trigram": repeated_trigrams, "repetition_detected": repeated_adjacent or repeated_trigrams, "completion_characters": len(text)}
+    repetitive = bool(continuation.strip()) and (repeated_adjacent or repeated_trigrams)
+    return {
+        "post_json_continuation_detected": bool(continuation.strip()),
+        "repetitive_generation_detected": repetitive,
+        "repeated_adjacent_token": repeated_adjacent,
+        "repeated_trigram": repeated_trigrams,
+        "repetition_detected": repetitive,
+        "completion_characters": len(text),
+        "continuation_characters": len(continuation),
+    }
 
 
 def _target_eos_audit(tokenizer: Any, row: dict[str, Any]) -> dict[str, Any]:
@@ -280,7 +294,9 @@ def _run_budget(model: Any, tokenizer: Any, torch_module: Any, rows: list[dict[s
         "valid_json_objects": valid_json,
         "schema_valid_objects": schema_valid,
         "average_new_tokens": sum(item["new_tokens"] for item in results) / len(results),
-        "repetition_count": sum(int(item["repetition"]["repetition_detected"]) for item in results),
+        "post_json_continuation_count": sum(int(item["repetition"]["post_json_continuation_detected"]) for item in results),
+        "repetitive_generation_count": sum(int(item["repetition"]["repetitive_generation_detected"]) for item in results),
+        "repetition_count": sum(int(item["repetition"]["repetitive_generation_detected"]) for item in results),
         "classification_counts": classifications,
         "outputs": results,
     }
@@ -360,7 +376,7 @@ def run_semantic_generation_diagnostic(*, output_root: Path, run_id: str, expect
             "budgets": budgets,
             "base_vs_adapter": {"compared": False, "reason": "previous_runtime_adapter_unavailable"},
             "vram_peak": _memory(torch),
-            "classification": "GENERATION_TERMINATION_WORKING" if any(item["valid_json_objects"] for item in budgets) else "GENERATION_REPETITION_FOUND" if any(item["repetition_count"] for item in budgets) else "GENERATION_BUDGET_INSUFFICIENT",
+            "classification": "GENERATION_REPETITION_FOUND" if any(item["post_json_continuation_count"] or item["repetitive_generation_count"] for item in budgets) else "GENERATION_TERMINATION_WORKING" if any(item["valid_json_objects"] for item in budgets) else "GENERATION_BUDGET_INSUFFICIENT",
         }
         _write_json(root / "semantic_generation_diagnostic_report.json", final)
         _marker("SEMANTIC_GENERATION_DIAGNOSTIC_FINAL_RESULT_JSON", final)

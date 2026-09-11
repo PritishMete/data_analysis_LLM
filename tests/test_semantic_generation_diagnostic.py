@@ -46,6 +46,20 @@ def test_generation_report_includes_safe_schema_failure_diagnostics():
     assert "completion_text" in SOURCE
 
 
+def test_repetition_diagnostic_ignores_normal_json_syntax():
+    stats = diagnostic._repetition_stat([1, 1, 2, 2, 3], '{"a":1,"b":2,"c":3}')
+    assert stats["post_json_continuation_detected"] is False
+    assert stats["repetitive_generation_detected"] is False
+    assert stats["repetition_detected"] is False
+
+
+def test_repetition_diagnostic_separates_post_json_continuation():
+    stats = diagnostic._repetition_stat([], '{} repeated repeated repeated')
+    assert stats["post_json_continuation_detected"] is True
+    assert stats["repetitive_generation_detected"] is True
+    assert stats["repetition_detected"] is True
+
+
 def test_generation_uses_completion_only_json_stopping_criterion():
     assert "build_semantic_stopping_criteria" in SOURCE
     assert "stopping_criteria=" in SOURCE

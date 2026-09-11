@@ -55,6 +55,16 @@ ALLOWED_SEMANTIC_OUTPUT_KEYS = {
     "requires_fallback",
     "confidence",
 }
+SEMANTIC_OUTPUT_CONTRACT = {
+    "intent": {"type": "string", "enum": sorted(ALLOWED_SEMANTIC_INTENTS)},
+    "semantic_bindings": {"type": "object"},
+    "predicate_graph": {"type": "object"},
+    "aggregation": {"type": "object"},
+    "ranking": {"type": "object"},
+    "limit": {"type": "integer", "nullable": True, "minimum": 0},
+    "requires_fallback": {"type": "boolean"},
+    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+}
 ALLOWED_PREDICATE_OPERATORS = {"AND", "OR", "NOT", "SINGLE", "MIXED"}
 ALLOWED_SEMANTIC_LOGICAL_STRUCTURES = set(ALLOWED_LOGICAL_STRUCTURES) | {"NOT"}
 
@@ -155,26 +165,44 @@ def validate_semantic_target(target: dict[str, Any]) -> tuple[bool, str | None]:
     if not SAFE_HEX_RE.fullmatch(family_fingerprint):
         return False, "unsafe_family_fingerprint"
     output = dict(target.get("output") or {})
-    if not output or set(output.keys()) - ALLOWED_SEMANTIC_OUTPUT_KEYS:
+    if set(output) != ALLOWED_SEMANTIC_OUTPUT_KEYS:
         return False, "invalid_output_schema"
-    intent = str(output.get("intent") or "")
+    intent = output.get("intent")
+    if not isinstance(intent, str):
+        return False, "invalid_intent_type"
     if intent not in ALLOWED_SEMANTIC_INTENTS:
         return False, "unsupported_intent"
+    if not isinstance(output.get("semantic_bindings"), dict):
+        return False, "invalid_semantic_bindings"
     predicate_graph = output.get("predicate_graph")
     if not isinstance(predicate_graph, dict):
         return False, "invalid_predicate_ast"
     logical_structure = str(predicate_graph.get("logical_structure") or "SINGLE")
     if logical_structure not in ALLOWED_SEMANTIC_LOGICAL_STRUCTURES:
         return False, "invalid_logical_structure"
-    operators = [str(item) for item in (predicate_graph.get("operators") or [])]
+    operators_value = predicate_graph.get("operators", [])
+    if not isinstance(operators_value, list) or any(not isinstance(item, str) for item in operators_value):
+        return False, "invalid_predicate_operator"
+    operators = operators_value
     if any(operator.upper() not in ALLOWED_PREDICATE_OPERATORS for operator in operators):
         return False, "invalid_predicate_operator"
     aggregation = output.get("aggregation")
     ranking = output.get("ranking")
     if not isinstance(aggregation, dict) or not isinstance(ranking, dict):
         return False, "invalid_aggregation_ranking"
-    if "confidence" not in output or not isinstance(output.get("confidence"), (int, float)):
-        return False, "missing_confidence"
+    if "limit" not in output or (output["limit"] is not None and (isinstance(output["limit"], bool) or not isinstance(output["limit"], int) or output["limit"] < 0)):
+        return False, "invalid_limit"
+    if not isinstance(output.get("requires_fallback"), bool):
+        return False, "invalid_requires_fallback"
+    confidence = output.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0.0 <= float(confidence) <= 1.0:
+        return False, "invalid_confidence"
+    if "required" in aggregation and not isinstance(aggregation["required"], bool):
+        return False, "invalid_aggregation_structure"
+    if "required" in ranking and not isinstance(ranking["required"], bool):
+        return False, "invalid_ranking_structure"
+    if "direction" in ranking and ranking["direction"] not in {"asc", "desc"}:
+        return False, "invalid_ranking_structure"
     return True, None
 
 
