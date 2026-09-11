@@ -184,9 +184,34 @@ def test_target_distribution_is_measured_without_raw_inputs():
 def test_memorization_contract_is_sealed_and_uses_required_milestones():
     assert experiment.MEMORIZATION_TRAIN_EXAMPLES == 8
     assert experiment.MEMORIZATION_STEPS == (0, 10, 25, 50)
+    assert experiment.MEMORIZATION_SELECTION_SEED == 20260911
     assert "memorization" in SOURCE
     assert 'validation_data_used": not memorization' in SOURCE
     assert 'test_used": False' in SOURCE
+
+
+def test_memorization_selection_is_fixed_and_train_only():
+    rows = [{"source_id": str(index), "output": {"intent": "filter", "index": index}} for index in range(32)]
+    first = experiment._select_memorization_train_rows(rows)
+    second = experiment._select_memorization_train_rows(rows)
+    assert len(first) == experiment.MEMORIZATION_TRAIN_EXAMPLES
+    assert [experiment._safe_target_hash(row) for row in first] == [experiment._safe_target_hash(row) for row in second]
+    assert {experiment._safe_target_hash(row) for row in first}.issubset({experiment._safe_target_hash(row) for row in rows})
+
+
+def test_memorization_reports_target_audits_and_reload_metrics():
+    assert '"max_prompt_tokens"' in SOURCE
+    assert '"max_target_tokens"' in SOURCE
+    assert '"max_total_tokens"' in SOURCE
+    assert '"target_truncation_count"' in SOURCE
+    assert '"prompt_masked": True' in SOURCE
+    assert '"completion_supervised": True' in SOURCE
+    assert '"reload_metrics": reload_metrics' in SOURCE
+    assert '"base_parameters_changed": base_changed' in SOURCE
+    assert '"base_gradient_violation": base_gradient_violation' in SOURCE
+    assert '"lora_gradients_finite_nonzero"' in SOURCE
+    assert 'validation_steps = MEMORIZATION_STEPS if memorization else VALIDATION_STEPS' in SOURCE
+    assert 'evaluations[f"step_{step}"] = metrics' in SOURCE
 
 
 def test_model_not_learning_is_not_selected_when_generation_is_truncated():

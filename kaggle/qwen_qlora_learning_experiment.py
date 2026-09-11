@@ -11,6 +11,7 @@ import hashlib
 import importlib.metadata as metadata
 import json
 import os
+import random
 import subprocess
 import sys
 import time
@@ -53,6 +54,7 @@ GENERATION_MAX_NEW_TOKENS = 192
 PEFT_VERSION = "0.13.2"
 MEMORIZATION_TRAIN_EXAMPLES = 8
 MEMORIZATION_STEPS = (0, 10, 25, 50)
+MEMORIZATION_SELECTION_SEED = 20260911
 
 
 def _version(name: str) -> str | None:
@@ -335,6 +337,13 @@ def _load_experiment_dataset() -> dict[str, Any]:
     }
 
 
+def _select_memorization_train_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select the fixed eight-example TRAIN-only memorization cohort."""
+    ordered = sorted(rows, key=_safe_target_hash)
+    generator = random.Random(MEMORIZATION_SELECTION_SEED)
+    return generator.sample(ordered, MEMORIZATION_TRAIN_EXAMPLES)
+
+
 def _audit_contract(rows: list[dict[str, Any]]) -> dict[str, Any]:
     summaries = []
     for row in rows[:4]:
@@ -380,6 +389,7 @@ def _tokenize_supervised(tokenizer: Any, row: dict[str, Any]) -> tuple[dict[str,
     available_target = MAX_SEQUENCE_LENGTH - len(prompt_ids) - 1
     if available_target <= 0:
         raise RuntimeError("PROMPT_EXCEEDS_SEQUENCE_LIMIT")
+    target_truncated = len(target_ids) > available_target
     sequence = prompt_ids + target_ids[:available_target] + [int(eos_token_id)]
     input_ids = torch.tensor([sequence], dtype=torch.long)
     full = {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
@@ -391,7 +401,10 @@ def _tokenize_supervised(tokenizer: Any, row: dict[str, Any]) -> tuple[dict[str,
         raise RuntimeError("NO_SUPERVISED_TARGET_TOKENS")
     return {key: value.to("cuda:0") for key, value in full.items()} | {"labels": labels.to("cuda:0")}, {
         "input_tokens": int(input_ids.shape[-1]),
+        "prompt_tokens": len(prompt_ids),
+        "raw_target_tokens": len(target_ids) + 1,
         "target_tokens": supervised,
+        "target_truncated": target_truncated,
         "masked_label_count": prompt_count,
         "supervised_label_count": supervised,
         "target_eos_present": True,
@@ -480,7 +493,8 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
             raise RuntimeError("QWEN_NF4_RUNTIME_GATE_FAILED")
         stage = "dataset"
         dataset = _load_experiment_dataset()
-        dataset_result = {"canonical_dataset_root": dataset["root"], "train_total": dataset["train_total"], "validation_total": dataset["validation_total"], "test_total": dataset["test_total"], "experiment_train_examples": MEMORIZATION_TRAIN_EXAMPLES if memorization else TRAIN_EXAMPLES, "experiment_validation_examples": MEMORIZATION_TRAIN_EXAMPLES if memorization else VALIDATION_EXAMPLES, "test_split_accessed": False, "selected_train_hashes": dataset["selected_hashes"]["train"], "selected_validation_hashes": dataset["selected_hashes"]["validation"]}
+        memorization_rows = _select_memorization_train_rows(dataset["selected"]["train"]) if memorization else []
+        dataset_result = {"canonical_dataset_root": dataset["root"], "train_total": dataset["train_total"], "validation_total": dataset["validation_total"], "test_total": dataset["test_total"], "experiment_train_examples": MEMORIZATION_TRAIN_EXAMPLES if memorization else TRAIN_EXAMPLES, "experiment_validation_examples": MEMORIZATION_TRAIN_EXAMPLES if memorization else VALIDATION_EXAMPLES, "test_split_accessed": False, "selected_train_hashes": [_safe_target_hash(row) for row in (memorization_rows if memorization else dataset["selected"]["train"])], "selected_validation_hashes": dataset["selected_hashes"]["validation"]}
         _write_json(root / "learning_experiment_dataset_result.json", dataset_result)
         _marker("LEARNING_EXPERIMENT_DATASET_RESULT_JSON", dataset_result)
         selected_count = MEMORIZATION_TRAIN_EXAMPLES if memorization else TRAIN_EXAMPLES
@@ -517,16 +531,20 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         if not trainable or any(parameter.requires_grad and "lora_" not in name.lower() for name, parameter in model.named_parameters()):
             raise RuntimeError("LORA_FREEZE_CONTRACT_FAILED")
         _write_json(root / "learning_experiment_lora_result.json", {"r": 16, "alpha": 32, "dropout": 0.05, "targets": targets, "trainable_parameters": trainable, "total_parameters": total, "base_model_frozen": True})
-        train_rows = dataset["selected"]["train"][:MEMORIZATION_TRAIN_EXAMPLES] if memorization else dataset["selected"]["train"]
+        train_rows = memorization_rows if memorization else dataset["selected"]["train"]
         validation_rows = train_rows if memorization else dataset["selected"]["validation"]
         optimizer_steps = 50 if memorization else OPTIMIZER_STEPS
         encoded_train, audits = [], []
+        max_prompt_tokens = 0
         max_target_tokens = 0
+        max_total_tokens = 0
         for row in train_rows:
             encoded, audit = _tokenize_supervised(tokenizer, row)
             encoded_train.append(encoded)
             audits.append(audit)
-            max_target_tokens = max(max_target_tokens, audit["target_tokens"])
+            max_prompt_tokens = max(max_prompt_tokens, audit["prompt_tokens"])
+            max_target_tokens = max(max_target_tokens, audit["raw_target_tokens"])
+            max_total_tokens = max(max_total_tokens, audit["input_tokens"])
         if memorization:
             encoded_train = (encoded_train * ((optimizer_steps * GRADIENT_ACCUMULATION + len(encoded_train) - 1) // len(encoded_train)))[: optimizer_steps * GRADIENT_ACCUMULATION]
         all_safe_rows = sorted(_load_training_rows(Path(dataset["root"]), "train"), key=_safe_target_hash) + sorted(_load_training_rows(Path(dataset["root"]), "validation"), key=_safe_target_hash)
@@ -539,7 +557,7 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         generation_config = getattr(model, "generation_config", None)
         eos_config = getattr(generation_config, "eos_token_id", None) == eos_id
         pad_config = getattr(generation_config, "pad_token_id", None) == pad_id
-        tokenization = {"max_sequence_length": MAX_SEQUENCE_LENGTH, "max_target_tokens": max_target_tokens, "generation_max_new_tokens": generation_budget, "previous_max_new_tokens": GENERATION_MAX_NEW_TOKENS, "target_token_distribution": target_lengths, "experiment_target_token_distribution": experiment_lengths, "standard_128_16_target_token_distribution": standard_experiment_lengths, "targets_longer_than_previous_max_new_tokens": sum(item > GENERATION_MAX_NEW_TOKENS for item in [len(tokenizer(json.dumps(_target_output(row), sort_keys=True, separators=(",", ":")), add_special_tokens=False)["input_ids"]) for row in all_safe_rows]), "eos_token_id": eos_id, "pad_token_id": pad_id, "generation_config_eos_token_id": getattr(generation_config, "eos_token_id", None), "generation_config_pad_token_id": getattr(generation_config, "pad_token_id", None), "eos_config_valid": eos_config, "pad_config_valid": pad_config, "audit_samples": audits[:4], "supervised_labeling_verified": True, "truncated_training_examples": sum(item["input_tokens"] >= MAX_SEQUENCE_LENGTH for item in audits)}
+        tokenization = {"max_sequence_length": MAX_SEQUENCE_LENGTH, "max_prompt_tokens": max_prompt_tokens, "max_target_tokens": max_target_tokens, "max_total_tokens": max_total_tokens, "generation_max_new_tokens": generation_budget, "previous_max_new_tokens": GENERATION_MAX_NEW_TOKENS, "target_token_distribution": target_lengths, "experiment_target_token_distribution": experiment_lengths, "standard_128_16_target_token_distribution": standard_experiment_lengths, "targets_longer_than_previous_max_new_tokens": sum(item > GENERATION_MAX_NEW_TOKENS for item in [len(tokenizer(json.dumps(_target_output(row), sort_keys=True, separators=(",", ":")), add_special_tokens=False)["input_ids"]) for row in all_safe_rows]), "eos_token_id": eos_id, "pad_token_id": pad_id, "generation_config_eos_token_id": getattr(generation_config, "eos_token_id", None), "generation_config_pad_token_id": getattr(generation_config, "pad_token_id", None), "eos_config_valid": eos_config, "pad_config_valid": pad_config, "audit_samples": audits[:4], "supervised_labeling_verified": True, "prompt_masked": True, "completion_supervised": True, "target_truncation_count": sum(bool(item["target_truncated"]) for item in audits), "truncated_training_examples": sum(bool(item["target_truncated"]) for item in audits)}
         _write_json(root / "learning_experiment_tokenization_result.json", tokenization)
         _marker("LEARNING_EXPERIMENT_TOKENIZATION_RESULT_JSON", tokenization)
         synthetic_rows = [{"input": {"intent": intent, "safe_field_aliases": ["numeric_metric"], "semantic_roles": ["numeric_metric"], "dtypes": ["number"], "logical_hints": {"logical_structure": "SINGLE", "predicate_count": 0, "operators": []}}, "output": {"intent": intent, "semantic_bindings": {"intent_hint": intent}, "predicate_graph": {"logical_structure": "SINGLE", "predicate_count": 0, "operators": ["SINGLE"], "roles": ["numeric_metric"], "validated": True}, "aggregation": {"measure_roles": ["numeric_metric"], "required": intent == "aggregate"}, "ranking": {"required": False, "direction": "desc"}, "limit": None, "requires_fallback": False, "confidence": 1.0}} for intent in ("aggregate", "filter", "compare", "trend")]
@@ -551,6 +569,7 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         _write_json(root / "learning_experiment_validation_metrics.json", evaluations)
         optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=LEARNING_RATE)
         before = {name: parameter.detach().clone() for name, parameter in model.named_parameters() if "lora_" in name.lower()}
+        base_before = {name: parameter.detach().clone() for name, parameter in model.named_parameters() if "lora_" not in name.lower()}
         steps: list[dict[str, Any]] = []
         best_step, best_score = 0, _score(evaluations["step_0"])
         validation_steps = MEMORIZATION_STEPS if memorization else VALIDATION_STEPS
@@ -584,6 +603,8 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
                         best_dir.mkdir(parents=True, exist_ok=True)
                         model.save_pretrained(best_dir, safe_serialization=True)
         changed = any(not torch.equal(before[name], parameter.detach()) for name, parameter in model.named_parameters() if name in before)
+        base_changed = any(not torch.equal(base_before[name], parameter.detach()) for name, parameter in model.named_parameters() if name in base_before)
+        base_gradient_violation = any(parameter.requires_grad or parameter.grad is not None for name, parameter in model.named_parameters() if "lora_" not in name.lower())
         if not changed:
             raise RuntimeError("LORA_PARAMETER_UNCHANGED")
         train_sanity = _evaluate(model, tokenizer, train_rows[:MEMORIZATION_TRAIN_EXAMPLES], torch, diagnostics=True, max_new_tokens=generation_budget)
@@ -598,15 +619,13 @@ def run_qwen_qlora_learning_experiment(*, output_root: Path, run_id: str, expect
         reload_base = AutoModelForCausalLM.from_pretrained(MODEL_ID, quantization_config=quantization, device_map={"": 0}, torch_dtype=torch.float16, trust_remote_code=True)
         reload_model = PeftModel.from_pretrained(reload_base, final_dir)
         reload_model.eval()
-        reload_inputs = tokenizer(build_semantic_prompt(validation_rows[0]), return_tensors="pt", add_special_tokens=True).to("cuda:0")
-        with torch.inference_mode():
-            reload_model.generate(**reload_inputs, max_new_tokens=tokenization["generation_max_new_tokens"], do_sample=False, pad_token_id=pad_id, eos_token_id=eos_id)
+        reload_metrics = _evaluate(reload_model, tokenizer, train_rows, torch, diagnostics=True, max_new_tokens=tokenization["generation_max_new_tokens"])
         all_eval_metrics = list(evaluations.values()) + [train_sanity]
         has_truncation = any(int(item.get("truncated_prediction_count", 0)) > 0 or int(item.get("parser_classification_counts", {}).get("MAX_NEW_TOKENS_REACHED", 0)) > 0 for item in all_eval_metrics)
         has_complete_invalid = any(int(item.get("valid_prediction_count", 0)) == 0 and not int(item.get("truncated_prediction_count", 0)) and int(item.get("schema_failure_count", 0)) > 0 for item in all_eval_metrics)
         improved = any(_score(evaluations[f"step_{step}"]) > _score(evaluations["step_0"]) and evaluations[f"step_{step}"]["semantic_schema_valid_rate"] >= evaluations["step_0"]["semantic_schema_valid_rate"] for step in validation_steps[1:])
         verdict = "GENERATION_TRUNCATION_FOUND" if has_truncation else ("SEMANTIC_PARSER_BUG_FOUND" if has_complete_invalid else ("SEMANTIC_LEARNING_SIGNAL_CONFIRMED" if improved else "MODEL_NOT_LEARNING"))
-        final = {"run_id": run_id, "expected_git_commit": expected_git_commit, "executed_git_commit": executed, "dataset": dataset_result, "privacy": privacy, "contract": contract, "tokenization": tokenization, "base_synthetic_generation": base_synthetic, "generation_mechanics": {"training_inference_prompt_match": True, "chat_template_used": False, "assistant_response_boundary": "OUTPUT=", "special_tokens_audited": True}, "config": {"model": MODEL_ID, "quantization": "4-bit NF4", "double_quant": True, "compute_dtype": "float16", "lora_r": 16, "lora_alpha": 32, "lora_dropout": 0.05, "micro_batch_size": 1, "gradient_accumulation": 8, "effective_batch_size": 8, "learning_rate": LEARNING_RATE, "optimizer_steps": optimizer_steps, "memorization": memorization}, "validation_metrics": evaluations, "train_sanity_metrics": train_sanity, "training_steps": steps, "loss_first": steps[0]["loss"], "loss_last": steps[-1]["loss"], "loss_mean": sum(item["loss"] for item in steps) / len(steps), "loss_trend": "decreasing" if steps[-1]["loss"] < steps[0]["loss"] else "not_decreasing", "lora_parameter_changed": changed, "base_model_frozen": True, "best_validation_step": best_step, "best_validation_score": best_score, "adapter_saved": True, "adapter_reload": True, "adapter_path": str(final_dir), "adapter_files": adapter_hashes, "vram_peak": _memory(torch), "train_data_used": True, "validation_data_used": not memorization, "test_data_used": False, "test_split_accessed": False, "test_used": False, "verdict": verdict}
+        final = {"run_id": run_id, "expected_git_commit": expected_git_commit, "executed_git_commit": executed, "dataset": dataset_result, "privacy": privacy, "contract": contract, "tokenization": tokenization, "base_synthetic_generation": base_synthetic, "generation_mechanics": {"training_inference_prompt_match": True, "chat_template_used": False, "assistant_response_boundary": "OUTPUT=", "special_tokens_audited": True}, "config": {"model": MODEL_ID, "quantization": "4-bit NF4", "double_quant": True, "compute_dtype": "float16", "lora_r": 16, "lora_alpha": 32, "lora_dropout": 0.05, "micro_batch_size": 1, "gradient_accumulation": 8, "effective_batch_size": 8, "learning_rate": LEARNING_RATE, "optimizer_steps": optimizer_steps, "memorization": memorization}, "validation_metrics": evaluations, "reload_metrics": reload_metrics, "train_sanity_metrics": train_sanity, "training_steps": steps, "loss_first": steps[0]["loss"], "loss_last": steps[-1]["loss"], "loss_mean": sum(item["loss"] for item in steps) / len(steps), "loss_trend": "decreasing" if steps[-1]["loss"] < steps[0]["loss"] else "not_decreasing", "lora_parameter_changed": changed, "lora_gradient_norms": [item["gradient_norm"] for item in steps], "lora_gradients_finite_nonzero": all(float(item["gradient_norm"]) > 0 and math.isfinite(float(item["gradient_norm"])) for item in steps), "base_parameters_changed": base_changed, "base_gradient_violation": base_gradient_violation, "base_model_frozen": not base_changed and not base_gradient_violation, "best_validation_step": best_step, "best_validation_score": best_score, "adapter_saved": True, "adapter_reload": True, "adapter_path": str(final_dir), "adapter_files": adapter_hashes, "vram_peak": _memory(torch), "train_data_used": True, "validation_data_used": not memorization, "test_data_used": False, "test_split_accessed": False, "test_used": False, "verdict": verdict}
         _write_json(root / "learning_experiment_report.json", final)
         _marker("LEARNING_EXPERIMENT_FINAL_RESULT_JSON", final)
         return final
