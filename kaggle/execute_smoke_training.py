@@ -63,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--expected-git-commit", default=None)
     parser.add_argument("--source-root", default=None)
+    parser.add_argument("--dependency-report-path", required=True)
     args = parser.parse_args(argv)
     output_root = Path(args.output_root)
     resolved_run_id = args.run_id or resolve_current_run_id(base_root=output_root / "smoke_runs") or generate_run_id()
@@ -159,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         from kaggle.run_semantic_training import run_notebook_flow
 
         write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
-        result = run_notebook_flow(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root)
+        result = run_notebook_flow(output_root=run_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root, dependency_report_path=Path(args.dependency_report_path))
     result["bootstrap_pid"] = args.bootstrap_pid
     result["training_pid"] = training_pid
     result["fresh_process_verified"] = args.bootstrap_pid is not None and args.bootstrap_pid != training_pid

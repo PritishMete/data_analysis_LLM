@@ -575,10 +575,17 @@ def test_canonical_dependency_gate_reads_outer_bootstrap_report_for_nested_run(t
     (outer / "dependency_install_result.json").write_text(json.dumps(report), encoding="utf-8")
     monkeypatch.setenv("KAGGLE_SMOKE_RUN_ID", run_id)
 
-    result = _canonical_dependency_compatibility_gate(nested)
+    result = _canonical_dependency_compatibility_gate(nested, dependency_report_path=outer / "dependency_install_result.json", run_id=run_id)
 
     assert result["allowed"] is True
     assert result["report_path"] == str(outer / "dependency_install_result.json")
+
+    rejected = _canonical_dependency_compatibility_gate(
+        nested,
+        dependency_report_path=outer / "dependency_install_result.json",
+        run_id="historical-run",
+    )
+    assert rejected == {"allowed": False, "reason": "DEPENDENCY_REPORT_RUN_ID_MISMATCH"}
 
 
 def test_kaggle_run_semantic_training_import_is_transformers_lazy(monkeypatch):
@@ -640,7 +647,13 @@ def test_execute_smoke_training_uses_fresh_process_metadata(monkeypatch, tmp_pat
     monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: __import__("subprocess").CompletedProcess(args=args[0], returncode=0, stdout="0309f6e824127a1ebab2bf13a87cb7ab12ff3a61\n", stderr=""))
     monkeypatch.delenv("KAGGLE_SKIP_DEP_INSTALL", raising=False)
 
-    result_code = module.main(["--output-root", str(tmp_path), "--bootstrap-pid", "12345"])
+    dependency_report = tmp_path / "dependency_install_result.json"
+    dependency_report.write_text("{}", encoding="utf-8")
+    result_code = module.main([
+        "--output-root", str(tmp_path),
+        "--bootstrap-pid", "12345",
+        "--dependency-report-path", str(dependency_report),
+    ])
 
     payload = json.loads((tmp_path / "reports" / "smoke_heartbeat.json").read_text(encoding="utf-8"))
     assert result_code == 0

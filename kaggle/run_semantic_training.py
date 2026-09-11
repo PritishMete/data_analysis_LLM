@@ -503,18 +503,15 @@ def _run_dependency_compatibility_preflight(*, report_root: Path, breadcrumbs_pa
     }
 
 
-def _canonical_dependency_compatibility_gate(report_root: Path, *, run_id: str | None = None) -> dict[str, Any]:
+def _canonical_dependency_compatibility_gate(
+    report_root: Path,
+    *,
+    dependency_report_path: Path | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
     """Use the finalized bootstrap report as the model-load compatibility gate."""
-    report_candidates = [report_root / "dependency_install_result.json"]
-    # The notebook bootstrap writes to KAGGLE_RUN_DIR, while the legacy smoke
-    # executor may place its flow under that run directory's smoke_runs child.
-    report_candidates.extend(
-        parent / "dependency_install_result.json"
-        for parent in (report_root.parent, report_root.parent.parent)
-        if parent != report_root
-    )
-    report_path = next((path for path in report_candidates if path.exists()), None)
-    if report_path is None:
+    report_path = dependency_report_path or (report_root / "dependency_install_result.json")
+    if not report_path.exists():
         return {"allowed": False, "reason": "DEPENDENCY_REPORT_MISSING"}
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -1214,6 +1211,7 @@ def run_notebook_flow(
     run_id: str | None = None,
     expected_git_commit: str | None = None,
     source_root: Path | None = None,
+    dependency_report_path: Path | None = None,
 ) -> dict[str, Any]:
     expected_commit = expected_git_commit or _expected_commit_hash()
     resolved_run_id = run_id or os.environ.get("KAGGLE_SMOKE_RUN_ID") or generate_run_id(git_commit=expected_commit)
@@ -1308,7 +1306,11 @@ def run_notebook_flow(
     _stage_guard(stage="dependencies_started", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="starting smoke bootstrap", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
     runtime_packages = _ensure_runtime_packages(preflight=dependency_preflight)
     _stage_guard(stage="dependencies_complete", report_root=run_root, breadcrumbs_path=breadcrumbs_path, safe_message="runtime packages checked", run_id=resolved_run_id, expected_git_commit=expected_commit, executed_git_commit=executed_commit)
-    dependency_gate = _canonical_dependency_compatibility_gate(run_root, run_id=resolved_run_id)
+    dependency_gate = _canonical_dependency_compatibility_gate(
+        run_root,
+        dependency_report_path=dependency_report_path,
+        run_id=resolved_run_id,
+    )
     post_install_preflight = {
         "canonical_report_path": str(run_root / "dependency_install_result.json"),
         "model_load_gate": dependency_gate,

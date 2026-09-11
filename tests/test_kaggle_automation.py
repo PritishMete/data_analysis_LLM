@@ -158,8 +158,11 @@ def test_dependency_handoff_uses_one_run_dir_and_initializes_report_before_work(
     assert '"status": "FAILED"' in bootstrap
     assert "KAGGLE_RUN_DIR" in bootstrap
     assert "KAGGLE_RUN_DIR" in execute
+    assert 'parser.add_argument("--dependency-report-path", required=True)' in execute
+    assert "dependency_report_path=Path(args.dependency_report_path)" in execute
     assert "os.environ['KAGGLE_RUN_DIR'] = str(RUN_DIR)" in notebook
     assert "dependency_report_path = RUN_DIR / 'dependency_install_result.json'" in notebook
+    assert "'--dependency-report-path', str(RUN_DIR / 'dependency_install_result.json')" in notebook
     assert "DEPENDENCY_REPORT_HANDOFF_FAILED" in notebook
 
 
