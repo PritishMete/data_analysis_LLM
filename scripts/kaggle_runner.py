@@ -606,6 +606,7 @@ def sync_notebook_to_stage(
         notebook_text = notebook_text.replace("__RUN_ID__", run_id)
     if expected_commit is not None:
         notebook_text = notebook_text.replace("__EXPECTED_GIT_COMMIT__", expected_commit)
+        notebook_text = notebook_text.replace("__EXPECTED_COMMIT__", expected_commit)
     notebook_text = notebook_text.replace("__WORKFLOW_MODE__", spec.workflow_mode)
     notebook_target.write_text(notebook_text, encoding="utf-8")
     scripts_dir = notebook_dir / "scripts"
@@ -659,6 +660,9 @@ def _validate_prepared_submission(*, notebook_dir: Path, run_id: str, expected_c
         raise KaggleAutomationError("prepared_submission_startup_identity_incomplete")
     if any(value in first_source.lower() for value in forbidden_before_identity):
         raise KaggleAutomationError("prepared_submission_startup_identity_not_identity_only")
+    placeholders = ("__RUN_ID__", "__EXPECTED_GIT_COMMIT__", "__EXPECTED_COMMIT__")
+    if any(value in source for value in placeholders):
+        raise KaggleAutomationError("prepared_submission_unresolved_identity_placeholder")
     historical_ids = ("1bcfd66-20260901T175300Z-t6xm", "db9a3f1-20260901T173537Z-flh7", "7b632bf-20260902T033839Z-kv6d")
     stale_ids = [value for value in historical_ids if value in source]
     if run_id not in source or expected_commit not in source or stale_ids:
@@ -682,9 +686,9 @@ def _validate_prepared_submission(*, notebook_dir: Path, run_id: str, expected_c
         "startup_marker_position_verified": True,
         "startup_identity_cell_index": 0,
         "first_executable_cell_verified": True,
-        "run_scoped_identity_path": "/kaggle/working/<run_id>/RUN_IDENTITY.json",
-        "run_scoped_log_path": "/kaggle/working/<run_id>/remote.log",
-        "failure_path": "/kaggle/working/<run_id>/failure.json",
+        "run_scoped_identity_path": f"/kaggle/working/{run_id}/RUN_IDENTITY.json",
+        "run_scoped_log_path": f"/kaggle/working/{run_id}/remote.log",
+        "failure_path": f"/kaggle/working/{run_id}/failure.json",
     }
 
 
@@ -900,23 +904,27 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
     auth = discover_kaggle_auth()
     if not auth.available:
         raise KaggleAutomationError("authentication_missing")
-    stage = ensure_stage_paths(stage_root)
-    attempt_path = stage.stage_root / SUBMISSION_ATTEMPT_NAME
-    if attempt_path.exists():
-        try:
-            prior_attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            prior_attempt = {}
-        if run_id is None or prior_attempt.get("run_id") == run_id:
-            raise KaggleAutomationError("duplicate_submission_attempt_blocked")
     expected_commit = expected_commit or get_repo_state().head
     if not expected_commit:
         raise KaggleAutomationError("git_commit_unavailable")
-    notebook_dir = sync_notebook_to_stage(stage, spec, auth, run_id=run_id, expected_commit=expected_commit)
+    legacy_attempt_path = Path(stage_root) / SUBMISSION_ATTEMPT_NAME
+    if run_id is not None and legacy_attempt_path.exists():
+        try:
+            prior_attempt = json.loads(legacy_attempt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prior_attempt = {}
+        if prior_attempt.get("run_id") == run_id:
+            raise KaggleAutomationError("duplicate_submission_attempt_blocked")
+    resolved_run_id = run_id or generate_run_id(git_commit=expected_commit)
+    stage = ensure_stage_paths(run_root_for(resolved_run_id, base_root=stage_root))
+    attempt_path = stage.stage_root / SUBMISSION_ATTEMPT_NAME
+    if attempt_path.exists():
+        raise KaggleAutomationError("duplicate_submission_attempt_blocked")
+    notebook_dir = sync_notebook_to_stage(stage, spec, auth, run_id=resolved_run_id, expected_commit=expected_commit)
     notebook_dir = _validate_kernel_directory(notebook_dir, spec.code_file)
-    prepared = _validate_prepared_submission(notebook_dir=notebook_dir, run_id=run_id or "", expected_commit=expected_commit, spec=spec)
+    prepared = _validate_prepared_submission(notebook_dir=notebook_dir, run_id=resolved_run_id, expected_commit=expected_commit, spec=spec)
     submission_manifest = {
-        "run_id": run_id,
+        "run_id": resolved_run_id,
         "expected_commit": expected_commit,
         "git_head": get_repo_state().head,
         "kernel_slug": spec.notebook_slug,
@@ -927,10 +935,10 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
         **prepared,
     }
     write_json(stage.stage_root / "submission_manifest.json", submission_manifest)
-    result = _kaggle_checked("kernels", "push", "-p", str(notebook_dir), timeout=120, phase="push_complete", kernel_ref=kaggle_kernel_ref(auth, spec), expected_commit=expected_commit, run_id=run_id, stage_root=stage_root)
+    result = _kaggle_checked("kernels", "push", "-p", str(notebook_dir), timeout=120, phase="push_complete", kernel_ref=kaggle_kernel_ref(auth, spec), expected_commit=expected_commit, run_id=resolved_run_id, stage_root=stage_root)
     result_payload = _command_result_payload(result, ["kaggle", "kernels", "push", "-p", str(notebook_dir)])
     attempt = {
-        "run_id": run_id,
+        "run_id": resolved_run_id,
         "expected_commit": expected_commit,
         "timestamp": time.time(),
         "command_safe": result_payload["command_safe"],
@@ -947,7 +955,7 @@ def push(spec: KaggleNotebookSpec | None = None, *, stage_root: Path = DEFAULT_S
         raise KaggleAutomationError(json.dumps({"phase": "push", **{key: result_payload[key] for key in ("command_safe", "exit_code")}, "stdout_safe_tail": _safe_tail(result_payload["stdout"]), "stderr_safe_tail": _safe_tail(result_payload["stderr"])}, sort_keys=True))
     _write_runner_metadata(
         stage_root=stage_root,
-        run_id=run_id or _run_id_from_stage_root(stage_root) or "unknown",
+        run_id=resolved_run_id,
         expected_commit=expected_commit,
         notebook_ref=kaggle_kernel_ref(auth, spec),
         dataset_ref=spec.dataset_ref,

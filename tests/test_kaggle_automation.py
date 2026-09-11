@@ -101,6 +101,39 @@ def test_prepare_only_creates_manifest_without_kaggle_submission(monkeypatch, tm
     assert "__EXPECTED_GIT_COMMIT__" not in first_cell
 
 
+def test_prepared_submission_rejects_unresolved_identity_placeholders(tmp_path, monkeypatch):
+    entrypoint = tmp_path / "semantic_extractor_training.ipynb"
+    metadata = tmp_path / "kernel-metadata.json"
+    entrypoint.write_text(json.dumps({"cells": [{"cell_type": "code", "source": [
+        "handle.flush()\n",
+        "print('RUN_IDENTITY_JSON=', flush=True)\n",
+        "Path('RUN_IDENTITY.json').open('a').close()\n",
+        "RUN_ID='new-run'\n",
+        "EXPECTED='abc'\n",
+        "RUN_ID='__RUN_ID__'\n",
+    ]}]}), encoding="utf-8")
+    metadata.write_text(json.dumps({"code_file": entrypoint.name, "id": "jiban/data-analysis-llm-semantic-extractor"}), encoding="utf-8")
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/safe/auth", "access_token"))
+    try:
+        kaggle_runner._validate_prepared_submission(notebook_dir=tmp_path, run_id="new-run", expected_commit="a" * 40, spec=kaggle_runner.KaggleNotebookSpec())
+    except kaggle_runner.KaggleAutomationError as exc:
+        assert str(exc) == "prepared_submission_unresolved_identity_placeholder"
+    else:
+        raise AssertionError("unresolved identity placeholder was accepted")
+
+
+def test_prepared_manifest_paths_use_actual_run_id(monkeypatch, tmp_path):
+    monkeypatch.setattr(kaggle_runner, "discover_kaggle_auth", lambda: kaggle_runner.KaggleAuthState(True, "jiban", "/safe/auth", "access_token"))
+    monkeypatch.setattr(kaggle_runner, "get_repo_state", lambda: kaggle_runner.KaggleRepoState(head="b" * 40, dirty=False, branch="main"))
+    monkeypatch.setattr(kaggle_runner, "generate_run_id", lambda **_: "b" * 7 + "-20260911T000000Z-test")
+    result = kaggle_runner.prepare_only(stage_root=tmp_path / "stage")
+    manifest = json.loads(Path(result["submission_manifest"]).read_text(encoding="utf-8"))
+    assert manifest["run_scoped_identity_path"].endswith(f"/{result['run_id']}/RUN_IDENTITY.json")
+    source = Path(manifest["generated_entrypoint"]).read_text(encoding="utf-8")
+    assert source.count("__RUN_ID__") == 0
+    assert source.count("__EXPECTED_GIT_COMMIT__") == 0
+
+
 def test_prepared_submission_rejects_notebook_without_first_identity_cell(tmp_path, monkeypatch):
     entrypoint = tmp_path / "semantic_extractor_training.ipynb"
     metadata = tmp_path / "kernel-metadata.json"
