@@ -19,7 +19,7 @@ from kaggle.bootstrap import (
     write_dependency_preflight_report,
 )
 from kaggle.run_context import resolve_executed_source_commit, write_source_identity
-from kaggle.run_semantic_training import _build_smoke_corpus, _canonical_dependency_compatibility_gate, _dependency_probe_snippets, _patch_torch_dynamo_compatibility, _run_python_probe, _smoke_split_targets
+from kaggle.run_semantic_training import _build_smoke_corpus, _canonical_dependency_compatibility_gate, _dependency_probe_snippets, _normalize_runtime_payload, _patch_torch_dynamo_compatibility, _run_python_probe, _smoke_split_targets
 from kaggle.run_semantic_training import _safe_commit_hash, _write_smoke_failure, _write_smoke_heartbeat, run_notebook_flow
 
 
@@ -566,6 +566,38 @@ def test_canonical_dependency_gate_allows_proven_p100_stack(tmp_path):
     assert result["reason"] == "SUCCESS"
 
 
+def test_version_90_runtime_payload_normalization_preserves_sibling_cuda_evidence(tmp_path):
+    report = {
+        "schema_version": "1.0",
+        "run_id": "version-90-run",
+        "stage": "dependencies",
+        "status": "SUCCESS",
+        "install_success": True,
+        "stack_verified": True,
+        "shared_torch_bootstrap": {
+            "basic_cuda_tensor_test": True,
+            "runtime": {
+                "json": {
+                    "available": True,
+                    "capability": [6, 0],
+                    "arch_list": ["sm_60"],
+                }
+            },
+        },
+        "postinstall_bnb": {"json": {"real_bnb_cuda_operation": True}},
+        "nf4_probe": {"json": {key: True for key in ("initialization", "quantization", "dequantization", "cuda")}},
+    }
+    normalized = _normalize_runtime_payload(report["shared_torch_bootstrap"])
+    assert normalized["basic_cuda_tensor_test"] is True
+    assert normalized["available"] is True
+    (tmp_path / "dependency_install_result.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = _canonical_dependency_compatibility_gate(tmp_path, run_id="version-90-run")
+
+    assert result["allowed"] is True
+    assert result["reason"] == "SUCCESS"
+
+
 def test_canonical_dependency_gate_rejects_unverified_runtime_probes(tmp_path):
     report = {
         "schema_version": "1.0",
@@ -593,6 +625,40 @@ def test_canonical_dependency_gate_rejects_unverified_runtime_probes(tmp_path):
 
     assert result == {"allowed": False, "reason": "RUNTIME_PROBES_NOT_VERIFIED"}
     assert "sm60_requires_compatible_torch_and_bitsandbytes" not in str(result)
+
+
+def test_canonical_dependency_gate_rejects_missing_basic_cuda_evidence(tmp_path):
+    report = {
+        "schema_version": "1.0",
+        "run_id": "missing-cuda-proof",
+        "stage": "dependencies",
+        "status": "SUCCESS",
+        "install_success": True,
+        "stack_verified": True,
+        "shared_torch_bootstrap": {"runtime": {"json": {"available": True, "capability": [6, 0], "arch_list": ["sm_60"]}}},
+        "postinstall_bnb": {"json": {"real_bnb_cuda_operation": True}},
+        "nf4_probe": {"json": {key: True for key in ("initialization", "quantization", "dequantization", "cuda")}},
+    }
+    (tmp_path / "dependency_install_result.json").write_text(json.dumps(report), encoding="utf-8")
+
+    assert _canonical_dependency_compatibility_gate(tmp_path)["reason"] == "RUNTIME_PROBES_NOT_VERIFIED"
+
+
+def test_canonical_dependency_gate_rejects_malformed_runtime_wrapper(tmp_path):
+    report = {
+        "schema_version": "1.0",
+        "run_id": "malformed-runtime",
+        "stage": "dependencies",
+        "status": "SUCCESS",
+        "install_success": True,
+        "stack_verified": True,
+        "shared_torch_bootstrap": {"runtime": "not-a-probe"},
+        "postinstall_bnb": {"json": {"real_bnb_cuda_operation": True}},
+        "nf4_probe": {"json": {key: True for key in ("initialization", "quantization", "dequantization", "cuda")}},
+    }
+    (tmp_path / "dependency_install_result.json").write_text(json.dumps(report), encoding="utf-8")
+
+    assert _canonical_dependency_compatibility_gate(tmp_path)["reason"] == "RUNTIME_PROBES_NOT_VERIFIED"
 
 
 def test_canonical_dependency_gate_reads_outer_bootstrap_report_for_nested_run(tmp_path, monkeypatch):

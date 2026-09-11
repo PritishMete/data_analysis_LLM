@@ -542,15 +542,14 @@ def _canonical_dependency_compatibility_gate(
 
     # These are the authoritative post-install runtime probes. Do not replace
     # them with version or optional-library heuristics at model-load time.
-    shared_torch_payload = report.get("shared_torch_bootstrap") or report.get("shared_torch_runtime") or {}
-    shared_torch_payload = shared_torch_payload.get("runtime", shared_torch_payload) if isinstance(shared_torch_payload, dict) else {}
-    shared_torch_payload = shared_torch_payload.get("json", shared_torch_payload) if isinstance(shared_torch_payload, dict) else {}
-    torch_payload = report.get("postinstall_torch") or report.get("torch_probe") or shared_torch_payload
-    torch_payload = torch_payload.get("json", torch_payload) if isinstance(torch_payload, dict) else {}
-    bnb_payload = report.get("postinstall_bnb") or {}
-    bnb_payload = bnb_payload.get("json", bnb_payload) if isinstance(bnb_payload, dict) else {}
-    nf4_payload = report.get("nf4_probe") or {}
-    nf4_payload = nf4_payload.get("json", nf4_payload) if isinstance(nf4_payload, dict) else {}
+    shared_torch_payload = _normalize_runtime_payload(
+        report.get("shared_torch_bootstrap") or report.get("shared_torch_runtime") or {}
+    )
+    torch_payload = _normalize_runtime_payload(
+        report.get("postinstall_torch") or report.get("torch_probe") or shared_torch_payload
+    )
+    bnb_payload = _normalize_runtime_payload(report.get("postinstall_bnb") or {})
+    nf4_payload = _normalize_runtime_payload(report.get("nf4_probe") or {})
     required_probe_evidence = (
         bool(torch_payload.get("available"))
         and tuple(torch_payload.get("capability") or ()) == (6, 0)
@@ -562,6 +561,20 @@ def _canonical_dependency_compatibility_gate(
     if not required_probe_evidence:
         return {"allowed": False, "reason": "RUNTIME_PROBES_NOT_VERIFIED"}
     return {"allowed": True, "reason": "SUCCESS", "report": report, "report_path": str(report_path)}
+
+
+def _normalize_runtime_payload(payload: Any) -> dict[str, Any]:
+    """Merge wrapped probe JSON with sibling evidence from the same report."""
+    if not isinstance(payload, dict):
+        return {}
+    normalized = dict(payload)
+    for wrapper_key in ("runtime", "json"):
+        nested = payload.get(wrapper_key)
+        if isinstance(nested, dict):
+            nested_json = nested.get("json", nested)
+            if isinstance(nested_json, dict):
+                normalized.update(nested_json)
+    return normalized
 
 
 def _safe_probe_result(result: subprocess.CompletedProcess[str], *, label: str) -> dict[str, Any]:
