@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from kaggle import qwen_qlora_learning_experiment as experiment
 from kaggle import qwen_qlora_memorization_convergence as convergence
 from kaggle import execute_smoke_training
@@ -40,56 +38,73 @@ def test_memorization_convergence_refuses_baseline_lr_drift(monkeypatch):
         raise AssertionError("expected baseline drift protection")
 
 
-def test_runtime_dispatch_runs_convergence_module_and_reads_current_run_report(monkeypatch, tmp_path):
+def test_remote_dispatch_reuses_existing_learning_module(monkeypatch, tmp_path):
     run_id = "run-convergence"
     commit = "a" * 40
-    report_path = tmp_path / "smoke_runs" / run_id / "learning_experiment_report.json"
-    report_path.parent.mkdir(parents=True)
-    report_path.write_text(json.dumps({"run_id": run_id, "expected_git_commit": commit}), encoding="utf-8")
     observed = {}
+    monkeypatch.setattr(experiment, "LEARNING_RATE", execute_smoke_training.EXPECTED_BASE_LEARNING_RATE)
 
-    def fake_run(command, **kwargs):
-        observed["command"] = command
-        observed["kwargs"] = kwargs
-        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        observed["learning_rate_during_run"] = experiment.LEARNING_RATE
+        return {
+            "run_id": run_id,
+            "expected_git_commit": commit,
+            "config": {
+                "learning_rate": execute_smoke_training.MEMORIZATION_CONVERGENCE_LR,
+                "memorization": True,
+            },
+        }
 
-    monkeypatch.setattr(execute_smoke_training.subprocess, "run", fake_run)
-    result = execute_smoke_training._run_memorization_convergence_module(
+    monkeypatch.setattr(experiment, "run_qwen_qlora_learning_experiment", fake_run)
+    result = execute_smoke_training._run_memorization_convergence(
         output_root=tmp_path,
         run_id=run_id,
         expected_git_commit=commit,
         source_root=tmp_path / "source",
     )
 
-    command = observed["command"]
-    assert command[:3] == [execute_smoke_training.sys.executable, "-m", "kaggle.qwen_qlora_memorization_convergence"]
-    assert command[command.index("--run-id") + 1] == run_id
-    assert command[command.index("--expected-git-commit") + 1] == commit
+    assert observed["memorization"] is True
+    assert observed["learning_rate_during_run"] == 1e-4
+    assert experiment.LEARNING_RATE == 1e-5
     assert result["run_id"] == run_id
-    assert observed["kwargs"]["capture_output"] is True
 
 
-def test_runtime_dispatch_rejects_report_from_another_run(monkeypatch, tmp_path):
-    report_path = tmp_path / "smoke_runs" / "expected-run" / "learning_experiment_report.json"
-    report_path.parent.mkdir(parents=True)
-    report_path.write_text(json.dumps({"run_id": "historical-run", "expected_git_commit": "a" * 40}), encoding="utf-8")
-    monkeypatch.setattr(
-        execute_smoke_training.subprocess,
-        "run",
-        lambda *args, **kwargs: type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-    )
-
+def test_remote_dispatch_refuses_baseline_lr_drift(monkeypatch, tmp_path):
+    monkeypatch.setattr(experiment, "LEARNING_RATE", 2e-5)
     try:
-        execute_smoke_training._run_memorization_convergence_module(
+        execute_smoke_training._run_memorization_convergence(
             output_root=tmp_path,
-            run_id="expected-run",
+            run_id="run-convergence",
             expected_git_commit="a" * 40,
             source_root=tmp_path / "source",
         )
     except RuntimeError as exc:
-        assert "RUN_ID_MISMATCH" in str(exc)
+        assert "BASE_LEARNING_RATE_DRIFTED" in str(exc)
     else:
-        raise AssertionError("expected current-run report identity enforcement")
+        raise AssertionError("expected baseline drift protection")
+
+
+def test_remote_dispatch_restores_lr_after_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(experiment, "LEARNING_RATE", 1e-5)
+
+    def fail(**kwargs):
+        assert experiment.LEARNING_RATE == 1e-4
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(experiment, "run_qwen_qlora_learning_experiment", fail)
+    try:
+        execute_smoke_training._run_memorization_convergence(
+            output_root=tmp_path,
+            run_id="run-convergence",
+            expected_git_commit="a" * 40,
+            source_root=tmp_path / "source",
+        )
+    except RuntimeError as exc:
+        assert "synthetic failure" in str(exc)
+    else:
+        raise AssertionError("expected synthetic failure")
+    assert experiment.LEARNING_RATE == 1e-5
 
 
 def test_runner_exposes_convergence_cycle_workflow(monkeypatch, tmp_path):
