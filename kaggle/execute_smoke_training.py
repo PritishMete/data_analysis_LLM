@@ -22,6 +22,10 @@ else:
     from .import_trace import write_import_trace
 
 
+MEMORIZATION_CONVERGENCE_LR = 1e-4
+EXPECTED_BASE_LEARNING_RATE = 1e-5
+
+
 def _workflow_mode() -> str:
     return str(os.environ.get("KAGGLE_WORKFLOW_MODE") or "smoke").strip().lower()
 
@@ -56,51 +60,52 @@ def _write_top_level_failure(exc: BaseException, argv: list[str] | None) -> None
     })
 
 
-def _run_memorization_convergence_module(
+def _run_memorization_convergence(
     *,
     output_root: Path,
     run_id: str,
     expected_git_commit: str | None,
     source_root: Path,
 ) -> dict[str, Any]:
-    """Run the LR-convergence entry point in the fresh post-bootstrap process."""
-    command = [
-        sys.executable,
-        "-m",
-        "kaggle.qwen_qlora_memorization_convergence",
-        "--output-root",
-        str(output_root),
-        "--run-id",
-        run_id,
-        "--source-root",
-        str(source_root),
-    ]
-    if expected_git_commit:
-        command.extend(["--expected-git-commit", expected_git_commit])
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=24 * 60 * 60,
-    )
-    if completed.stdout:
-        print(completed.stdout, end="", flush=True)
-    if completed.stderr:
-        print(completed.stderr, file=sys.stderr, end="", flush=True)
-    report_path = output_root / "smoke_runs" / run_id / "learning_experiment_report.json"
-    if completed.returncode != 0:
-        raise RuntimeError(f"MEMORIZATION_CONVERGENCE_MODULE_FAILED:returncode={completed.returncode}")
-    if not report_path.is_file():
-        raise RuntimeError("MEMORIZATION_CONVERGENCE_REPORT_MISSING")
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report.get("run_id") != run_id:
+    """Run convergence through the already-proven learning module.
+
+    Kaggle's prepared source bundle historically contains the baseline learning
+    module but not newly-added wrapper modules.  Keep the remote entrypoint
+    self-contained: import the proven baseline module, assert its baseline LR,
+    apply the convergence-only LR in memory, and run the existing memorization
+    path.  No dependency, model, LoRA, prompt, dataset, or generation settings
+    are changed here.
+    """
+    from kaggle import qwen_qlora_learning_experiment as experiment
+
+    if experiment.LEARNING_RATE != EXPECTED_BASE_LEARNING_RATE:
+        raise RuntimeError(
+            "BASE_LEARNING_RATE_DRIFTED: expected "
+            f"{EXPECTED_BASE_LEARNING_RATE}, found {experiment.LEARNING_RATE}"
+        )
+    original_learning_rate = experiment.LEARNING_RATE
+    try:
+        experiment.LEARNING_RATE = MEMORIZATION_CONVERGENCE_LR
+        result = experiment.run_qwen_qlora_learning_experiment(
+            output_root=output_root,
+            run_id=run_id,
+            expected_git_commit=expected_git_commit,
+            source_root=source_root,
+            memorization=True,
+        )
+    finally:
+        experiment.LEARNING_RATE = original_learning_rate
+
+    if result.get("run_id") != run_id:
         raise RuntimeError("MEMORIZATION_CONVERGENCE_REPORT_RUN_ID_MISMATCH")
-    if expected_git_commit and report.get("expected_git_commit") != expected_git_commit:
+    if expected_git_commit and result.get("expected_git_commit") != expected_git_commit:
         raise RuntimeError("MEMORIZATION_CONVERGENCE_REPORT_COMMIT_MISMATCH")
-    return report
+    config = result.get("config") if isinstance(result.get("config"), dict) else {}
+    if float(config.get("learning_rate", 0.0) or 0.0) != MEMORIZATION_CONVERGENCE_LR:
+        raise RuntimeError("MEMORIZATION_CONVERGENCE_LR_NOT_APPLIED")
+    if config.get("memorization") is not True:
+        raise RuntimeError("MEMORIZATION_CONVERGENCE_MODE_NOT_APPLIED")
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -195,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         result = run_qwen_qlora_learning_experiment(output_root=output_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root, memorization=True)
     elif workflow_mode == "qwen_semantic_memorization_convergence":
         write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
-        result = _run_memorization_convergence_module(
+        result = _run_memorization_convergence(
             output_root=output_root,
             run_id=resolved_run_id,
             expected_git_commit=args.expected_git_commit,
