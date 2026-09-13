@@ -56,6 +56,53 @@ def _write_top_level_failure(exc: BaseException, argv: list[str] | None) -> None
     })
 
 
+def _run_memorization_convergence_module(
+    *,
+    output_root: Path,
+    run_id: str,
+    expected_git_commit: str | None,
+    source_root: Path,
+) -> dict[str, Any]:
+    """Run the LR-convergence entry point in the fresh post-bootstrap process."""
+    command = [
+        sys.executable,
+        "-m",
+        "kaggle.qwen_qlora_memorization_convergence",
+        "--output-root",
+        str(output_root),
+        "--run-id",
+        run_id,
+        "--source-root",
+        str(source_root),
+    ]
+    if expected_git_commit:
+        command.extend(["--expected-git-commit", expected_git_commit])
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=24 * 60 * 60,
+    )
+    if completed.stdout:
+        print(completed.stdout, end="", flush=True)
+    if completed.stderr:
+        print(completed.stderr, file=sys.stderr, end="", flush=True)
+    report_path = output_root / "smoke_runs" / run_id / "learning_experiment_report.json"
+    if completed.returncode != 0:
+        raise RuntimeError(f"MEMORIZATION_CONVERGENCE_MODULE_FAILED:returncode={completed.returncode}")
+    if not report_path.is_file():
+        raise RuntimeError("MEMORIZATION_CONVERGENCE_REPORT_MISSING")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("run_id") != run_id:
+        raise RuntimeError("MEMORIZATION_CONVERGENCE_REPORT_RUN_ID_MISMATCH")
+    if expected_git_commit and report.get("expected_git_commit") != expected_git_commit:
+        raise RuntimeError("MEMORIZATION_CONVERGENCE_REPORT_COMMIT_MISMATCH")
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", default=str(KAGGLE_WORKING_ROOT))
@@ -146,6 +193,14 @@ def main(argv: list[str] | None = None) -> int:
 
         write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
         result = run_qwen_qlora_learning_experiment(output_root=output_root, run_id=resolved_run_id, expected_git_commit=args.expected_git_commit, source_root=repo_root, memorization=True)
+    elif workflow_mode == "qwen_semantic_memorization_convergence":
+        write_import_trace(report_root / "import_trace.jsonl", module="kaggle.execute_smoke_training", event="after_project_training_import")
+        result = _run_memorization_convergence_module(
+            output_root=output_root,
+            run_id=resolved_run_id,
+            expected_git_commit=args.expected_git_commit,
+            source_root=repo_root,
+        )
     elif workflow_mode == "qwen_semantic_generation_diagnostic":
         from kaggle.semantic_generation_diagnostic import run_semantic_generation_diagnostic
 
