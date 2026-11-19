@@ -1,3 +1,9 @@
-# CarDekho ML Model
+# Dataset folder: .
 
-Used-car listings for price analysis and regression. They support feature inspection, price-distribution analysis, outlier detection, and price prediction workflows.
+Source repository: `JayanGupta/CarDekho_ML_Model`
+
+This folder contains datasets for data-analysis and machine-learning experiments.
+
+| Dataset | Rows | Columns | Fields | Purpose | Suitable analysis |
+| --- | ---: | ---: | --- | --- | --- |
+| `CarDekho.csv` | 2059 | 20 | `Make`, `Model`, `Price`, `Year`, `Kilometer`, `Fuel Type`, `Transmission`, `Location`, `Color`, `Owner`, `Seller Type`, `Engine`, `Max Power`, `Max Torque`, `Drivetrain`, `Length`, `Width`, `Height`, `Seating Capacity`, `Fuel Tank Capacity` | Business and retail analysis | schema profiling, missing-value and duplicate checks, grouped summaries, price or revenue comparisons, trend and ranking analysis, time-series analysis |

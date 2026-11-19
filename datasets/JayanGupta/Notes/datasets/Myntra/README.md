@@ -1,30 +1,9 @@
-# Myntra product catalogue
+# Dataset folder: datasets/Myntra
 
-## What this dataset represents
+Source repository: `JayanGupta/Notes`
 
-This is shopping-site product data from Myntra. Each row represents a product listing that can be used to study product assortment, pricing, discounts, ratings, and available sizes.
+This folder contains datasets for data-analysis and machine-learning experiments.
 
-## Shape
-
-- Rows: 24,324 product listings
-- Columns: 8
-- Granularity: one row per product listing
-
-## Columns
-
-| Column | Description |
-| --- | --- |
-| `product_name` | Name or title of the product listing |
-| `brand_name` | Brand associated with the product |
-| `rating` | Customer rating recorded for the listing |
-| `rating_count` | Number of ratings recorded for the listing |
-| `marked_price` | Listed price before discount |
-| `discounted_price` | Current or discounted selling price |
-| `sizes` | Available sizes stored as a comma-separated value |
-| `product_link` | Product path or link identifier |
-
-## Suitable analysis
-
-This dataset supports product and brand counts, price comparisons, discount calculations, rating analysis, popular-product ranking, size availability analysis, and questions such as which brands have the most listings or which products offer the largest price reductions.
-
-The source file was an Excel workbook in the public `JayanGupta/Notes` repository and is provided here as `myntra-dataset.csv` for consistent use by the learner.
+| Dataset | Rows | Columns | Fields | Purpose | Suitable analysis |
+| --- | ---: | ---: | --- | --- | --- |
+| `myntra-dataset.csv` | 24324 | 8 | `product_name`, `brand_name`, `rating`, `rating_count`, `marked_price`, `discounted_price`, `sizes`, `product_link` | Business and retail analysis | schema profiling, missing-value and duplicate checks, grouped summaries, price or revenue comparisons, trend and ranking analysis, rating or sentiment analysis, text-field exploration |
