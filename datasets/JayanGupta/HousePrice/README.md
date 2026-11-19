@@ -1,5 +1,3 @@
-# House price datasets
+# House Price
 
-`train.csv`, `test.csv`, and `Submission.csv` support house-price prediction workflows.
-
-The data supports feature distributions, neighborhood and property comparisons, price prediction, error analysis, and submission preparation. Typical requirements include aligning train and test schemas, handling missing values, encoding categorical columns, checking skewed numeric variables, and validating regression metrics.
+Housing train, test, and submission data for regression analysis. They support schema profiling, feature relationships, missing-value handling, model evaluation, and prediction output generation.

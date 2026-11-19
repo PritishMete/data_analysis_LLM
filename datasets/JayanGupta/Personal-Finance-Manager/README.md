@@ -1,5 +1,3 @@
-# Personal finance dataset
+# Personal Finance Manager
 
-`personal-finance-dataxlsx---Sheet1.csv` supports personal-finance and transaction analysis.
-
-The data can support spending categories, income and expense summaries, budget variance, recurring-payment detection, and time-based cash-flow analysis. Typical requirements include date parsing, amount normalization, category cleanup, aggregation, and privacy-aware reporting.
+Personal finance records for transaction and spending analysis. They support category totals, time trends, budget comparisons, and cash-flow summaries.

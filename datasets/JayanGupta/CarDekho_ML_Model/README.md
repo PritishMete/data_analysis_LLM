@@ -1,5 +1,3 @@
-# CarDekho dataset
+# CarDekho ML Model
 
-`CarDekho.csv` contains used-car listing information for vehicle price analysis and prediction.
-
-The data supports price distributions, brand and model comparisons, mileage and age analysis, feature relationships, outlier detection, and supervised regression. Typical requirements include numeric type conversion, categorical encoding, missing-value handling, and train/test validation.
+Used-car listings for price analysis and regression. They support feature inspection, price-distribution analysis, outlier detection, and price prediction workflows.

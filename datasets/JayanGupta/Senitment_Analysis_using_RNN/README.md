@@ -1,5 +1,3 @@
-# Swiggy sentiment dataset
+# Sentiment Analysis using RNN
 
-`swiggy.csv` supports sentiment analysis of food-delivery or restaurant-related text.
-
-The data can support sentiment labels, review-length analysis, common terms, restaurant comparisons, and text-classification experiments. Typical requirements include text normalization, label validation, duplicate checks, tokenization, train/test splitting, and classification metrics.
+Swiggy review data for sentiment-analysis experiments. It supports text preprocessing, sentiment classification, review-length analysis, and restaurant feedback summaries.
