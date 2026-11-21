@@ -2,6 +2,6 @@
   "domain": "myntra",
   "source": "kaggle:/kaggle/working/myntra_plan_adapter",
   "version": "myntra_candidate_v1",
-  "status": "trained_pending_checkpoint_copy",
+  "status": "checkpoint_copied_from_kaggle",
   "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
 }
