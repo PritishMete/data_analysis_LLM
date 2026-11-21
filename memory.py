@@ -2,10 +2,11 @@
 import sqlite3
 import json
 import os
+import tempfile
 from datetime import datetime
 
 # Use /tmp on Render (always writable)
-DB_PATH = "/tmp/ai_memory.db"
+DB_PATH = os.path.join(tempfile.gettempdir(), "ai_memory.db")
 
 
 def init_db():

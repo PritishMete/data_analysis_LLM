@@ -120,7 +120,7 @@ class InsightLearningService:
         fields = [field.id for field in request.dataset_profile.fields]
         route = self.domain_router.route(request.text, fields, request.intent)
         aliases = {field: f"FIELD_{index:02d}" for index, field in enumerate(fields, 1)}
-        if not route.fallback and os.getenv("LEARNER_ADAPTERS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}:
+        if (not route.fallback or route.domain == "restaurant") and os.getenv("LEARNER_ADAPTERS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}:
             try:
                 if route.domain == "finance":
                     trained = self.trained_finance_adapter.plan(request.model_dump())

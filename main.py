@@ -1,7 +1,11 @@
 import re
 import time
 import logging
+import sys
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -98,6 +102,7 @@ from sql_cache.middleware import SqlCacheMiddleware
 from sql_cache.routes import sql_cache_router
 from memory_engine.routes import memory_engine_router
 from agent.routes import learning_router
+from insight_learning.api.routes_plan import router as learner_plan_router
 from secure_excel.routes import router as secure_excel_router
 from secure_excel.service import list_supported_transforms
 
@@ -1741,6 +1746,7 @@ app.include_router(plan_cache_router)
 app.include_router(sql_cache_router)
 app.include_router(memory_engine_router)
 app.include_router(learning_router)
+app.include_router(learner_plan_router)
 app.include_router(secure_excel_router)
 
 try:
