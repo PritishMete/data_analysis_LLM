@@ -1800,4 +1800,30 @@ async def learner_query(file: UploadFile | None = File(None), text: str = Form(.
             if city: subset = df[df[city_col].astype(str).str.lower() == city.lower()]
         rows = subset.sort_values(rating_col, ascending=False).head(n).to_dict(orient="records")
         return {"result": rows, "display": rows, "operation": "rank", "column": rating_col}
+    normalized = {str(c).lower(): c for c in df.columns}
+    if "count" in question:
+        for column in df.columns:
+            values = [str(v) for v in df[column].dropna().unique()]
+            value = next((v for v in values if v.lower() in question), None)
+            if value is not None:
+                result = int((df[column].astype(str).str.lower() == value.lower()).sum())
+                return {"result": result, "display": str(result), "operation": "count", "filter": {"column": str(column), "value": value}}
+    metric_words = ("amount", "sales") if "sales" in question or "amount" in question else ("price", "cost") if "price" in question or "cost" in question else ("quantity", "rating")
+    metric = next((c for word in metric_words for c in df.columns if word in str(c).lower()), None)
+    if ("average" in question or "mean" in question or "total" in question or "sum" in question) and metric is not None:
+        group = None
+        if " by " in question:
+            suffix = question.split(" by ", 1)[1]
+            group = next((c for c in df.columns if str(c).lower() in suffix or str(c).lower().replace(" ", "") in suffix.replace(" ", "")), None)
+        numeric = pd.to_numeric(df[metric], errors="coerce")
+        if group:
+            values = df.assign(__metric=numeric).groupby(group, dropna=False)["__metric"].mean() if "average" in question or "mean" in question else df.assign(__metric=numeric).groupby(group, dropna=False)["__metric"].sum()
+            rows = [{str(group): k, str(metric): float(v)} for k, v in values.dropna().items()]
+            return {"result": rows, "display": rows, "operation": "aggregate", "column": str(metric), "group_by": str(group)}
+        value = float(numeric.mean() if "average" in question or "mean" in question else numeric.sum())
+        return {"result": value, "display": str(round(value, 2)), "operation": "aggregate", "column": str(metric)}
+    comparison = re.search(r"(?:above|over|greater than|more than)\s+(\d+(?:\.\d+)?)", question)
+    if comparison and metric is not None:
+        value = float(comparison.group(1)); rows = df[pd.to_numeric(df[metric], errors="coerce") > value].to_dict(orient="records")
+        return {"result": rows, "display": rows, "operation": "filter", "column": str(metric), "operator": "gt", "value": value}
     raise HTTPException(status_code=400, detail="Supported local operations: count by city and top rated restaurants")
