@@ -106,11 +106,11 @@ def semantic_envelope(domain: str, version: str, raw: dict[str, Any], aliases: d
         if where["operator"] not in {"eq", "ne", "gt", "gte", "lt", "lte", "contains"}:
             raise ValueError("adapter_returned_invalid_where_operator")
         filters.append({"column": alias(where["column"]), "operator": where["operator"], "value": where["value"]})
-    metrics = [] if operation == "filter" else [{"column": column, "function": raw.get("function", "mean")}]
+    metrics = [{"column": column, "function": raw.get("function", "mean")}] if operation == "aggregate" else []
     return {
         "intent": operation, "semantic_bindings": {},
         "predicate_graph": {"logical_structure": "SINGLE", "predicate_count": len(filters), "operators": [f["operator"] for f in filters], "validated": True},
-        "aggregation": {"required": operation != "filter", "group_by": [group] if group else [], "measures": metrics},
+        "aggregation": {"required": operation == "aggregate", "group_by": [group] if group else [], "measures": metrics},
         "ranking": {"required": operation == "rank", "direction": raw.get("direction", "desc")},
         "available_tools": ["sql.filter" if operation == "filter" else "sql.group_by"],
         "tool_sequence": ["sql.filter" if operation == "filter" else "sql.group_by"],
