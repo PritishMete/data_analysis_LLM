@@ -1767,10 +1767,21 @@ def powerbi_transform_list():
 
 
 @app.post("/learner/query")
-async def learner_query(file: UploadFile = File(...), text: str = Form(...)):
+async def learner_query(file: UploadFile | None = File(None), text: str = Form(...), domain: str = Form("restaurant")):
     """Execute the Query Lab's safe, local CSV operations without Gemini."""
-    contents = await file.read()
-    df = pd.read_csv(io.BytesIO(contents))
+    dataset_paths = {
+        "restaurant": Path("datasets/JayanGupta/Sprint_Solutions/datasets/restaurants.csv"),
+        "finance": Path("datasets/JayanGupta/Personal-Finance-Manager/personal_finance_clean.csv"),
+        "myntra": Path("datasets/JayanGupta/Notes/datasets/Myntra/myntra-dataset.csv"),
+        "retail": Path("datasets/generated/retail_sales_100k_20col_synthetic.csv"),
+    }
+    if file is not None:
+        df = pd.read_csv(io.BytesIO(await file.read()))
+    else:
+        path = dataset_paths.get(domain)
+        if path is None or not path.exists():
+            raise HTTPException(status_code=404, detail=f"Repository dataset not found for domain: {domain}")
+        df = pd.read_csv(path)
     question = text.lower()
     city_col = next((c for c in df.columns if str(c).lower() == "city"), None)
     if "count" in question and city_col:
