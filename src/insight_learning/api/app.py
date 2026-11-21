@@ -28,7 +28,7 @@ from .schemas import (
 )
 from insight_learning.retail_compat import TrainedRetailCompatibilityAdapter
 from insight_learning.finance_compat import TrainedFinanceCompatibilityAdapter
-from insight_learning.adapter_bridge import TrainedAdapter, semantic_envelope
+from insight_learning.adapter_bridge import TrainedAdapter, deterministic_restaurant_plan, semantic_envelope
 from insight_learning.domain_router import DomainRouter
 
 
@@ -125,7 +125,9 @@ class InsightLearningService:
                 if route.domain == "finance":
                     trained = self.trained_finance_adapter.plan(request.model_dump())
                 elif route.domain == "restaurant":
-                    raw = self.trained_domain_adapters[route.domain].plan(request.text or "", fields)
+                    raw = deterministic_restaurant_plan(request.text or "")
+                    if raw is None:
+                        raw = self.trained_domain_adapters[route.domain].plan(request.text or "", fields)
                     trained = {"plan_source": "trained_restaurant_adapter", "model_version": self.trained_domain_adapters[route.domain].version, "confidence": route.confidence, "tool_graph": [], "critic_status": {"passed": True, "notes": []}, "plan": semantic_envelope(route.domain, self.trained_domain_adapters[route.domain].version, raw, aliases), "skill_id": "restaurant.query.v1", "plan_template_id": "restaurant.compatibility.v1"}
                 elif route.domain == "myntra":
                     raw = self.trained_domain_adapters[route.domain].plan(request.text or "", fields)
