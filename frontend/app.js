@@ -1,44 +1,8 @@
-let sessionId = null;
-
-const fileInput = document.getElementById("file");
-const sheetNameInput = document.getElementById("sheetName");
-const activeCellInput = document.getElementById("activeCell");
-const queryInput = document.getElementById("query");
-const output = document.getElementById("output");
-const runButton = document.getElementById("runQuery");
-const createButton = document.getElementById("createSession");
-
-function setOutput(value) {
-  output.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-}
-
-createButton.addEventListener("click", async () => {
-  const file = fileInput.files && fileInput.files[0];
-  if (!file) {
-    setOutput("Choose an Excel file first.");
-    return;
-  }
-  const form = new FormData();
-  form.append("file", file);
-  if (sheetNameInput.value) form.append("sheet_name", sheetNameInput.value);
-  if (activeCellInput.value) form.append("active_cell", activeCellInput.value);
-  const res = await fetch("/excel/session", { method: "POST", body: form });
-  const data = await res.json();
-  sessionId = data.session_id;
-  runButton.disabled = !sessionId;
-  setOutput(data);
-});
-
-runButton.addEventListener("click", async () => {
-  if (!sessionId) {
-    setOutput("Create a session first.");
-    return;
-  }
-  const form = new FormData();
-  form.append("session_id", sessionId);
-  form.append("text", queryInput.value);
-  const res = await fetch("/excel/query", { method: "POST", body: form });
-  const data = await res.json();
-  setOutput(data);
-});
-
+const $=id=>document.getElementById(id),domain=$("domain"),query=$("query"),run=$("runQuery"),output=$("output"),summary=$("summary");
+const samples={restaurant:["Show me the top 5 rated restaurants in Kolkata","Find restaurants serving Biryani","Show the average rating by city"],finance:["Show monthly expenses by category","What are my top 5 expenses?","Show income greater than 50000"],myntra:["Show the top 10 rated products","Find cotton shirts under 1500","Show products by brand"],retail:["Show total sales by product category","Find transactions above 1000","Show the average quantity by gender"]};
+const profiles={restaurant:[["id","identifier","int"],["name","entity_name","str"],["city","location","str"],["rating","rating","float"],["rating_count","measure","int"],["cuisine","category","str"],["cost","measure","float"]],finance:[["date","date","date"],["category","category","str"],["type","category","str"],["amount","measure","float"]],myntra:[["product_name","entity_name","str"],["brand","category","str"],["price","measure","float"],["rating","rating","float"]],retail:[["Date","date","date"],["Product Category","category","str"],["Total Amount","measure","float"],["Quantity","measure","int"],["Gender","category","str"]]};
+function renderSamples(){$("samples").replaceChildren(...samples[domain.value].map(text=>{const b=document.createElement("button");b.className="sample";b.textContent=text;b.onclick=()=>{query.value=text;query.focus()};return b}))}
+function body(){const text=query.value.trim();let intent="filter";if(/top|highest|most|rank/i.test(text))intent="rank";else if(/average|mean|total|sum|by each|monthly/i.test(text))intent="aggregate";return {text,intent,query_features:{semantic_roles:[],operators:[],logical_structure:"SINGLE"},dataset_profile:{fields:profiles[domain.value].map(([id,semantic_role,dtype])=>({id,semantic_role,dtype}))}}}
+function show(data,ok=true){output.textContent=JSON.stringify(data,null,2);$("copyPlan").disabled=false;$("resultTitle").textContent=ok?"Plan generated":"Request failed";const route=data.routing||{};$("sourceBadge").textContent=data.plan_source||"error";$("sourceBadge").className="badge "+(ok?"success":"danger");summary.className="summary";summary.innerHTML=`<span><b>Domain</b>${route.domain||domain.value}</span><span><b>Confidence</b>${typeof data.confidence==="number"?Math.round(data.confidence*100)+"%":"—"}</span><span><b>Fallback</b>${route.fallback?"Yes · "+(route.reason||"safe path"):"No"}</span>`}
+async function execute(){if(!query.value.trim()){$("message").textContent="Enter a question first.";query.focus();return}run.disabled=true;run.classList.add("loading");$("message").textContent="Routing query…";try{const res=await fetch("/v1/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())});const data=await res.json();if(!res.ok)throw Error(data.detail?JSON.stringify(data.detail):`HTTP ${res.status}`);show(data);$("message").textContent="Query completed."}catch(e){show({error:e.message},false);$("message").textContent="Could not reach the learner API. Is it running?"}finally{run.disabled=false;run.classList.remove("loading")}}
+domain.onchange=renderSamples;run.onclick=execute;$("clearQuery").onclick=()=>{query.value="";query.focus()};$("copyPlan").onclick=()=>navigator.clipboard.writeText(output.textContent);query.onkeydown=e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")execute()};renderSamples();
