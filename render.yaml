@@ -1,10 +1,14 @@
 services:
   - type: web
-    name: data-analysis-api
+    name: insight-learning
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    startCommand: uvicorn insight_learning.api.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /v1/health
     envVars:
       - key: INSIGHTFLOW_PRIVACY_MODE
         value: local_only
+      - key: LEARNER_ADAPTERS_ENABLED
+        value: "true"
+      - key: LEARNER_ADAPTER_ROOT
+        value: /app/models/adapters

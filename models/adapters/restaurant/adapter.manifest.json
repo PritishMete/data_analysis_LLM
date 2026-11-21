@@ -1,0 +1,7 @@
+{
+  "domain": "restaurant",
+  "source": "kaggle:/kaggle/working/restaurant_plan_adapter_v2",
+  "version": "restaurant_plan_adapter_v2",
+  "status": "trained_pending_checkpoint_copy",
+  "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
+}

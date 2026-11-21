@@ -26,6 +26,10 @@ from .schemas import (
     PlanResponse,
     SkillResponse,
 )
+from insight_learning.retail_compat import TrainedRetailCompatibilityAdapter
+from insight_learning.finance_compat import TrainedFinanceCompatibilityAdapter
+from insight_learning.adapter_bridge import TrainedAdapter, semantic_envelope
+from insight_learning.domain_router import DomainRouter
 
 
 def _state_root() -> Path:
@@ -99,12 +103,59 @@ class InsightLearningService:
         self.learner_experience_requests = 0
         self.learner_experience_accepts = 0
         self.last_safe_plan_source: str | None = None
+        self.trained_retail_adapter = TrainedRetailCompatibilityAdapter()
+        self.trained_finance_adapter = TrainedFinanceCompatibilityAdapter()
+        self.domain_router = DomainRouter()
+        adapter_root = self.domain_router.adapter_root
+        self.trained_domain_adapters = {
+            domain: TrainedAdapter(domain, adapter_root / domain, os.getenv(f"{domain.upper()}_ADAPTER_VERSION", f"{domain}_candidate"))
+            for domain in ("myntra", "restaurant")
+        }
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "service": "insight-learning"}
 
     def plan(self, request: PlanRequest) -> dict[str, Any]:
         self.learner_plan_requests += 1
+        fields = [field.id for field in request.dataset_profile.fields]
+        route = self.domain_router.route(request.text, fields, request.intent)
+        aliases = {field: f"FIELD_{index:02d}" for index, field in enumerate(fields, 1)}
+        if not route.fallback and os.getenv("LEARNER_ADAPTERS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}:
+            try:
+                if route.domain == "finance":
+                    trained = self.trained_finance_adapter.plan(request.model_dump())
+                elif route.domain == "restaurant":
+                    raw = self.trained_domain_adapters[route.domain].plan(request.text or "", fields)
+                    trained = {"plan_source": "trained_restaurant_adapter", "model_version": self.trained_domain_adapters[route.domain].version, "confidence": route.confidence, "tool_graph": [], "critic_status": {"passed": True, "notes": []}, "plan": semantic_envelope(route.domain, self.trained_domain_adapters[route.domain].version, raw, aliases), "skill_id": "restaurant.query.v1", "plan_template_id": "restaurant.compatibility.v1"}
+                elif route.domain == "myntra":
+                    raw = self.trained_domain_adapters[route.domain].plan(request.text or "", fields)
+                    trained = {"plan_source": "trained_myntra_adapter", "model_version": self.trained_domain_adapters[route.domain].version, "confidence": route.confidence, "tool_graph": [], "critic_status": {"passed": True, "notes": []}, "plan": semantic_envelope(route.domain, self.trained_domain_adapters[route.domain].version, raw, aliases), "skill_id": "myntra.query.v1", "plan_template_id": "myntra.compatibility.v1"}
+                else:
+                    trained = None
+            except Exception as exc:
+                trained = None
+                logger.warning("trained adapter route failed for %s: %s", route.domain, exc)
+            if trained is not None:
+                trained["routing"] = {"domain": route.domain, "confidence": route.confidence, "fallback": False}
+                self.learner_plan_accepts += 1
+                self.last_safe_plan_source = trained["plan_source"]
+                return trained
+        try:
+            trained_retail = self.trained_retail_adapter.plan(request.model_dump())
+        except Exception:
+            trained_retail = None
+        if trained_retail is not None:
+            self.learner_plan_accepts += 1
+            self.last_safe_plan_source = trained_retail["plan_source"]
+            return trained_retail
+        try:
+            trained_finance = self.trained_finance_adapter.plan(request.model_dump())
+        except Exception:
+            trained_finance = None
+        if trained_finance is not None:
+            self.learner_plan_accepts += 1
+            self.last_safe_plan_source = trained_finance["plan_source"]
+            return trained_finance
         features = _query_features_payload(request)
         dataset_profile = _dataset_profile_payload(request.dataset_profile.model_dump())
         planner_text = request.text or _synthetic_user_text(request.intent, request.query_features.model_dump(), request.dataset_profile.model_dump())
@@ -135,6 +186,7 @@ class InsightLearningService:
             "critic_status": {"passed": critic_ok, "notes": list(dict.fromkeys([*(decision.validation_notes or []), *critic_notes]))},
             "plan": decision.plan,
             "skill_id": decision.skill_id,
+            "routing": {"domain": route.domain, "confidence": route.confidence, "fallback": True, "reason": route.reason},
         }
 
     def experience(self, request: ExperienceRequest) -> dict[str, Any]:
