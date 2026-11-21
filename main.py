@@ -7,7 +7,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -1764,3 +1764,29 @@ def powerbi_ping():
 @app.get("/powerbi/transform/list")
 def powerbi_transform_list():
     return list_supported_transforms()
+
+
+@app.post("/learner/query")
+async def learner_query(file: UploadFile = File(...), text: str = Form(...)):
+    """Execute the Query Lab's safe, local CSV operations without Gemini."""
+    contents = await file.read()
+    df = pd.read_csv(io.BytesIO(contents))
+    question = text.lower()
+    city_col = next((c for c in df.columns if str(c).lower() == "city"), None)
+    if "count" in question and city_col:
+        cities = [str(v) for v in df[city_col].dropna().unique()]
+        city = next((v for v in cities if v.lower() in question), None)
+        result = int((df[city_col].astype(str).str.lower() == city.lower()).sum()) if city else int(len(df))
+        return {"result": result, "display": str(result), "operation": "count", "filter": {"column": city_col, "value": city}}
+    if ("top" in question or "highest" in question) and "rating" in " ".join(map(str, df.columns)).lower():
+        rating_col = next(c for c in df.columns if "rating" in str(c).lower() and "count" not in str(c).lower())
+        n_match = re.search(r"(?:top|highest)\s+(\d+)", question)
+        n = int(n_match.group(1)) if n_match else 5
+        subset = df
+        if city_col:
+            cities = [str(v) for v in df[city_col].dropna().unique()]
+            city = next((v for v in cities if v.lower() in question), None)
+            if city: subset = df[df[city_col].astype(str).str.lower() == city.lower()]
+        rows = subset.sort_values(rating_col, ascending=False).head(n).to_dict(orient="records")
+        return {"result": rows, "display": rows, "operation": "rank", "column": rating_col}
+    raise HTTPException(status_code=400, detail="Supported local operations: count by city and top rated restaurants")
