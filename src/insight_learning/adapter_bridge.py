@@ -26,8 +26,9 @@ class TrainedAdapter:
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
         base_name = os.getenv("LEARNER_BASE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
-        self._tokenizer = AutoTokenizer.from_pretrained(base_name, local_files_only=True)
-        base = AutoModelForCausalLM.from_pretrained(base_name, local_files_only=True)
+        local_only = os.getenv("LEARNER_BASE_MODEL_LOCAL_ONLY", "false").lower() in {"1", "true", "yes", "on"}
+        self._tokenizer = AutoTokenizer.from_pretrained(base_name, local_files_only=local_only)
+        base = AutoModelForCausalLM.from_pretrained(base_name, local_files_only=local_only)
         self._model = PeftModel.from_pretrained(base, self.path)
         self._model.eval()
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
