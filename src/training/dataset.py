@@ -72,7 +72,9 @@ def create_dataset_manifest(dataset_dir: Path) -> dict[str, Any]:
 
 
 def write_dataset_manifest(dataset_dir: Path, manifest_path: Path | None = None) -> Path:
+    dataset_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_path or (dataset_dir / "dataset_manifest.sha256.json")
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = create_dataset_manifest(dataset_dir)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest_path

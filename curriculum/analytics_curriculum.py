@@ -63,7 +63,12 @@ def _repo_root() -> Path:
 def _teacher_root() -> Path:
     override = os.environ.get("TEACHER_REPO_ROOT")
     if override:
-        return Path(override)
+        candidate = Path(override)
+        if candidate.exists():
+            return candidate
+    local_copy = _repo_root().parent / "teacher-inspection"
+    if local_copy.exists():
+        return local_copy
     return Path(r"E:\teacher_ref")
 
 
