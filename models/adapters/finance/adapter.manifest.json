@@ -1,7 +1,7 @@
 {
   "domain": "finance",
-  "source": "kaggle:/kaggle/working/finance_candidate",
-  "version": "finance_candidate_v2",
-  "status": "trained_pending_checkpoint_copy",
+  "source": "kaggle:/kaggle/working/finance_candidate_v3",
+  "version": "finance_candidate_v3",
+  "status": "trained_exported",
   "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
 }
