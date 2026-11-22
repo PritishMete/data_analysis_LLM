@@ -70,7 +70,7 @@ def deterministic_restaurant_plan(question: str) -> dict[str, Any] | None:
     city = next((v for k, v in cities.items() if k in text), None)
     cuisine = next((v for k, v in cuisines.items() if k in text), None)
     if "top" in text or "most expensive" in text or "highest" in text:
-        match = re.search(r"\btop\s+(\d+)", text) or re.search(r"\bmost expensive\s+(\d+)", text)
+        match = re.search(r"\btop\s+(\d+)", text) or re.search(r"\b(?:most expensive|expensive restaurants?)\s+(\d+)", text) or re.search(r"\b(\d+)\s+most expensive", text)
         limit = int(match.group(1)) if match else 1
         column = "cost" if "expensive" in text or "cost" in text else "rating"
         plan: dict[str, Any] = {"operation": "rank", "column": column, "direction": "desc", "limit": limit}
