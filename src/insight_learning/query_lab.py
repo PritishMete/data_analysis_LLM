@@ -36,6 +36,11 @@ def filtered(df, condition):
     return df[getattr(series, {"gt":"gt","lt":"lt","gte":"ge","lte":"le"}[op])(value)]
 
 def query(domain, question, df):
+    if domain == "myntra":
+        question = re.sub(r"\blabels\b", "brands", question, flags=re.I)
+    if domain == "finance":
+        question = re.sub(r"\bexpnse\b", "expense", question, flags=re.I)
+        question = re.sub(r"\bexceeding\b", "above", question, flags=re.I)
     with _lock:
         model = adapter(domain)
         plan = model.plan(question, FIELDS[domain].split(","))
@@ -46,10 +51,14 @@ def query(domain, question, df):
             raise ValueError("Please select one city")
         if cities:
             df = filtered(df, {"column": "city", "operator": "eq", "value": cities[0]})
+    if domain == "finance" and re.search(r"\bexpenses?\b", question, re.I):
+        df = filtered(df, {"column": "Transaction Type", "operator": "eq", "value": "Expense"})
     op = plan["operation"]
     if "where" in plan:
         df = filtered(df, plan["where"])
     col = plan["column"]
+    if domain == "myntra" and op == "rank" and re.search(r"\bbrands?\b", question, re.I) and re.search(r"\b(average|mean)\b", question, re.I):
+        plan.update(group_by="brand_name", function="mean")
     group = plan.get("group_by")
     func = plan.get("function")
     if op == "filter":
