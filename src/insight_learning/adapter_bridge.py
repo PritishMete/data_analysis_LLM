@@ -47,7 +47,8 @@ class TrainedAdapter:
     def plan(self, question: str, fields: list[str]) -> dict[str, Any]:
         self._load()
         import torch
-        prompt = f"{self.domain.title()} query to JSON plan. Columns={json.dumps(fields)} Question={question} Plan="
+        label = "Personal finance" if self.domain == "finance" else self.domain.title()
+        prompt = f"{label} query to JSON plan. Columns={json.dumps(fields)} Question={question} Plan="
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
         with torch.inference_mode():
             ids = self._model.generate(**inputs, max_new_tokens=160, do_sample=False, pad_token_id=self._tokenizer.eos_token_id)

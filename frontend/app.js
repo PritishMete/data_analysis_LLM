@@ -9,4 +9,33 @@ async function execute(){if(!query.value.trim()){$("message").textContent="Enter
 domain.onchange=renderSamples;run.onclick=execute;$("clearQuery").onclick=()=>{query.value="";query.focus()};$("copyPlan").onclick=()=>navigator.clipboard.writeText(output.textContent);query.onkeydown=e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")execute()};renderSamples();
 const nativeFetch=window.fetch.bind(window);window.fetch=(url,...args)=>nativeFetch(url==="/smart_query"?"/learner/query":url,...args);
 run.onclick=async()=>{if(!query.value.trim()){$("message").textContent="Enter a question first.";return}run.disabled=true;$("message").textContent=`Loading ${domain.value} dataset from the repository…`;try{const form=new FormData();form.append("text",query.value.trim());form.append("domain",domain.value);const res=await fetch("/learner/query",{method:"POST",body:form});const data=await res.json();if(!res.ok)throw Error(data.detail||`HTTP ${res.status}`);const value=data.display??data.result??data;output.textContent=typeof value==="string"?value:JSON.stringify(value,null,2);$("resultTitle").textContent="Actual dataset result";$("sourceBadge").textContent="Executed";$("sourceBadge").className="badge success";summary.className="summary";summary.innerHTML=`<p class="answer">${typeof value==="number"?value:"Query completed against the repository dataset."}</p>`;$("message").textContent="Query completed."}catch(e){$("message").textContent=e.message;output.textContent=""}finally{run.disabled=false}};
-const resultObserver=new MutationObserver(()=>{const raw=output.textContent.trim();if(!raw.startsWith("["))return;try{const rows=JSON.parse(raw);if(!Array.isArray(rows)||!rows.length)return;output.innerHTML=`<div class="result-table"><table><thead><tr>${Object.keys(rows[0]).map(k=>`<th>${k}</th>`).join("")}</tr></thead><tbody>${rows.map(row=>`<tr>${Object.keys(rows[0]).map(k=>`<td>${row[k]??""}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;output.classList.add("human-result")}catch{}});resultObserver.observe(output,{childList:true,subtree:true,characterData:true});
+const resultObserver = new MutationObserver(() => {
+  const raw = output.textContent.trim();
+  if (!raw.startsWith("[")) return;
+  let rows;
+  try { rows = JSON.parse(raw); } catch { return; }
+  if (!Array.isArray(rows)) return;
+  if (!rows.length) { output.textContent = "No matching rows."; return; }
+  const table = document.createElement("table");
+  const columns = Object.keys(rows[0]);
+  const header = table.createTHead().insertRow();
+  for (const key of columns) {
+    const cell = document.createElement("th");
+    cell.textContent = key;
+    header.append(cell);
+  }
+  const body = table.createTBody();
+  for (const row of rows) {
+    const line = body.insertRow();
+    for (const key of columns) line.insertCell().textContent = row[key] ?? "";
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = "result-table";
+  wrapper.append(table);
+  output.replaceChildren(wrapper);
+  output.classList.add("human-result");
+});
+resultObserver.observe(output, {childList:true, subtree:true, characterData:true});
+query.onkeydown = event => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") run.click();
+};

@@ -1784,11 +1784,20 @@ async def learner_query(file: UploadFile | None = File(None), text: str = Form(.
         df = pd.read_csv(path)
     question = text.lower()
     city_col = next((c for c in df.columns if str(c).lower() == "city"), None)
-    if "count" in question and city_col:
+    if domain == "restaurant" and re.search(r"\b(count|how many|number of)\b", question) and "rating count" not in question and city_col:
         cities = [str(v) for v in df[city_col].dropna().unique()]
         city = next((v for v in cities if v.lower() in question), None)
+        if city is None and re.search(r"\b(in|from)\s+\w+", question):
+            raise HTTPException(status_code=422, detail="I could not match that city in the restaurant dataset.")
         result = int((df[city_col].astype(str).str.lower() == city.lower()).sum()) if city else int(len(df))
         return {"result": result, "display": str(result), "operation": "count", "filter": {"column": city_col, "value": city}}
+    if file is None:
+        from src.insight_learning.query_lab import query
+        from starlette.concurrency import run_in_threadpool
+        try:
+            return await run_in_threadpool(query, domain, text, df)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail="Please rephrase the question and name the field to analyze.") from exc
     if ("top" in question or "highest" in question) and "rating" in " ".join(map(str, df.columns)).lower():
         rating_col = next(c for c in df.columns if "rating" in str(c).lower() and "count" not in str(c).lower())
         n_match = re.search(r"(?:top|highest)\s+(\d+)", question)
