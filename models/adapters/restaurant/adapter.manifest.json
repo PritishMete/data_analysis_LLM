@@ -1,7 +1,8 @@
 {
   "domain": "restaurant",
-  "source": "local:models/adapters/restaurant",
-  "version": "restaurant_candidate_20261121",
-  "status": "candidate_unseen_evaluation_pending",
+  "source": "kaggle:jaistudio/restaurant-query-training-v3",
+  "version": "restaurant-query-training-v3",
+  "status": "promoted_after_plan_evaluation",
+  "evaluation": "20/20",
   "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
 }

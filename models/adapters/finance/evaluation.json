@@ -1,0 +1,414 @@
+[
+  {
+    "question": "Which expense transactions are strictly above 1100?",
+    "expected": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "gt",
+      "value": 1100,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "gt",
+      "value": 1100,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "Which expense transactions are strictly above 800?",
+    "expected": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "gt",
+      "value": 800,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "gt",
+      "value": 800,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "Which income transactions are strictly below 900?",
+    "expected": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "lt",
+      "value": 900,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "lt",
+      "value": 900,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "Which expense transactions are strictly below 1000?",
+    "expected": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "lt",
+      "value": 1000,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "Amount",
+      "operator": "lt",
+      "value": 1000,
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "For each Sub category calculate average spending",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "For each Sub category calculate average income",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "For each Sub category calculate total spending",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "For each Sub category calculate total income",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Sub category",
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "By average spending, which 1 Category groups rank highest?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "Category",
+      "direction": "desc",
+      "limit": 1,
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "Category",
+      "direction": "desc",
+      "limit": 1,
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "By total spending, which 5 Sub category groups rank highest?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "Sub category",
+      "direction": "desc",
+      "limit": 5,
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "Sub category",
+      "direction": "desc",
+      "limit": 5,
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "By total income, which 3 Sub category groups rank lowest?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "Sub category",
+      "direction": "asc",
+      "limit": 3,
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "Sub category",
+      "direction": "asc",
+      "limit": 3,
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "By total spending, which 5 Sub category groups rank lowest?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "Sub category",
+      "direction": "asc",
+      "limit": 5,
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "Sub category",
+      "direction": "asc",
+      "limit": 5,
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "For each calendar month give the average spending",
+    "expected": {
+      "operation": "trend",
+      "group_by": "Date",
+      "frequency": "month",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "prediction": {
+      "operation": "trend",
+      "group_by": "Date",
+      "frequency": "month",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Expense"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "For each calendar month give the average income",
+    "expected": {
+      "operation": "trend",
+      "group_by": "Date",
+      "frequency": "month",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "prediction": {
+      "operation": "trend",
+      "group_by": "Date",
+      "frequency": "month",
+      "column": "Amount",
+      "function": "mean",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "For each calendar month give the total income",
+    "expected": {
+      "operation": "trend",
+      "group_by": "Date",
+      "frequency": "month",
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "prediction": {
+      "operation": "trend",
+      "group_by": "Date",
+      "frequency": "month",
+      "column": "Amount",
+      "function": "sum",
+      "where": {
+        "column": "Transaction Type",
+        "operator": "eq",
+        "value": "Income"
+      }
+    },
+    "correct": true
+  }
+]

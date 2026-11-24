@@ -1,7 +1,8 @@
 {
   "domain": "finance",
-  "source": "kaggle:/kaggle/working/finance_candidate_v3",
-  "version": "finance_candidate_v3",
-  "status": "trained_exported",
+  "source": "kaggle:jaistudio/finance-query-training-v2/versions/2",
+  "version": "finance_candidate_v2",
+  "status": "promoted_after_plan_evaluation",
+  "evaluation": "15/15",
   "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
 }

@@ -1,281 +1,284 @@
 [
   {
-    "question": "Show top 3 products by highest rated",
+    "question": "Which 4 products with the highest ratings lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating",
       "direction": "desc",
-      "limit": 3
+      "limit": 4
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating",
       "direction": "desc",
-      "limit": 3
+      "limit": 4
     },
     "correct": true
   },
   {
-    "question": "Show top 5 products by highest rated",
+    "question": "Which 7 products with the highest ratings lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating",
       "direction": "desc",
-      "limit": 5
+      "limit": 7
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating",
       "direction": "desc",
-      "limit": 5
+      "limit": 7
     },
     "correct": true
   },
   {
-    "question": "Show top 10 products by highest rated",
+    "question": "Which 11 products with the highest ratings lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating",
       "direction": "desc",
-      "limit": 10
+      "limit": 11
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating",
       "direction": "desc",
-      "limit": 10
+      "limit": 11
     },
     "correct": true
   },
   {
-    "question": "Show top 3 products by most reviewed",
+    "question": "Which 4 products with the largest review counts lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating_count",
+      "column": "rating_count",
       "direction": "desc",
-      "limit": 3
+      "limit": 4
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating_count",
       "direction": "desc",
-      "limit": 3
+      "limit": 4
     },
-    "correct": false
+    "correct": true
   },
   {
-    "question": "Show top 5 products by most reviewed",
+    "question": "Which 7 products with the largest review counts lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating_count",
+      "column": "rating_count",
       "direction": "desc",
-      "limit": 5
+      "limit": 7
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating_count",
       "direction": "desc",
-      "limit": 5
+      "limit": 7
     },
-    "correct": false
+    "correct": true
   },
   {
-    "question": "Show top 10 products by most reviewed",
+    "question": "Which 11 products with the largest review counts lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating_count",
+      "column": "rating_count",
       "direction": "desc",
-      "limit": 10
+      "limit": 11
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "rating",
+      "column": "rating_count",
       "direction": "desc",
-      "limit": 10
+      "limit": 11
     },
-    "correct": false
+    "correct": true
   },
   {
-    "question": "Show top 3 products by lowest sale price",
+    "question": "Which 4 items with the lowest discounted prices lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "discounted_price",
+      "column": "discounted_price",
       "direction": "asc",
-      "limit": 3
+      "limit": 4
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "discounted_price",
-      "direction": "desc",
-      "limit": 3
-    },
-    "correct": false
-  },
-  {
-    "question": "Show top 5 products by lowest sale price",
-    "expected": {
-      "operation": "rank",
-      "group_by": "product_name",
-      "metric": "discounted_price",
+      "column": "discounted_price",
       "direction": "asc",
-      "limit": 5
+      "limit": 4
     },
-    "prediction": {
-      "operation": "rank",
-      "group_by": "product_name",
-      "metric": "discounted_price",
-      "direction": "desc",
-      "limit": 5
-    },
-    "correct": false
+    "correct": true
   },
   {
-    "question": "Show top 10 products by lowest sale price",
+    "question": "Which 7 items with the lowest discounted prices lead the list?",
     "expected": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "discounted_price",
+      "column": "discounted_price",
       "direction": "asc",
-      "limit": 10
+      "limit": 7
     },
     "prediction": {
       "operation": "rank",
       "group_by": "product_name",
-      "metric": "discounted_price",
-      "direction": "desc",
-      "limit": 10
-    },
-    "correct": false
-  },
-  {
-    "question": "Show top 3 brands by average rating",
-    "expected": {
-      "operation": "rank",
-      "group_by": "brand_name",
-      "metric": "rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 3
-    },
-    "prediction": {
-      "operation": "rank",
-      "group_by": "brand_name",
-      "metric": "rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 3
+      "column": "discounted_price",
+      "direction": "asc",
+      "limit": 7
     },
     "correct": true
   },
   {
-    "question": "Show top 3 categories by product count",
+    "question": "Which 11 items with the lowest discounted prices lead the list?",
     "expected": {
       "operation": "rank",
-      "group_by": "product_category",
-      "metric": "product_name",
-      "function": "count",
-      "direction": "desc",
-      "limit": 3
+      "group_by": "product_name",
+      "column": "discounted_price",
+      "direction": "asc",
+      "limit": 11
     },
     "prediction": {
       "operation": "rank",
-      "group_by": "brand_name",
-      "metric": "rating_count",
-      "direction": "desc",
-      "limit": 3
-    },
-    "correct": false
-  },
-  {
-    "question": "Show top 5 brands by average rating",
-    "expected": {
-      "operation": "rank",
-      "group_by": "brand_name",
-      "metric": "rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 5
-    },
-    "prediction": {
-      "operation": "rank",
-      "group_by": "brand_name",
-      "metric": "rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 5
+      "group_by": "product_name",
+      "column": "discounted_price",
+      "direction": "asc",
+      "limit": 11
     },
     "correct": true
   },
   {
-    "question": "Show top 5 categories by product count",
+    "question": "Which 4 brands with the highest mean product ratings lead the list?",
     "expected": {
       "operation": "rank",
-      "group_by": "product_category",
-      "metric": "product_name",
-      "function": "count",
+      "group_by": "brand_name",
+      "column": "rating",
       "direction": "desc",
-      "limit": 5
+      "limit": 4,
+      "function": "mean"
     },
     "prediction": {
       "operation": "rank",
       "group_by": "brand_name",
-      "metric": "rating_count",
+      "column": "rating",
       "direction": "desc",
-      "limit": 5
-    },
-    "correct": false
-  },
-  {
-    "question": "Show top 10 brands by average rating",
-    "expected": {
-      "operation": "rank",
-      "group_by": "brand_name",
-      "metric": "rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 10
-    },
-    "prediction": {
-      "operation": "rank",
-      "group_by": "brand_name",
-      "metric": "rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 10
+      "limit": 4,
+      "function": "mean"
     },
     "correct": true
   },
   {
-    "question": "Show top 10 categories by product count",
+    "question": "Which 7 brands with the highest mean product ratings lead the list?",
     "expected": {
       "operation": "rank",
-      "group_by": "product_category",
-      "metric": "product_name",
-      "function": "count",
+      "group_by": "brand_name",
+      "column": "rating",
       "direction": "desc",
-      "limit": 10
+      "limit": 7,
+      "function": "mean"
     },
     "prediction": {
       "operation": "rank",
       "group_by": "brand_name",
-      "metric": "rating_count",
+      "column": "rating",
       "direction": "desc",
-      "limit": 10
+      "limit": 7,
+      "function": "mean"
     },
-    "correct": false
+    "correct": true
+  },
+  {
+    "question": "Which 11 brands with the highest mean product ratings lead the list?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 11,
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 11,
+      "function": "mean"
+    },
+    "correct": true
+  },
+  {
+    "question": "Which 4 brands containing the most items lead the list?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "product_name",
+      "direction": "desc",
+      "limit": 4,
+      "function": "count"
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "product_name",
+      "direction": "desc",
+      "limit": 4,
+      "function": "count"
+    },
+    "correct": true
+  },
+  {
+    "question": "Which 7 brands containing the most items lead the list?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "product_name",
+      "direction": "desc",
+      "limit": 7,
+      "function": "count"
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "product_name",
+      "direction": "desc",
+      "limit": 7,
+      "function": "count"
+    },
+    "correct": true
+  },
+  {
+    "question": "Which 11 brands containing the most items lead the list?",
+    "expected": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "product_name",
+      "direction": "desc",
+      "limit": 11,
+      "function": "count"
+    },
+    "prediction": {
+      "operation": "rank",
+      "group_by": "brand_name",
+      "column": "product_name",
+      "direction": "desc",
+      "limit": 11,
+      "function": "count"
+    },
+    "correct": true
   }
 ]

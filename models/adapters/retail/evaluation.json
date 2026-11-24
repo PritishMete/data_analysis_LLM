@@ -1,0 +1,130 @@
+[
+  {
+    "question": "For every Product Category, what is the total Total Amount?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Total Amount",
+      "function": "sum"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Total Amount",
+      "function": "sum"
+    },
+    "correct": true
+  },
+  {
+    "question": "For every Product Category, what is the average Total Amount?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Total Amount",
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Total Amount",
+      "function": "mean"
+    },
+    "correct": true
+  },
+  {
+    "question": "For every Product Category, what is the total Quantity?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Quantity",
+      "function": "sum"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Quantity",
+      "function": "sum"
+    },
+    "correct": true
+  },
+  {
+    "question": "For every Product Category, what is the average Quantity?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Quantity",
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Product Category",
+      "column": "Quantity",
+      "function": "mean"
+    },
+    "correct": true
+  },
+  {
+    "question": "For every Gender, what is the total Total Amount?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Total Amount",
+      "function": "sum"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Total Amount",
+      "function": "sum"
+    },
+    "correct": true
+  },
+  {
+    "question": "For every Gender, what is the average Total Amount?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Total Amount",
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Total Amount",
+      "function": "mean"
+    },
+    "correct": true
+  },
+  {
+    "question": "For every Gender, what is the total Quantity?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Quantity",
+      "function": "sum"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Quantity",
+      "function": "sum"
+    },
+    "correct": true
+  },
+  {
+    "question": "For every Gender, what is the average Quantity?",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Quantity",
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "Gender",
+      "column": "Quantity",
+      "function": "mean"
+    },
+    "correct": true
+  }
+]

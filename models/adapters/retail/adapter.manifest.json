@@ -1,0 +1,8 @@
+{
+  "domain": "retail",
+  "source": "kaggle:jaistudio/retail-query-training-v2",
+  "version": "retail-query-training-v2",
+  "status": "promoted_after_plan_evaluation",
+  "evaluation": "8/8",
+  "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
+}

@@ -1,7 +1,8 @@
 {
   "domain": "myntra",
-  "source": "kaggle:/kaggle/working/myntra_plan_adapter",
-  "version": "myntra_candidate_v1",
-  "status": "checkpoint_copied_from_kaggle",
+  "source": "kaggle:/kaggle/working/myntra_candidate_v2",
+  "version": "myntra_candidate_v2",
+  "status": "promoted_after_unseen_15_of_15",
+  "unseen_score": "15/15",
   "base_model": "Qwen/Qwen2.5-0.5B-Instruct"
 }

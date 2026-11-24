@@ -1,264 +1,269 @@
 [
   {
-    "question": "Show Italian restaurants",
+    "question": "Show restaurants rated above 4.5.",
     "expected": {
       "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Italian"
+      "column": "rating",
+      "operator": "gt",
+      "value": 4.5
     },
     "prediction": {
       "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Italian"
+      "column": "rating",
+      "operator": "gt",
+      "value": 4.5
     },
     "correct": true
   },
   {
-    "question": "How many North Indian restaurants are there?",
+    "question": "Show restaurants rated above 3.5.",
     "expected": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "North Indian"
+      "operation": "filter",
+      "column": "rating",
+      "operator": "gt",
+      "value": 3.5
     },
     "prediction": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "North Indian"
+      "operation": "filter",
+      "column": "rating",
+      "operator": "gt",
+      "value": 3.5
     },
     "correct": true
   },
   {
-    "question": "Show top 5 restaurants by cost",
+    "question": "Show top 3 rated restaurants.",
     "expected": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 3
+    },
+    "prediction": {
+      "operation": "rank",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 3
+    },
+    "correct": true
+  },
+  {
+    "question": "Find restaurants serving North Indian.",
+    "expected": {
+      "operation": "filter",
+      "column": "cuisine",
+      "operator": "eq",
+      "value": "North Indian"
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "cuisine",
+      "operator": "eq",
+      "value": "North Indian"
+    },
+    "correct": true
+  },
+  {
+    "question": "Show the average cost by cuisine.",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "cuisine",
       "column": "cost",
-      "function": "mean",
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "cuisine",
+      "column": "cost",
+      "function": "mean"
+    },
+    "correct": true
+  },
+  {
+    "question": "Find restaurants in Delhi.",
+    "expected": {
+      "operation": "filter",
+      "column": "city",
+      "operator": "eq",
+      "value": "Delhi"
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "city",
+      "operator": "eq",
+      "value": "Delhi"
+    },
+    "correct": true
+  },
+  {
+    "question": "Show the top 5 rated restaurants in Mumbai.",
+    "expected": {
+      "operation": "rank",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 5,
+      "where": {
+        "column": "city",
+        "operator": "eq",
+        "value": "Mumbai"
+      }
+    },
+    "prediction": {
+      "operation": "rank",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 5,
+      "where": {
+        "column": "city",
+        "operator": "eq",
+        "value": "Mumbai"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "List the 3 most expensive restaurants.",
+    "expected": {
+      "operation": "rank",
+      "column": "cost",
+      "direction": "desc",
+      "limit": 3
+    },
+    "prediction": {
+      "operation": "rank",
+      "column": "cost",
+      "direction": "desc",
+      "limit": 3
+    },
+    "correct": true
+  },
+  {
+    "question": "Show top 10 rated restaurants.",
+    "expected": {
+      "operation": "rank",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 10
+    },
+    "prediction": {
+      "operation": "rank",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 10
+    },
+    "correct": true
+  },
+  {
+    "question": "Show the top 5 rated restaurants in Chennai.",
+    "expected": {
+      "operation": "rank",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 5,
+      "where": {
+        "column": "city",
+        "operator": "eq",
+        "value": "Chennai"
+      }
+    },
+    "prediction": {
+      "operation": "rank",
+      "column": "rating",
+      "direction": "desc",
+      "limit": 5,
+      "where": {
+        "column": "city",
+        "operator": "eq",
+        "value": "Chennai"
+      }
+    },
+    "correct": true
+  },
+  {
+    "question": "Show the average rating by city.",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "city",
+      "column": "rating",
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "city",
+      "column": "rating",
+      "function": "mean"
+    },
+    "correct": true
+  },
+  {
+    "question": "Show top 5 rated restaurants.",
+    "expected": {
+      "operation": "rank",
+      "column": "rating",
       "direction": "desc",
       "limit": 5
     },
     "prediction": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Cost",
-      "function": "mean",
+      "column": "rating",
       "direction": "desc",
       "limit": 5
     },
-    "correct": false
-  },
-  {
-    "question": "How many South Indian restaurants are there?",
-    "expected": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "South Indian"
-    },
-    "prediction": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "South Indian"
-    },
     "correct": true
   },
   {
-    "question": "Show top 5 rated restaurants in Kolkata",
-    "expected": {
-      "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Aggregate rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 5,
-      "where": {
-        "column": "City",
-        "operator": "eq",
-        "value": "Kolkata"
-      }
-    },
-    "prediction": {
-      "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Aggregate rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 5,
-      "where": {
-        "column": "City",
-        "operator": "eq",
-        "value": "Kolkata"
-      }
-    },
-    "correct": true
-  },
-  {
-    "question": "Show South Indian restaurants",
+    "question": "Find restaurants serving Biryani.",
     "expected": {
       "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "South Indian"
+      "column": "cuisine",
+      "operator": "eq",
+      "value": "Biryani"
     },
     "prediction": {
       "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "South Indian"
+      "column": "cuisine",
+      "operator": "eq",
+      "value": "Biryani"
     },
     "correct": true
   },
   {
-    "question": "Show North Indian restaurants",
-    "expected": {
-      "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "North Indian"
-    },
-    "prediction": {
-      "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "North Indian"
-    },
-    "correct": true
-  },
-  {
-    "question": "Show top 5 rated restaurants in Delhi",
+    "question": "List the 10 most expensive restaurants.",
     "expected": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Aggregate rating",
-      "function": "mean",
+      "column": "cost",
       "direction": "desc",
-      "limit": 5,
-      "where": {
-        "column": "City",
-        "operator": "eq",
-        "value": "Delhi"
-      }
+      "limit": 10
     },
     "prediction": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Aggregate rating",
-      "function": "mean",
+      "column": "cost",
       "direction": "desc",
-      "limit": 5,
-      "where": {
-        "column": "City",
-        "operator": "eq",
-        "value": "Delhi"
-      }
+      "limit": 10
     },
     "correct": true
   },
   {
-    "question": "How many Italian restaurants are there?",
-    "expected": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Italian"
-    },
-    "prediction": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Italian"
-    },
-    "correct": true
-  },
-  {
-    "question": "Show average cost by city",
+    "question": "Show the average cost by city.",
     "expected": {
       "operation": "aggregate",
-      "group_by": "City",
+      "group_by": "city",
       "column": "cost",
       "function": "mean"
     },
     "prediction": {
       "operation": "aggregate",
-      "group_by": "City",
+      "group_by": "city",
       "column": "cost",
       "function": "mean"
     },
     "correct": true
   },
   {
-    "question": "Show average rating by city",
-    "expected": {
-      "operation": "aggregate",
-      "group_by": "City",
-      "column": "rating",
-      "function": "mean"
-    },
-    "prediction": {
-      "operation": "aggregate",
-      "group_by": "City",
-      "column": "rating",
-      "function": "mean"
-    },
-    "correct": true
-  },
-  {
-    "question": "How many Chinese restaurants are there?",
-    "expected": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Chinese"
-    },
-    "prediction": {
-      "operation": "count",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Chinese"
-    },
-    "correct": true
-  },
-  {
-    "question": "Show Chinese restaurants",
-    "expected": {
-      "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Chinese"
-    },
-    "prediction": {
-      "operation": "filter",
-      "column": "Cuisines",
-      "operator": "contains",
-      "value": "Chinese"
-    },
-    "correct": true
-  },
-  {
-    "question": "Show top 5 rated restaurants in Bangalore",
+    "question": "Show the top 5 rated restaurants in Bangalore.",
     "expected": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Aggregate rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 5,
-      "where": {
-        "column": "City",
-        "operator": "eq",
-        "value": "Bangalore"
-      }
-    },
-    "prediction": {
-      "operation": "rank",
-      "group_by": "Restaurant Name",
       "column": "rating",
-      "function": "mean",
       "direction": "desc",
       "limit": 5,
       "where": {
@@ -267,55 +272,80 @@
         "value": "Bangalore"
       }
     },
-    "correct": false
-  },
-  {
-    "question": "Show top 5 rated restaurants in Mumbai",
-    "expected": {
-      "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Aggregate rating",
-      "function": "mean",
-      "direction": "desc",
-      "limit": 5,
-      "where": {
-        "column": "City",
-        "operator": "eq",
-        "value": "Mumbai"
-      }
-    },
     "prediction": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "Aggregate rating",
-      "function": "mean",
+      "column": "rating",
       "direction": "desc",
       "limit": 5,
       "where": {
-        "column": "City",
+        "column": "city",
         "operator": "eq",
-        "value": "Mumbai"
+        "value": "Bangalore"
       }
     },
     "correct": true
   },
   {
-    "question": "Show top 5 restaurants by rating",
+    "question": "List the 5 most expensive restaurants.",
     "expected": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "rating",
-      "function": "mean",
+      "column": "cost",
       "direction": "desc",
       "limit": 5
     },
     "prediction": {
       "operation": "rank",
-      "group_by": "Restaurant Name",
-      "column": "rating",
-      "function": "mean",
+      "column": "cost",
       "direction": "desc",
       "limit": 5
+    },
+    "correct": true
+  },
+  {
+    "question": "Find restaurants in Kolkata.",
+    "expected": {
+      "operation": "filter",
+      "column": "city",
+      "operator": "eq",
+      "value": "Kolkata"
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "city",
+      "operator": "eq",
+      "value": "Kolkata"
+    },
+    "correct": true
+  },
+  {
+    "question": "Show restaurants rated above 4.0.",
+    "expected": {
+      "operation": "filter",
+      "column": "rating",
+      "operator": "gt",
+      "value": 4.0
+    },
+    "prediction": {
+      "operation": "filter",
+      "column": "rating",
+      "operator": "gt",
+      "value": 4
+    },
+    "correct": true
+  },
+  {
+    "question": "Show the average rating by cuisine.",
+    "expected": {
+      "operation": "aggregate",
+      "group_by": "cuisine",
+      "column": "rating",
+      "function": "mean"
+    },
+    "prediction": {
+      "operation": "aggregate",
+      "group_by": "cuisine",
+      "column": "rating",
+      "function": "mean"
     },
     "correct": true
   }
