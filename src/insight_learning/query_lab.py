@@ -1,5 +1,6 @@
 """Execute the selected domain adapter against the repository dataframe."""
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -38,6 +39,13 @@ def query(domain, question, df):
     with _lock:
         model = adapter(domain)
         plan = model.plan(question, FIELDS[domain].split(","))
+    if domain == "restaurant":
+        cities = [city for city in df["city"].dropna().unique()
+                  if re.search(r"\b" + re.escape(str(city)) + r"\b", question, re.I)]
+        if len(cities) > 1:
+            raise ValueError("Please select one city")
+        if cities:
+            df = filtered(df, {"column": "city", "operator": "eq", "value": cities[0]})
     op = plan["operation"]
     if "where" in plan:
         df = filtered(df, plan["where"])
