@@ -1797,6 +1797,10 @@ async def learner_query(file: UploadFile | None = File(None), text: str = Form(.
         try:
             return await run_in_threadpool(query, domain, text, df)
         except (ValueError, KeyError, TypeError) as exc:
+            from src.insight_learning.clarification import clarify
+            suggestion = await run_in_threadpool(clarify, text, domain)
+            if suggestion:
+                raise HTTPException(status_code=422, detail=f"Did you mean this? {suggestion}") from exc
             raise HTTPException(status_code=422, detail="Please rephrase the question and name the field to analyze.") from exc
     if ("top" in question or "highest" in question) and "rating" in " ".join(map(str, df.columns)).lower():
         rating_col = next(c for c in df.columns if "rating" in str(c).lower() and "count" not in str(c).lower())
